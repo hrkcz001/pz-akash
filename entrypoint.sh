@@ -31,6 +31,16 @@ fi
 PZ_DIR=$(dirname "$PZ_PATH")
 chmod +x "$PZ_PATH" "$PZ_DIR"/ProjectZomboid64 "$PZ_DIR"/jre64/bin/java 2>/dev/null || true
 
+# --- ИЗМЕНЕНИЕ КОНФИГА: ОТКЛЮЧЕНИЕ STEAM ---
+JSON_CONFIG="$PZ_DIR/ProjectZomboid64.json"
+if [ -f "$JSON_CONFIG" ]; then
+    echo "=== Disabling Steam in ProjectZomboid64.json ==="
+    sed -i 's/-Dzomboid.steam=1/-Dzomboid.steam=0/g' "$JSON_CONFIG"
+else
+    echo "WARNING: ProjectZomboid64.json not found, relying on launch flags only."
+fi
+# -------------------------------------------
+
 cd "$PZ_DIR"
 # Запуск с флагом -nosteam
 "$PZ_PATH" -nosteam -servername vsrania -adminpassword "Qwerty01234**" -cachedir=/home/steam/Zomboid -Xmx8192m -Xms8192m &

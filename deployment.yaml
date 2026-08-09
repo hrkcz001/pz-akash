@@ -2,7 +2,7 @@
 version: "2.0"
 services:
   pz-server:
-    image: ghcr.io/hrkcz001/pz-akash:sha-f569586
+    image: ghcr.io/hrkcz001/pz-akash:sha-22829eb
     expose:
       - port: 16261
         as: 16261
