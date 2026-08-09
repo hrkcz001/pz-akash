@@ -8,7 +8,9 @@ RUN dpkg --add-architecture i386 && \
 
 RUN mkdir -p /steamcmd /pz-server && \
     curl -sqL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" | tar zxvf - -C /steamcmd && \
-    /steamcmd/steamcmd.sh +@sSteamCmdForcePlatformType linux +login anonymous +force_install_dir /pz-server +app_update 380870 +quit
+    /steamcmd/steamcmd.sh +login anonymous +quit || true
+
+RUN /steamcmd/steamcmd.sh +@sSteamCmdForcePlatformType linux +login anonymous +force_install_dir /pz-server +app_update 380870 validate +quit
 
 # Stage 2: Minimal Runtime
 FROM debian:bookworm-slim
