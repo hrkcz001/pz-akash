@@ -1,20 +1,8 @@
 ---
 version: "2.0"
-
-endpoints:
-  pz-ip:
-    kind: ip
-
 services:
   pz-server:
-    # This matches the image built by GitHub Actions. Replace "pz-akash" if you name your GitHub repo something else.
-    image: ghcr.io/hrkcz001/pz-akash:sha-369e9b9
-    env:
-      - SSH_PRIVATE_KEY_BASE64="LS0tLS1CRUdJTiBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0KYjNCbGJuTnphQzFyWlhrdGRqRUFBQUFBQkc1dmJtVUFBQUFFYm05dVpRQUFBQUFBQUFBQkFBQUFNd0FBQUF0emMyZ3RaVwpReU5UVXhPUUFBQUNERFZVcDV6czJGVWh6U05jaXVWd211ejVJb3dXbE5ybUtxbkNYNmRJSUlnZ0FBQUtET3kvZlJ6c3YzCjBRQUFBQXR6YzJndFpXUXlOVFV4T1FBQUFDRERWVXA1enMyRlVoelNOY2l1VndtdXo1SW93V2xOcm1LcW5DWDZkSUlJZ2cKQUFBRUQvT3VVUFZpcFpibXZuRHNFV0RBSDhRNUxUYWxPVUQ0czA0VFJmSG0rVXJzTlZTbm5PellWU0hOSTF5SzVYQ2E3UApraWpCYVUydVlxcWNKZnAwZ2dpQ0FBQUFGbWh5YTJONk1EQXhRSFJvYVhNdFkyOXRjSFYwWlhJQkFnTUVCUVlICi0tLS0tRU5EIE9QRU5TU0ggUFJJVkFURSBLRVktLS0tLQo="
-      - REPO_URL=git@github.com:hrkcz001/pz-saves.git
-      - SAVE_COMMIT_HASH=latest
-      - GIT_USER_NAME=hrkcz001
-      - GIT_USER_EMAIL=hrkcz001@gmail.com
+    image: ghcr.io/hrkcz001/pz-akash:sha-f569586
     expose:
       - port: 16261
         as: 16261
@@ -22,21 +10,9 @@ services:
         to:
           - global: true
             ip: pz-ip
-      - port: 16261
-        as: 16261
-        proto: tcp
-        to:
-          - global: true
-            ip: pz-ip
       - port: 16262
         as: 16262
         proto: udp
-        to:
-          - global: true
-            ip: pz-ip
-      - port: 16262
-        as: 16262
-        proto: tcp
         to:
           - global: true
             ip: pz-ip
@@ -46,12 +22,13 @@ services:
         to:
           - global: true
             ip: pz-ip
-      - port: 8080
-        as: 8080
-        proto: tcp
-        to:
-          - global: false
-
+    env:
+      - >-
+        SSH_PRIVATE_KEY_BASE64="LS0tLS1CRUdJTiBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0KYjNCbGJuTnphQzFyWlhrdGRqRUFBQUFBQkc1dmJtVUFBQUFFYm05dVpRQUFBQUFBQUFBQkFBQUFNd0FBQUF0emMyZ3RaVwpReU5UVXhPUUFBQUNERFZVcDV6czJGVWh6U05jaXVWd211ejVJb3dXbE5ybUtxbkNYNmRJSUlnZ0FBQUtET3kvZlJ6c3YzCjBRQUFBQXR6YzJndFpXUXlOVFV4T1FBQUFDRERWVXA1enMyRlVoelNOY2l1VndtdXo1SW93V2xOcm1LcW5DWDZkSUlJZ2cKQUFBRUQvT3VVUFZpcFpibXZuRHNFV0RBSDhRNUxUYWxPVUQ0czA0VFJmSG0rVXJzTlZTbm5PellWU0hOSTF5SzVYQ2E3UApraWpCYVUydVlxcWNKZnAwZ2dpQ0FBQUFGbWh5YTJONk1EQXhRSFJvYVhNdFkyOXRjSFYwWlhJQkFnTUVCUVlICi0tLS0tRU5EIE9QRU5TU0ggUFJJVkFURSBLRVktLS0tLQo="
+      - REPO_URL=git@github.com:hrkcz001/pz-saves.git
+      - SAVE_COMMIT_HASH=latest
+      - GIT_USER_NAME=hrkcz001
+      - GIT_USER_EMAIL=hrkcz001@gmail.com
 profiles:
   compute:
     pz-server:
@@ -62,19 +39,17 @@ profiles:
           size: 10Gi
         storage:
           - size: 20Gi
-
   placement:
     pz-placement:
       pricing:
-        pz-ip:
-          denom: uakt
-          amount: 10000
         pz-server:
           denom: uakt
           amount: 100000
-
 deployment:
   pz-server:
     pz-placement:
       profile: pz-server
       count: 1
+endpoints:
+  pz-ip:
+    kind: ip
