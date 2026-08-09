@@ -8,7 +8,7 @@ endpoints:
 services:
   pz-server:
     # This matches the image built by GitHub Actions. Replace "pz-akash" if you name your GitHub repo something else.
-    image: ghcr.io/hrkcz001/pz-akash:latest
+    image: ghcr.io/hrkcz001/pz-akash:sha-303a9c2
     env:
       - SSH_PRIVATE_KEY_BASE64="LS0tLS1CRUdJTiBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0KYjNCbGJuTnphQzFyWlhrdGRqRUFBQUFBQkc1dmJtVUFBQUFFYm05dVpRQUFBQUFBQUFBQkFBQUFNd0FBQUF0emMyZ3RaVwpReU5UVXhPUUFBQUNERFZVcDV6czJGVWh6U05jaXVWd211ejVJb3dXbE5ybUtxbkNYNmRJSUlnZ0FBQUtET3kvZlJ6c3YzCjBRQUFBQXR6YzJndFpXUXlOVFV4T1FBQUFDRERWVXA1enMyRlVoelNOY2l1VndtdXo1SW93V2xOcm1LcW5DWDZkSUlJZ2cKQUFBRUQvT3VVUFZpcFpibXZuRHNFV0RBSDhRNUxUYWxPVUQ0czA0VFJmSG0rVXJzTlZTbm5PellWU0hOSTF5SzVYQ2E3UApraWpCYVUydVlxcWNKZnAwZ2dpQ0FBQUFGbWh5YTJONk1EQXhRSFJvYVhNdFkyOXRjSFYwWlhJQkFnTUVCUVlICi0tLS0tRU5EIE9QRU5TU0ggUFJJVkFURSBLRVktLS0tLQo="
       - REPO_URL=git@github.com:hrkcz001/pz-saves.git
@@ -22,9 +22,21 @@ services:
         to:
           - global: true
             ip: pz-ip
+      - port: 16261
+        as: 16261
+        proto: tcp
+        to:
+          - global: true
+            ip: pz-ip
       - port: 16262
         as: 16262
         proto: udp
+        to:
+          - global: true
+            ip: pz-ip
+      - port: 16262
+        as: 16262
+        proto: tcp
         to:
           - global: true
             ip: pz-ip
@@ -49,7 +61,7 @@ profiles:
         memory:
           size: 10Gi
         storage:
-          - size: 10Gi
+          - size: 20Gi
 
   placement:
     pz-placement:
