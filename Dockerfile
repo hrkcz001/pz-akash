@@ -1,9 +1,9 @@
-FROM debian:bookworm-slim
+FROM ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install only minimal required dependencies.
-# Note: Project Zomboid ships with its own JRE, so we don't need openjdk.
+# Install required dependencies. Using Ubuntu fixes a known library crash with Debian Slim.
+# We skip openjdk-17-jre-headless since Zomboid has a bundled JRE, saving ~250MB.
 RUN dpkg --add-architecture i386 && \
     apt-get update && \
     apt-get install -y --no-install-recommends \

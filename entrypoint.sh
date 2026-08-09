@@ -52,8 +52,11 @@ save_and_push() {
         fi
         
         tar -czf /home/steam/git-repo/save.tar.gz -C /home/steam/Zomboid/ Saves db || true
-        git add save.tar.gz || true
-        git commit -m "Auto-save: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" || true
+        mkdir -p /home/steam/git-repo/Logs
+        cp -r /home/steam/Zomboid/Logs/* /home/steam/git-repo/Logs/ 2>/dev/null || true
+        cp /home/steam/pz-server/hs_err_pid*.log /home/steam/git-repo/Logs/ 2>/dev/null || true
+        git add save.tar.gz Logs/ || true
+        git commit -m "Auto-save & Logs: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" || true
         git push -u origin "$CURRENT_BRANCH" || git push origin "$CURRENT_BRANCH" || echo "Git push failed"
     fi
 }
@@ -79,8 +82,16 @@ PZ_DIR=$(dirname "$PZ_PATH")
 chmod +x "$PZ_PATH" "$PZ_DIR"/ProjectZomboid64 "$PZ_DIR"/jre64/bin/java 2>/dev/null || true
 
 cd "$PZ_DIR"
-"$PZ_PATH" -servername vsrania -adminpassword "Qwerty01234**" -cachedir=/home/steam/Zomboid -Xmx6144m -Xms6144m &
+"$PZ_PATH" -servername vsrania -adminpassword "Qwerty01234**" -cachedir=/home/steam/Zomboid -Xmx8192m -Xms8192m &
 
 PZ_PID=$!
-wait $PZ_PID || true
+wait $PZ_PID
+EXIT_CODE=$?
+echo "=== Project Zomboid Server exited with code $EXIT_CODE ==="
+
+if [ $EXIT_CODE -ne 0 ]; then
+    echo "ERROR: Server crashed unexpectedly! Sleeping for 30 minutes to preserve logs..."
+    sleep 1800
+fi
+
 save_and_push
