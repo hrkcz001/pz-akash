@@ -1,0 +1,43 @@
+SandboxVars = {
+    VERSION = 5,
+    CharacterFreePoints = 6,
+    StarterKit = false,
+    WaterShut = 2,
+    ElecShut = 2,
+    MultiHitZombies = true,
+    Zombies = 4,
+    CarSpawnRate = 3,
+    InitialGas = 2,
+    ChanceHasGas = 2,
+    Helicopter = 3,
+    MinutesPerPage = 0.2,
+    WeaponLootNew = 1.2,
+    RangedWeaponLootNew = 1.8,
+    AmmoLootNew = 1.2,
+    FoodLootNew = 0.4,
+    CannedFoodLootNew = 0.4,
+    MaterialLootNew = 0.4,
+    ToolLootNew = 0.4,
+    OtherLootNew = 0.6,
+    ZombieLore = {
+        ActiveOnly = 2,
+        Speed = 1,
+        Transmission = 2,
+        Mortality = 1,
+        Reanimate = 1,
+        DisableFakeDead = 2,
+        Cognition = 3,
+        DoorOpeningPercentage = 0,
+    },
+    ZombieConfig = {
+        PopulationMultiplier = 0.65,
+    },
+    Map = {
+        AllowMiniMap = true,
+        AllowWorldMap = true,
+    },
+    MultiplierConfig = {
+        Global = 3.0,
+        GlobalToggle = true,
+    }
+}
