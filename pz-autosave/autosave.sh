@@ -62,7 +62,9 @@ while true; do
         SERVER_IP=$(jq -r '.ip' server_info.json)
         SERVER_PORT=$(jq -r '.port' server_info.json)
         
-        if [ "$STATUS" = "booting" ] || [ "$STATUS" = "online" ]; then
+        if [ "$SERVER_IP" = "pending" ]; then
+            echo "Server IP is pending configuration. Waiting..."
+        elif [ "$STATUS" = "booting" ] || [ "$STATUS" = "online" ]; then
             # Check if restore is requested and server is ready
             if [ -f request_restore ] && grep -iq "ready" request_restore; then
                 if [ -f restore_target ]; then
@@ -91,38 +93,40 @@ while true; do
             fi
             
             # Check if manual backup requested OR time for periodic backup
-            CURRENT_TIME=$(date +%s)
-            LAST_BACKUP=$(cat /data/last_backup_time 2>/dev/null || echo "0")
-            DIFF=$((CURRENT_TIME - LAST_BACKUP))
-            
-            if [ -s backup_request ] || { [ "$IS_PAUSED" = "false" ] && [ $DIFF -gt $BACKUP_INTERVAL_SEC ]; }; then
-                echo "Starting safe manual/periodic backup from $SERVER_IP:$SERVER_PORT"
-                TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-                BACKUP_NAME="backup_$TIMESTAMP.zip"
+            if [ "$STATUS" = "online" ]; then
+                CURRENT_TIME=$(date +%s)
+                LAST_BACKUP=$(cat /data/last_backup_time 2>/dev/null || echo "0")
+                DIFF=$((CURRENT_TIME - LAST_BACKUP))
                 
-                # Send save command via RCON
-                if ! python3 /usr/local/bin/rcon.py "$SERVER_IP" "$RCON_PORT" "$RCON_PASSWORD" "save"; then
-                    echo "ERROR: RCON save command failed. Aborting backup to prevent corruption."
-                    continue
+                if [ -s backup_request ] || { [ "$IS_PAUSED" = "false" ] && [ $DIFF -gt $BACKUP_INTERVAL_SEC ]; }; then
+                    echo "Starting safe manual/periodic backup from $SERVER_IP:$SERVER_PORT"
+                    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+                    BACKUP_NAME="backup_$TIMESTAMP.zip"
+                    
+                    # Send save command via RCON
+                    if ! python3 /usr/local/bin/rcon.py "$SERVER_IP" "$RCON_PORT" "$RCON_PASSWORD" "save"; then
+                        echo "ERROR: RCON save command failed. Aborting backup to prevent corruption."
+                        continue
+                    fi
+                    
+                    # Wait for disk flush
+                    sleep 5
+                    
+                    # Stream zip safely directly from server to local disk
+                    ssh -p $SERVER_PORT -o StrictHostKeyChecking=no steam@$SERVER_IP "cd /home/steam/Zomboid/Saves && zip -q -r - ." > /data/backups/$BACKUP_NAME
+                    
+                    echo $CURRENT_TIME > /data/last_backup_time
+                    
+                    # Auto-set the latest backup into restore_target
+                    echo $BACKUP_NAME > restore_target
+                    
+                    > backup_request
+                    git add backup_request restore_target
+                    git commit -m "Created safe backup $BACKUP_NAME and updated restore_target" || true
+                    push_with_retry
+                    
+                    echo "Backup $BACKUP_NAME finished and logged."
                 fi
-                
-                # Wait for disk flush
-                sleep 5
-                
-                # Stream zip safely directly from server to local disk
-                ssh -p $SERVER_PORT -o StrictHostKeyChecking=no steam@$SERVER_IP "cd /home/steam/Zomboid/Saves && zip -q -r - ." > /data/backups/$BACKUP_NAME
-                
-                echo $CURRENT_TIME > /data/last_backup_time
-                
-                # Auto-set the latest backup into restore_target
-                echo $BACKUP_NAME > restore_target
-                
-                > backup_request
-                git add backup_request restore_target
-                git commit -m "Created safe backup $BACKUP_NAME and updated restore_target" || true
-                push_with_retry
-                
-                echo "Backup $BACKUP_NAME finished and logged."
             fi
         fi
     fi
