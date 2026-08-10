@@ -48,14 +48,6 @@ push_with_retry() {
 }
 "
 
-MY_IP=""
-for i in {1..10}; do
-    MY_IP=$(curl -s ifconfig.me)
-    [ -n "$MY_IP" ] && break
-    sleep 5
-done
-[ -z "$MY_IP" ] && MY_IP="unknown"
-
 gosu steam bash -c "
 cd /home/steam/pz-saves
 # Define push_with_retry here as well for this isolated subshell
@@ -66,9 +58,9 @@ push_with_retry() {
         sleep \$((RANDOM % 3 + 1))
     done
 }
-echo \"{\\\"ip\\\": \\\"$MY_IP\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"booting\\\"}\" > server_info.json
+echo \"{\\\"ip\\\": \\\"pending\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"booting\\\"}\" > server_info.json
 git add server_info.json
-git commit -m \"Server booting up at $MY_IP\" || true
+git commit -m \"Server booting up, waiting for IP configuration\" || true
 export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
 push_with_retry
 "
@@ -211,15 +203,28 @@ while ! grep -q "\*\*\* SERVER STARTED \*\*\*" /tmp/server.log; do
 done
 
 if kill -0 $PZ_PID 2>/dev/null; then
-    echo "Server is now fully online!"
+    echo "Server is fully started. Waiting for manual IP configuration..."
     # Let Autosaver know it's online
     gosu steam bash -c "
 cd /home/steam/pz-saves
-push_with_retry() { for i in {1..5}; do git push && return 0; git pull --rebase >/dev/null 2>&1; sleep \$((RANDOM % 3 + 1)); done; }
-echo \"{\\\"ip\\\": \\\"$MY_IP\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"online\\\"}\" > server_info.json
-git add server_info.json
-git commit -m \"Server online\" || true
 export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
+while true; do
+    git pull >/dev/null 2>&1
+    if [ -f server_info.json ]; then
+        CURRENT_IP=\$(jq -r '.ip' server_info.json)
+        if [ \"\$CURRENT_IP\" != \"pending\" ] && [ \"\$CURRENT_IP\" != \"null\" ] && [ -n \"\$CURRENT_IP\" ]; then
+            break
+        fi
+    fi
+    echo \"Waiting for user to replace 'pending' with the real IP in server_info.json...\"
+    sleep 10
+done
+
+echo \"IP configured as \$CURRENT_IP. Marking server as online!\"
+push_with_retry() { for i in {1..5}; do git push && return 0; git pull --rebase >/dev/null 2>&1; sleep \$((RANDOM % 3 + 1)); done; }
+echo \"{\\\"ip\\\": \\\"\$CURRENT_IP\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"online\\\"}\" > server_info.json
+git add server_info.json
+git commit -m \"Server online with IP \$CURRENT_IP\" || true
 push_with_retry
 "
 fi
