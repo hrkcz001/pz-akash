@@ -170,6 +170,8 @@ graceful_shutdown() {
         wait $PZ_PID
     fi
     mark_server_stopped
+    echo "Sleeping for 1800 seconds (30 minutes) to prevent immediate Akash restart loop..."
+    sleep 1800
     exit 0
 }
 
@@ -239,4 +241,6 @@ if [ $EXIT_CODE -ne 0 ]; then
 else
     echo "Server exited cleanly. Marking as stopped..."
     mark_server_stopped
+    echo "Sleeping for 1800 seconds (30 minutes) to prevent immediate Akash restart loop..."
+    sleep 1800
 fi
