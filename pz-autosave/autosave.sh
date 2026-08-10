@@ -98,7 +98,7 @@ while true; do
                 LAST_BACKUP=$(cat /data/last_backup_time 2>/dev/null || echo "0")
                 DIFF=$((CURRENT_TIME - LAST_BACKUP))
                 
-                if [ -s backup_request ] || { [ "$IS_PAUSED" = "false" ] && [ $DIFF -gt $BACKUP_INTERVAL_SEC ]; }; then
+                if [ -f halt_request ] || [ -s backup_request ] || { [ "$IS_PAUSED" = "false" ] && [ $DIFF -gt $BACKUP_INTERVAL_SEC ]; }; then
                     echo "Starting safe manual/periodic backup from $SERVER_IP:$SERVER_PORT"
                     TIMESTAMP=$(date +%Y%m%d_%H%M%S)
                     BACKUP_NAME="backup_$TIMESTAMP.zip"
@@ -123,6 +123,15 @@ while true; do
                     > backup_request
                     git add backup_request restore_target
                     git commit -m "Created safe backup $BACKUP_NAME and updated restore_target" || true
+                    
+                    if [ -f halt_request ]; then
+                        echo "Halt requested. Sending quit command via RCON..."
+                        python3 /usr/local/bin/rcon.py "$SERVER_IP" "$RCON_PORT" "$RCON_PASSWORD" "quit" || true
+                        rm -f halt_request
+                        git rm halt_request 2>/dev/null || true
+                        git commit -m "Processed halt_request and issued quit command" || true
+                    fi
+                    
                     push_with_retry
                     
                     echo "Backup $BACKUP_NAME finished and logged."

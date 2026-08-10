@@ -197,17 +197,16 @@ else
 fi
 
 cd "$PZ_DIR"
-touch /tmp/server.log
-chown steam:steam /tmp/server.log
 
-gosu steam "$PZ_PATH" -nosteam -servername "$SERVER_NAME" -adminpassword "$ADMIN_PASSWORD" -cachedir=/home/steam/Zomboid -Xmx$SERVER_MEMORY_MAX -Xms$SERVER_MEMORY_MIN > /tmp/server.log 2>&1 &
+
+gosu steam "$PZ_PATH" -nosteam -servername "$SERVER_NAME" -adminpassword "$ADMIN_PASSWORD" -cachedir=/home/steam/Zomboid -Xmx$SERVER_MEMORY_MAX -Xms$SERVER_MEMORY_MIN > /home/steam/server.log 2>&1 &
 PZ_PID=$!
 
-tail -f /tmp/server.log &
+tail -f /home/steam/server.log &
 TAIL_PID=$!
 
 echo "Waiting for server to be fully started..."
-while ! grep -q "\*\*\* SERVER STARTED \*\*\*" /tmp/server.log; do
+while ! grep -q "\*\*\* SERVER STARTED \*\*\*" /home/steam/server.log; do
     if ! kill -0 $PZ_PID 2>/dev/null; then
         echo "Server process died during startup!"
         break
