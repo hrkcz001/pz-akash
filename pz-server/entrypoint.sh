@@ -18,7 +18,7 @@ echo "Port $SSH_PORT" >> /etc/ssh/sshd_config
 # 2. Setup Steam SSH keys so Autosaver can SSH as steam
 mkdir -p /home/steam/.ssh
 chmod 700 /home/steam/.ssh
-echo "$SSH_PRIVATE_KEY_BASE64" | tr -d ' ' | base64 -d > /home/steam/.ssh/id_rsa
+echo "$SSH_PRIVATE_KEY_BASE64" | tr -d ' "\r\n' | base64 -d > /home/steam/.ssh/id_rsa
 chmod 600 /home/steam/.ssh/id_rsa
 ssh-keygen -y -f /home/steam/.ssh/id_rsa > /home/steam/.ssh/id_rsa.pub
 cat /home/steam/.ssh/id_rsa.pub > /home/steam/.ssh/authorized_keys
@@ -48,13 +48,13 @@ push_with_retry() {
 }
 "
 
-MY_IP=\"\"
+MY_IP=""
 for i in {1..10}; do
-    MY_IP=\$(curl -s ifconfig.me)
-    [ -n \"\$MY_IP\" ] && break
+    MY_IP=$(curl -s ifconfig.me)
+    [ -n "$MY_IP" ] && break
     sleep 5
 done
-[ -z \"\$MY_IP\" ] && MY_IP=\"unknown\"
+[ -z "$MY_IP" ] && MY_IP="unknown"
 
 gosu steam bash -c "
 cd /home/steam/pz-saves
@@ -66,9 +66,9 @@ push_with_retry() {
         sleep \$((RANDOM % 3 + 1))
     done
 }
-echo \"{\\\"ip\\\": \\\"\$MY_IP\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"booting\\\"}\" > server_info.json
+echo \"{\\\"ip\\\": \\\"$MY_IP\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"booting\\\"}\" > server_info.json
 git add server_info.json
-git commit -m \"Server booting up at \$MY_IP\" || true
+git commit -m \"Server booting up at $MY_IP\" || true
 export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
 push_with_retry
 "
@@ -199,7 +199,7 @@ PZ_PID=$!
 gosu steam bash -c "
 cd /home/steam/pz-saves
 push_with_retry() { for i in {1..5}; do git push && return 0; git pull --rebase >/dev/null 2>&1; sleep \$((RANDOM % 3 + 1)); done; }
-echo \"{\\\"ip\\\": \\\"\$MY_IP\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"online\\\"}\" > server_info.json
+echo \"{\\\"ip\\\": \\\"$MY_IP\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"online\\\"}\" > server_info.json
 git add server_info.json
 git commit -m \"Server online\" || true
 export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
