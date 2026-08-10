@@ -6,7 +6,8 @@ RUN apt-get update && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
 
 COPY autosave.sh /usr/local/bin/autosave.sh
-RUN dos2unix /usr/local/bin/autosave.sh && chmod +x /usr/local/bin/autosave.sh
+COPY rcon.py /usr/local/bin/rcon.py
+RUN dos2unix /usr/local/bin/autosave.sh /usr/local/bin/rcon.py && chmod +x /usr/local/bin/autosave.sh
 
 WORKDIR /data
 

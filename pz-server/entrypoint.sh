@@ -1,9 +1,18 @@
 #!/bin/bash
 
-# 1. Setup SSH Server on Port 2222
+# Configuration variables
+SSH_PORT=${SSH_PORT:-2222}
+RESTORE_POLL_INTERVAL_SEC=${RESTORE_POLL_INTERVAL_SEC:-10}
+SERVER_NAME=${SERVER_NAME:-vsrania}
+ADMIN_PASSWORD=${ADMIN_PASSWORD:-"Qwerty01234**"}
+SERVER_MEMORY_MAX=${SERVER_MEMORY_MAX:-8192m}
+SERVER_MEMORY_MIN=${SERVER_MEMORY_MIN:-8192m}
+WAIT_ON_CRASH_SEC=${WAIT_ON_CRASH_SEC:-1800}
+
+# 1. Setup SSH Server
 echo "=== Setting up SSH Server ==="
 mkdir -p /run/sshd
-echo "Port 2222" >> /etc/ssh/sshd_config
+echo "Port $SSH_PORT" >> /etc/ssh/sshd_config
 /usr/sbin/sshd
 
 # 2. Setup Steam SSH keys so Autosaver can SSH as steam
@@ -24,34 +33,80 @@ export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
 git config --global user.name \"$GIT_USER_NAME\"
 git config --global user.email \"$GIT_USER_EMAIL\"
 if [ ! -d /home/steam/pz-saves ]; then
-    git clone \"$REPO_URL\" /home/steam/pz-saves
+    git clone \"$REPO_URL\" /home/steam/pz-saves || { echo \"ERROR: Git clone failed\"; exit 1; }
 else
     cd /home/steam/pz-saves && git pull
 fi
+
+push_with_retry() {
+    for i in {1..5}; do
+        git push && return 0
+        git pull --rebase >/dev/null 2>&1
+        sleep \$((RANDOM % 3 + 1))
+    done
+    echo \"WARNING: Git push failed after 5 retries\"
+}
 "
 
-# 4. Write IP and check restore
-MY_IP=$(curl -s ifconfig.me)
+MY_IP=\"\"
+for i in {1..10}; do
+    MY_IP=\$(curl -s ifconfig.me)
+    [ -n \"\$MY_IP\" ] && break
+    sleep 5
+done
+[ -z \"\$MY_IP\" ] && MY_IP=\"unknown\"
+
 gosu steam bash -c "
 cd /home/steam/pz-saves
-echo \"{\\\"ip\\\": \\\"$MY_IP\\\", \\\"port\\\": 2222, \\\"status\\\": \\\"booting\\\"}\" > server_info.json
+# Define push_with_retry here as well for this isolated subshell
+push_with_retry() {
+    for i in {1..5}; do
+        git push && return 0
+        git pull --rebase >/dev/null 2>&1
+        sleep \$((RANDOM % 3 + 1))
+    done
+}
+echo \"{\\\"ip\\\": \\\"\$MY_IP\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"booting\\\"}\" > server_info.json
 git add server_info.json
-git commit -m \"Server booting up at $MY_IP\" || true
+git commit -m \"Server booting up at \$MY_IP\" || true
 export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
-git push || true
+push_with_retry
 "
 
 echo "=== Checking Restore Request ==="
-if [ -f /home/steam/pz-saves/restore_target ]; then
-    TARGET=$(cat /home/steam/pz-saves/restore_target)
-    if [ -n "$TARGET" ]; then
-        echo "WAITING FOR AUTOSAVER TO RESTORE: $TARGET"
-        # Autosaver connects via SSH, pushes files, extracts, and empties restore_target
-        while [ -s /home/steam/pz-saves/restore_target ]; do
-            sleep 10
-            gosu steam bash -c "cd /home/steam/pz-saves && export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\" && git pull > /dev/null 2>&1"
-        done
-        echo "Restore complete! Proceeding with startup."
+if [ -f /home/steam/pz-saves/request_restore ]; then
+    RESTORE_STATE=$(cat /home/steam/pz-saves/request_restore | tr -d '\n' | tr '[:upper:]' '[:lower:]')
+    
+    if [ "$RESTORE_STATE" = "requested" ] || [ "$RESTORE_STATE" = "true" ]; then
+        echo "Restore requested. Changing state to 'ready' to notify autosaver..."
+        gosu steam bash -c "
+cd /home/steam/pz-saves
+push_with_retry() { for i in {1..5}; do git push && return 0; git pull --rebase >/dev/null 2>&1; sleep \$((RANDOM % 3 + 1)); done; }
+echo \"ready\" > request_restore
+export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
+git add request_restore
+git commit -m \"Server ready for restore\" || true
+push_with_retry
+"
+        RESTORE_STATE="ready"
+    fi
+    
+    if [ "$RESTORE_STATE" = "ready" ]; then
+        if [ -f /home/steam/pz-saves/restore_target ]; then
+            TARGET=$(cat /home/steam/pz-saves/restore_target)
+            if [ -n "$TARGET" ]; then
+                echo "WAITING FOR AUTOSAVER TO RESTORE: $TARGET"
+                while [ -f /home/steam/pz-saves/request_restore ]; do
+                    CURRENT_STATE=$(cat /home/steam/pz-saves/request_restore | tr -d '\n' | tr '[:upper:]' '[:lower:]')
+                    if [ "$CURRENT_STATE" != "ready" ]; then
+                        break
+                    fi
+                    sleep $RESTORE_POLL_INTERVAL_SEC
+                    gosu steam bash -c "cd /home/steam/pz-saves && export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\" && git pull > /dev/null 2>&1"
+                done
+                echo "Restore complete! Proceeding with startup."
+            fi
+        fi
     fi
 fi
 
@@ -69,10 +124,10 @@ fi
 chown -R steam:steam /home/steam/Zomboid/mods
 
 echo "=== Copying Configs ==="
-gosu steam cp /home/steam/vsrania.ini /home/steam/Zomboid/Server/vsrania.ini
-gosu steam cp /home/steam/vsrania_SandboxVars.lua /home/steam/Zomboid/Server/vsrania_SandboxVars.lua
+gosu steam cp /home/steam/vsrania.ini /home/steam/Zomboid/Server/${SERVER_NAME}.ini
+gosu steam cp /home/steam/vsrania_SandboxVars.lua /home/steam/Zomboid/Server/${SERVER_NAME}_SandboxVars.lua
 
-echo "=== Auto-configuring Mods in vsrania.ini ==="
+echo "=== Auto-configuring Mods in ${SERVER_NAME}.ini ==="
 MODS_LIST=""
 for d in /home/steam/Zomboid/mods/*; do
     if [ -d "$d" ]; then
@@ -86,14 +141,14 @@ for d in /home/steam/Zomboid/mods/*; do
 done
 
 if [ -n "$MODS_LIST" ]; then
-    if grep -q "^Mods=" /home/steam/Zomboid/Server/vsrania.ini; then
-        sed -i "s/^Mods=/Mods=$MODS_LIST;/g" /home/steam/Zomboid/Server/vsrania.ini
+    if grep -q "^Mods=" /home/steam/Zomboid/Server/${SERVER_NAME}.ini; then
+        sed -i "s/^Mods=/Mods=$MODS_LIST;/g" /home/steam/Zomboid/Server/${SERVER_NAME}.ini
     else
-        echo "Mods=$MODS_LIST" >> /home/steam/Zomboid/Server/vsrania.ini
+        echo "Mods=$MODS_LIST" >> /home/steam/Zomboid/Server/${SERVER_NAME}.ini
     fi
-    echo "Added Mods to vsrania.ini: $MODS_LIST"
+    echo "Added Mods to ${SERVER_NAME}.ini: $MODS_LIST"
 fi
-chown steam:steam /home/steam/Zomboid/Server/vsrania.ini
+chown steam:steam /home/steam/Zomboid/Server/${SERVER_NAME}.ini
 
 graceful_shutdown() {
     echo "=== Termination signal received! Shutting down PZ server gracefully... ==="
@@ -102,8 +157,17 @@ graceful_shutdown() {
         echo "Waiting for server to save local files and exit..."
         wait $PZ_PID
     fi
-    # Also mark as offline in Git
-    gosu steam bash -c "cd /home/steam/pz-saves && echo \"{\\\"status\\\": \\\"offline\\\"}\" > server_info.json && git add server_info.json && git commit -m \"Server offline\" && export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\" && git push || true"
+    # Also mark as offline and request restore on next boot
+    gosu steam bash -c "
+cd /home/steam/pz-saves
+push_with_retry() { for i in {1..5}; do git push && return 0; git pull --rebase >/dev/null 2>&1; sleep \$((RANDOM % 3 + 1)); done; }
+echo \"{\\\"status\\\": \\\"offline\\\"}\" > server_info.json
+echo \"requested\" > request_restore
+git add server_info.json request_restore
+git commit -m \"Server offline, auto-restore requested\" || true
+export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
+push_with_retry
+"
     exit 0
 }
 
@@ -128,17 +192,25 @@ else
 fi
 
 cd "$PZ_DIR"
-gosu steam "$PZ_PATH" -nosteam -servername vsrania -adminpassword "Qwerty01234**" -cachedir=/home/steam/Zomboid -Xmx8192m -Xms8192m &
+gosu steam "$PZ_PATH" -nosteam -servername "$SERVER_NAME" -adminpassword "$ADMIN_PASSWORD" -cachedir=/home/steam/Zomboid -Xmx$SERVER_MEMORY_MAX -Xms$SERVER_MEMORY_MIN &
 PZ_PID=$!
 
 # Let Autosaver know it's online
-gosu steam bash -c "cd /home/steam/pz-saves && echo \"{\\\"ip\\\": \\\"$MY_IP\\\", \\\"port\\\": 2222, \\\"status\\\": \\\"online\\\"}\" > server_info.json && git add server_info.json && git commit -m \"Server online\" && export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\" && git push || true"
+gosu steam bash -c "
+cd /home/steam/pz-saves
+push_with_retry() { for i in {1..5}; do git push && return 0; git pull --rebase >/dev/null 2>&1; sleep \$((RANDOM % 3 + 1)); done; }
+echo \"{\\\"ip\\\": \\\"\$MY_IP\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"online\\\"}\" > server_info.json
+git add server_info.json
+git commit -m \"Server online\" || true
+export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
+push_with_retry
+"
 
 wait $PZ_PID
 EXIT_CODE=$?
 echo "=== Project Zomboid Server exited with code $EXIT_CODE ==="
 
 if [ $EXIT_CODE -ne 0 ]; then
-    echo "ERROR: Server crashed unexpectedly! Sleeping for 30 minutes to preserve logs for debugging..."
-    sleep 1800
+    echo "ERROR: Server crashed unexpectedly! Sleeping for $WAIT_ON_CRASH_SEC seconds to preserve logs for debugging..."
+    sleep $WAIT_ON_CRASH_SEC
 fi

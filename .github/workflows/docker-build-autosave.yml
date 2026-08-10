@@ -45,13 +45,3 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-
-      - name: Update deployment.yaml with new image SHA
-        run: |
-          SHORT_SHA=$(git rev-parse --short HEAD)
-          sed -i "s|image: ghcr.io/hrkcz001/pz-akash-autosave:.*|image: ghcr.io/hrkcz001/pz-akash-autosave:sha-${SHORT_SHA}|g" pz-autosave/deployment.yaml
-          git config --global user.name 'github-actions[bot]'
-          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
-          git add pz-autosave/deployment.yaml
-          git commit -m "chore(deploy): update pz-autosave image tag to sha-${SHORT_SHA} [skip ci]" || true
-          git push
