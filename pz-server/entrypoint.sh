@@ -78,12 +78,11 @@ done
 echo \"IP configured as \$CURRENT_IP. Continuing boot...\"
 "
 
-echo "=== Checking Restore Request ==="
-if [ -f /home/steam/pz-saves/request_restore ]; then
-    RESTORE_STATE=$(cat /home/steam/pz-saves/request_restore | tr -d '\n' | tr '[:upper:]' '[:lower:]')
-    
-    if [ "$RESTORE_STATE" = "requested" ] || [ "$RESTORE_STATE" = "true" ]; then
-        echo "Restore requested. Changing state to 'ready' to notify autosaver..."
+echo "=== Checking for Existing Backup to Restore ==="
+if [ -f /home/steam/pz-saves/restore_target ]; then
+    TARGET=$(cat /home/steam/pz-saves/restore_target | tr -d '\n' | tr -d '\r')
+    if [ -n "$TARGET" ]; then
+        echo "Found existing backup target: $TARGET. Changing state to 'ready' to notify autosaver..."
         gosu steam bash -c "
 cd /home/steam/pz-saves
 push_with_retry() { for i in {1..5}; do git push && return 0; git pull --rebase >/dev/null 2>&1; sleep \$((RANDOM % 3 + 1)); done; }
@@ -93,25 +92,12 @@ git add request_restore
 git commit -m \"Server ready for restore\" || true
 push_with_retry
 "
-        RESTORE_STATE="ready"
-    fi
-    
-    if [ "$RESTORE_STATE" = "ready" ]; then
-        if [ -f /home/steam/pz-saves/restore_target ]; then
-            TARGET=$(cat /home/steam/pz-saves/restore_target)
-            if [ -n "$TARGET" ]; then
-                echo "WAITING FOR AUTOSAVER TO RESTORE: $TARGET"
-                while [ -f /home/steam/pz-saves/request_restore ]; do
-                    CURRENT_STATE=$(cat /home/steam/pz-saves/request_restore | tr -d '\n' | tr '[:upper:]' '[:lower:]')
-                    if [ "$CURRENT_STATE" != "ready" ]; then
-                        break
-                    fi
-                    sleep $RESTORE_POLL_INTERVAL_SEC
-                    gosu steam bash -c "cd /home/steam/pz-saves && export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\" && git pull > /dev/null 2>&1"
-                done
-                echo "Restore complete! Proceeding with startup."
-            fi
-        fi
+        echo "WAITING FOR AUTOSAVER TO RESTORE: $TARGET"
+        while [ -f /home/steam/pz-saves/request_restore ]; do
+            sleep $RESTORE_POLL_INTERVAL_SEC
+            gosu steam bash -c "cd /home/steam/pz-saves && export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\" && git pull > /dev/null 2>&1"
+        done
+        echo "Restore complete! Proceeding with startup."
     fi
 fi
 
