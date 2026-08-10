@@ -32,7 +32,6 @@ services:
       - >-
         SSH_PRIVATE_KEY_BASE64="<YOUR_BASE64_SSH_KEY>"
       - REPO_URL=git@github.com:hrkcz001/pz-saves.git
-      - SAVE_COMMIT_HASH=latest
       - GIT_USER_NAME=hrkcz001
       - GIT_USER_EMAIL=hrkcz001@gmail.com
 profiles:
