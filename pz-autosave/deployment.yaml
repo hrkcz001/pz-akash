@@ -2,7 +2,7 @@
 version: "2.0"
 services:
   pz-autosave:
-    image: ghcr.io/hrkcz001/pz-akash-autosave:sha-42ab7c7
+    image: ghcr.io/hrkcz001/pz-akash-autosave:sha-d1687c0
     expose:
       - port: 80
         as: 80
@@ -11,10 +11,7 @@ services:
           - global: true
     env:
       - >-
-        SSH_PRIVATE_KEY_BASE64="LS0tLS1CRUdJTiBPUEVOU1NIIFBSSVZBVEUgS0VZLS0tLS0KYjNCbGJuTnphQzFyWlhrdGRqRUFBQUFBQkc1dmJtVUFBQUFFYm05dVpRQUFBQUFBQUFBQkFBQUFNd0FBQUF0emMyZ3RaVwpReU5UVXhPUUFBQUNENUpQUGdNZ2hZZ045Y0UwYWdyRk1Jc0tveGgrQTRzc0pCUlIvdGV3YUNsQUFBQUtBNUtBTGVPU2dDCjNnQUFBQXR6YzJndFpXUXlOVFV4T1FBQUFDRDVKUFBnTWdoWWdOOWNFMGFnckZNSXNLb3hoK0E0c3NKQlJSL3Rld2FDbEEKQUFBRUQ5a21SUWozK3M5MlgxeEthVVJJT3p4WGM3TjRTamFqaWhRZ1d2c0FxMTRma2s4K0F5Q0ZpQTMxd1RScUNzVXdpdwpxakdINERpeXdrRkZIKzE3Qm9LVUFBQUFGbWh5YTJONk1EQXhRSFJvYVhNdFkyOXRjSFYwWlhJQkFnTUVCUVlICi0tLS0tRU5EIE9QRU5TU0ggUFJJVkFURSBLRVktLS0tLQo="
-      - REPO_URL=git@github.com:hrkcz001/pz-saves.git
-      - GIT_USER_NAME=hrkcz001
-      - GIT_USER_EMAIL=hrkcz001@gmail.com
+        SSH_PRIVATE_KEY_BASE64=
       - HTTP_PORT=80
       - BACKUP_INTERVAL_SEC=3600
       - BACKUP_RETENTION_DAYS=7
