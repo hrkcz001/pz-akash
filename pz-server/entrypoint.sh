@@ -132,11 +132,28 @@ fi
 
 # 5. Original logic for PZ setup (runs as steam)
 echo "=== Linking Workshop Mods ==="
-if [ -d /home/steam/pz-server/steamapps/workshop/content/108600 ]; then
-    find /home/steam/pz-server/steamapps/workshop/content/108600 -maxdepth 2 -type d -name "mods" | while read -r mod_dir; do
-        ln -sf "$mod_dir"/* /home/steam/Zomboid/mods/
-    done
-    echo "Workshop mods linked successfully."
+WORKSHOP_ROOT="/home/steam/pz-server/steamapps/workshop/content/108600"
+MOD_LINK_COUNT=0
+if [ -d "$WORKSHOP_ROOT" ]; then
+    # Search up to depth 4 to handle varied workshop mod structures:
+    #   <item_id>/mods/<ModName>/           (standard)
+    #   <item_id>/Contents/mods/<ModName>/  (some mods wrap in Contents/)
+    # Using relative symlinks (-r) avoids double-path bugs where
+    # ScriptManager.Load prefixes the mods dir onto an already-absolute path.
+    while IFS= read -r mod_dir; do
+        while IFS= read -r mod_content; do
+            link_name="/home/steam/Zomboid/mods/$(basename "$mod_content")"
+            if [ ! -e "$link_name" ]; then
+                ln -srf "$mod_content" "$link_name"
+                MOD_LINK_COUNT=$((MOD_LINK_COUNT + 1))
+            else
+                echo "  [skip] $(basename "$mod_content") already linked"
+            fi
+        done < <(find "$mod_dir" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
+    done < <(find "$WORKSHOP_ROOT" -maxdepth 4 -type d -name "mods" 2>/dev/null)
+    echo "Workshop mods linked: $MOD_LINK_COUNT mod folder(s)."
+else
+    echo "WARNING: Workshop content directory not found at $WORKSHOP_ROOT — no mods will be loaded."
 fi
 chown -R steam:steam /home/steam/Zomboid/mods
 
@@ -166,6 +183,35 @@ if [ -n "$MODS_LIST" ]; then
     echo "Added Mods to ${SERVER_NAME}.ini: $MODS_LIST"
 fi
 chown steam:steam /home/steam/Zomboid/Server/${SERVER_NAME}.ini
+
+echo "=== Validating Map Directories ==="
+# Parse the Map= line from the server ini and verify each map entry is resolvable.
+# The PZ server finds maps by scanning mod directories for media/maps/<MapName>/.
+# If none are found the server crashes in WorldGen with a null worldgenTable error.
+INI_MAP_LINE=$(grep -i "^Map=" /home/steam/Zomboid/Server/${SERVER_NAME}.ini | head -n1 | cut -d= -f2-)
+if [ -z "$INI_MAP_LINE" ]; then
+    echo "WARNING: No Map= entry found in ${SERVER_NAME}.ini. Server may crash on worldgen."
+else
+    MISSING_MAPS=""
+    IFS=';' read -ra MAP_ENTRIES <<< "$INI_MAP_LINE"
+    for MAP_ENTRY in "${MAP_ENTRIES[@]}"; do
+        MAP_NAME=$(echo "$MAP_ENTRY" | xargs)  # trim whitespace
+        # Search for the map folder in vanilla data and linked mods
+        MAP_FOUND=$(find /home/steam/pz-server/media/maps \
+                         /home/steam/Zomboid/mods \
+                         -maxdepth 4 -type d -name "$MAP_NAME" 2>/dev/null | head -n1)
+        if [ -n "$MAP_FOUND" ]; then
+            echo "  [OK]      Map '$MAP_NAME' -> $MAP_FOUND"
+        else
+            echo "  [MISSING] Map '$MAP_NAME' not found in any mod or vanilla data!"
+            MISSING_MAPS="$MISSING_MAPS $MAP_NAME"
+        fi
+    done
+    if [ -n "$MISSING_MAPS" ]; then
+        echo "WARNING: The following maps were not found and will cause a WorldGen crash:$MISSING_MAPS"
+        echo "         Check that the corresponding workshop mods include a media/maps/<MapName>/ directory."
+    fi
+fi
 
 mark_server_stopped() {
     # Mark as stopped and request restore on next boot
@@ -215,16 +261,41 @@ chown -R steam:steam /home/steam/pz-server
 
 JSON_CONFIG="$PZ_DIR/ProjectZomboid64.json"
 if [ -f "$JSON_CONFIG" ]; then
-    echo "=== Disabling Steam in ProjectZomboid64.json ==="
+    echo "=== Patching ProjectZomboid64.json ==="
+    # Disable Steam (required for -nosteam mode)
     sed -i 's/-Dzomboid.steam=1/-Dzomboid.steam=0/g' "$JSON_CONFIG"
+    # Inject memory settings as proper JVM vmArgs.
+    # NOTE: -Xmx/-Xms must NOT be passed as CLI args to the PZ launcher — pzexe
+    # does not forward unknown CLI options to the JVM and logs "unknown option".
+    # The JSON vmArgs array is the correct place for JVM flags.
+    # Remove any existing Xmx/Xms entries first, then inject the configured values.
+    if command -v python3 &>/dev/null; then
+        python3 - "$JSON_CONFIG" "$SERVER_MEMORY_MAX" "$SERVER_MEMORY_MIN" <<'PYEOF'
+import sys, json
+path, xmx, xms = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path) as f:
+    cfg = json.load(f)
+vmArgs = cfg.get("vmArgs", [])
+# Strip any existing heap size flags
+vmArgs = [a for a in vmArgs if not a.startswith("-Xmx") and not a.startswith("-Xms")]
+vmArgs.extend(["-Xmx" + xmx, "-Xms" + xms])
+cfg["vmArgs"] = vmArgs
+with open(path, "w") as f:
+    json.dump(cfg, f, indent=2)
+print(f"Memory set: -Xmx{xmx} -Xms{xms} in {path}")
+PYEOF
+    else
+        echo "WARNING: python3 not available, skipping memory vmArgs injection into JSON. Using JSON defaults."
+    fi
 else
     echo "WARNING: ProjectZomboid64.json not found, relying on launch flags only."
 fi
 
 cd "$PZ_DIR"
 
-
-gosu steam "$PZ_PATH" -nosteam -servername "$SERVER_NAME" -adminpassword "$ADMIN_PASSWORD" -cachedir=/home/steam/Zomboid -Xmx$SERVER_MEMORY_MAX -Xms$SERVER_MEMORY_MIN > /home/steam/server.log 2>&1 &
+# Launch without -Xmx/-Xms CLI flags — those are unknown to pzexe and ignored.
+# Memory is now correctly set in ProjectZomboid64.json vmArgs above.
+gosu steam "$PZ_PATH" -nosteam -servername "$SERVER_NAME" -adminpassword "$ADMIN_PASSWORD" -cachedir=/home/steam/Zomboid > /home/steam/server.log 2>&1 &
 PZ_PID=$!
 
 tail -f /home/steam/server.log &
