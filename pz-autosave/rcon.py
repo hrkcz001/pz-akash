@@ -16,7 +16,7 @@ def rcon_command(host, port, password, command):
         packet_id = 1
         packet_type = 3 # SERVERDATA_AUTH
         body = password.encode('utf-8') + b'\x00\x00'
-        size = 10 + len(body)
+        size = 8 + len(body)
         s.send(struct.pack('<iii', size, packet_id, packet_type) + body)
         
         print("RCON: Auth sent. Waiting for response...")
@@ -50,7 +50,7 @@ def rcon_command(host, port, password, command):
         packet_id = 2
         packet_type = 2 # SERVERDATA_EXECCOMMAND
         body = command.encode('utf-8') + b'\x00\x00'
-        size = 10 + len(body)
+        size = 8 + len(body)
         s.send(struct.pack('<iii', size, packet_id, packet_type) + body)
         
         print("RCON: Command sent. Waiting for response...")
