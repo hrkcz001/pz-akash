@@ -155,6 +155,27 @@ if [ -n "$MODS_LIST" ]; then
 fi
 chown steam:steam /home/steam/Zomboid/Server/${SERVER_NAME}.ini
 
+mark_server_stopped() {
+    # Mark as stopped and request restore on next boot
+    gosu steam bash -c "
+cd /home/steam/pz-saves
+export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
+push_with_retry() { for i in {1..5}; do git push && return 0; git pull --rebase >/dev/null 2>&1; sleep \$((RANDOM % 3 + 1)); done; }
+if [ -f server_info.json ]; then
+    CURRENT_IP=\$(jq -r '.ip // \"pending\"' server_info.json)
+    CURRENT_PORT=\$(jq -r '.port // 0' server_info.json)
+else
+    CURRENT_IP=\"pending\"
+    CURRENT_PORT=0
+fi
+echo \"{\\\"ip\\\": \\\"\$CURRENT_IP\\\", \\\"port\\\": \$CURRENT_PORT, \\\"status\\\": \\\"stopped\\\"}\" > server_info.json
+echo \"requested\" > request_restore
+git add server_info.json request_restore
+git commit -m \"Server stopped, auto-restore requested\" || true
+push_with_retry
+"
+}
+
 graceful_shutdown() {
     echo "=== Termination signal received! Shutting down PZ server gracefully... ==="
     if kill -0 $PZ_PID 2>/dev/null; then
@@ -162,17 +183,7 @@ graceful_shutdown() {
         echo "Waiting for server to save local files and exit..."
         wait $PZ_PID
     fi
-    # Also mark as offline and request restore on next boot
-    gosu steam bash -c "
-cd /home/steam/pz-saves
-push_with_retry() { for i in {1..5}; do git push && return 0; git pull --rebase >/dev/null 2>&1; sleep \$((RANDOM % 3 + 1)); done; }
-echo \"{\\\"status\\\": \\\"offline\\\"}\" > server_info.json
-echo \"requested\" > request_restore
-git add server_info.json request_restore
-git commit -m \"Server offline, auto-restore requested\" || true
-export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
-push_with_retry
-"
+    mark_server_stopped
     exit 0
 }
 
@@ -239,4 +250,7 @@ echo "=== Project Zomboid Server exited with code $EXIT_CODE ==="
 if [ $EXIT_CODE -ne 0 ]; then
     echo "ERROR: Server crashed unexpectedly! Sleeping for $WAIT_ON_CRASH_SEC seconds to preserve logs for debugging..."
     sleep $WAIT_ON_CRASH_SEC
+else
+    echo "Server exited cleanly. Marking as stopped..."
+    mark_server_stopped
 fi
