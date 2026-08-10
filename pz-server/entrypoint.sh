@@ -63,6 +63,19 @@ git add server_info.json
 git commit -m \"Server booting up, waiting for IP configuration\" || true
 export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
 push_with_retry
+
+echo \"Waiting for user to replace 'pending' with the real IP in server_info.json...\"
+while true; do
+    git pull >/dev/null 2>&1
+    if [ -f server_info.json ]; then
+        CURRENT_IP=\$(jq -r '.ip' server_info.json)
+        if [ \"\$CURRENT_IP\" != \"pending\" ] && [ \"\$CURRENT_IP\" != \"null\" ] && [ -n \"\$CURRENT_IP\" ]; then
+            break
+        fi
+    fi
+    sleep 10
+done
+echo \"IP configured as \$CURRENT_IP. Continuing boot...\"
 "
 
 echo "=== Checking Restore Request ==="
@@ -203,24 +216,14 @@ while ! grep -q "\*\*\* SERVER STARTED \*\*\*" /tmp/server.log; do
 done
 
 if kill -0 $PZ_PID 2>/dev/null; then
-    echo "Server is fully started. Waiting for manual IP configuration..."
+    echo "Server is fully started. Marking as online..."
     # Let Autosaver know it's online
     gosu steam bash -c "
 cd /home/steam/pz-saves
 export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
-while true; do
-    git pull >/dev/null 2>&1
-    if [ -f server_info.json ]; then
-        CURRENT_IP=\$(jq -r '.ip' server_info.json)
-        if [ \"\$CURRENT_IP\" != \"pending\" ] && [ \"\$CURRENT_IP\" != \"null\" ] && [ -n \"\$CURRENT_IP\" ]; then
-            break
-        fi
-    fi
-    echo \"Waiting for user to replace 'pending' with the real IP in server_info.json...\"
-    sleep 10
-done
+CURRENT_IP=\$(jq -r '.ip' server_info.json)
 
-echo \"IP configured as \$CURRENT_IP. Marking server as online!\"
+echo \"Marking server as online at \$CURRENT_IP!\"
 push_with_retry() { for i in {1..5}; do git push && return 0; git pull --rebase >/dev/null 2>&1; sleep \$((RANDOM % 3 + 1)); done; }
 echo \"{\\\"ip\\\": \\\"\$CURRENT_IP\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"online\\\"}\" > server_info.json
 git add server_info.json
