@@ -15,13 +15,14 @@ def rcon_command(host, port, password, command):
         size = 10 + len(body)
         s.send(struct.pack('<iii', size, packet_id, packet_type) + body)
         
-        # First response is a generic response
+        # Read Auth response
         resp_size, resp_id, resp_type = struct.unpack('<iii', s.recv(12))
         s.recv(resp_size - 8)
         
-        # Second response is the actual Auth response
-        resp_size, resp_id, resp_type = struct.unpack('<iii', s.recv(12))
-        s.recv(resp_size - 8)
+        # Some servers send a dummy response (type 0) before the auth response (type 2)
+        if resp_type != 2:
+            resp_size, resp_id, resp_type = struct.unpack('<iii', s.recv(12))
+            s.recv(resp_size - 8)
         
         if resp_id == -1:
             print("RCON Auth Failed")
