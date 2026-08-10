@@ -16,10 +16,10 @@ COPY mods.json /steamcmd/mods.json
 RUN if [ -s /steamcmd/mods.json ]; then \
         if jq -e '. | type == "array" and length > 0' /steamcmd/mods.json > /dev/null 2>&1; then \
             echo "@sSteamCmdForcePlatformType linux" > /steamcmd/download_mods.txt && \
-            echo "login anonymous" >> /steamcmd/download_mods.txt && \
             echo "force_install_dir /pz-server" >> /steamcmd/download_mods.txt && \
+            echo "login anonymous" >> /steamcmd/download_mods.txt && \
             jq -r '.[]' /steamcmd/mods.json | while read mod; do \
-                echo "workshop_download_item 380870 $mod" >> /steamcmd/download_mods.txt; \
+                echo "workshop_download_item 108600 $mod" >> /steamcmd/download_mods.txt; \
             done && \
             echo "quit" >> /steamcmd/download_mods.txt && \
             /steamcmd/steamcmd.sh +runscript /steamcmd/download_mods.txt; \

@@ -60,8 +60,8 @@ echo "=== Setting up Directories ==="
 gosu steam mkdir -p /home/steam/Zomboid/Server /home/steam/Zomboid/Saves /home/steam/Zomboid/db /home/steam/Zomboid/mods
 
 echo "=== Linking Workshop Mods ==="
-if [ -d /home/steam/pz-server/steamapps/workshop/content/380870 ]; then
-    find /home/steam/pz-server/steamapps/workshop/content/380870 -maxdepth 2 -type d -name "mods" | while read -r mod_dir; do
+if [ -d /home/steam/pz-server/steamapps/workshop/content/108600 ]; then
+    find /home/steam/pz-server/steamapps/workshop/content/108600 -maxdepth 2 -type d -name "mods" | while read -r mod_dir; do
         ln -sf "$mod_dir"/* /home/steam/Zomboid/mods/
     done
     echo "Workshop mods linked successfully."
