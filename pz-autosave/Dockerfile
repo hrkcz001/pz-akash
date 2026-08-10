@@ -9,6 +9,9 @@ COPY autosave.sh /usr/local/bin/autosave.sh
 COPY rcon.py /usr/local/bin/rcon.py
 RUN dos2unix /usr/local/bin/autosave.sh /usr/local/bin/rcon.py && chmod +x /usr/local/bin/autosave.sh
 
+# Bundle any local backups dropped into the local_backups folder
+COPY local_backups/ /data/backups/
+
 WORKDIR /data
 
 CMD ["/usr/local/bin/autosave.sh"]
