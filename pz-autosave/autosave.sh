@@ -4,7 +4,7 @@ echo "=== Starting Zomboid Autosave Service ==="
 # 1. Setup SSH key
 mkdir -p /root/.ssh
 chmod 700 /root/.ssh
-echo "$SSH_PRIVATE_KEY_BASE64" | tr -d ' ' | base64 -d > /root/.ssh/id_rsa
+echo "$SSH_PRIVATE_KEY_BASE64" | tr -d ' "\r\n' | base64 -d > /root/.ssh/id_rsa
 chmod 600 /root/.ssh/id_rsa
 export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no"
 
@@ -113,13 +113,12 @@ while true; do
                 ssh -p $SERVER_PORT -o StrictHostKeyChecking=no steam@$SERVER_IP "cd /home/steam/Zomboid/Saves && zip -q -r - ." > /data/backups/$BACKUP_NAME
                 
                 echo $CURRENT_TIME > /data/last_backup_time
-                echo $BACKUP_NAME >> backup_log
                 
                 # Auto-set the latest backup into restore_target
                 echo $BACKUP_NAME > restore_target
                 
                 > backup_request
-                git add backup_log backup_request restore_target
+                git add backup_request restore_target
                 git commit -m "Created safe backup $BACKUP_NAME and updated restore_target" || true
                 push_with_retry
                 
@@ -130,6 +129,17 @@ while true; do
     
     # Cleanup old backups
     find /data/backups -name "backup_*.zip" -type f -mtime +$BACKUP_RETENTION_DAYS -delete
+
+    # Actualize backup_log to only contain existing zip files
+    ls -1 /data/backups | grep '\.zip$' | sort -r > backup_log.tmp
+    if ! cmp -s backup_log backup_log.tmp; then
+        mv backup_log.tmp backup_log
+        git add backup_log
+        git commit -m "Update backup_log to match available backups" || true
+        push_with_retry
+    else
+        rm -f backup_log.tmp
+    fi
 
     sleep $AUTOSAVER_POLL_SEC
 done
