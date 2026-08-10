@@ -79,18 +79,19 @@ while true; do
                         
                         ssh -p $SERVER_PORT -o StrictHostKeyChecking=no steam@$SERVER_IP "mkdir -p /home/steam/Zomboid/Saves && cd /home/steam/Zomboid/Saves && rm -rf * && unzip -o /tmp/$TARGET && rm /tmp/$TARGET"
                         
-                        git commit -m "Restore of $TARGET completed" || true
                         echo "Restore completed."
-                        
                         echo "Clearing request_restore completely"
                         rm -f request_restore
                         git rm request_restore 2>/dev/null || true
+                        
+                        git commit -m "Restore of $TARGET completed and request_restore cleared" || true
                     else
                         echo "ERROR: Backup $TARGET not found in /data/backups/"
-                        git commit -m "Restore failed: $TARGET not found" || true
                         
                         echo "failed" > request_restore
                         git add request_restore
+                        
+                        git commit -m "Restore failed: $TARGET not found" || true
                     fi
                     push_with_retry
                 fi
