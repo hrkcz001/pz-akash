@@ -36,8 +36,8 @@ push_with_retry() {
 
 mkdir -p /data/backups
 cd /data/backups
-echo "=== Starting HTTP File Server on port $HTTP_PORT ==="
-python3 -m http.server $HTTP_PORT &
+echo "=== Starting HTTP File & Upload Server on port $HTTP_PORT ==="
+python3 -m uploadserver $HTTP_PORT &
 
 cd /root/pz-saves
 # Ensure files exist to avoid errors
