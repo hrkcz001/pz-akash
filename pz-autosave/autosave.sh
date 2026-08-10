@@ -81,13 +81,17 @@ while true; do
                         
                         git commit -m "Restore of $TARGET completed" || true
                         echo "Restore completed."
+                        
+                        echo "Clearing request_restore completely"
+                        rm -f request_restore
+                        git rm request_restore 2>/dev/null || true
                     else
                         echo "ERROR: Backup $TARGET not found in /data/backups/"
                         git commit -m "Restore failed: $TARGET not found" || true
+                        
+                        echo "failed" > request_restore
+                        git add request_restore
                     fi
-                    echo "Clearing request_restore completely"
-                    rm -f request_restore
-                    git rm request_restore 2>/dev/null || true
                     push_with_retry
                 fi
             fi

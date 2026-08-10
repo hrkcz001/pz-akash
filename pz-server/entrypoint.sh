@@ -94,6 +94,24 @@ push_with_retry
 "
         echo "WAITING FOR AUTOSAVER TO RESTORE: $TARGET"
         while [ -f /home/steam/pz-saves/request_restore ]; do
+            CURRENT_STATE=$(cat /home/steam/pz-saves/request_restore | tr -d '\n' | tr '[:upper:]' '[:lower:]' | tr -d '\r')
+            if [ "$CURRENT_STATE" = "failed" ]; then
+                echo "CRITICAL ERROR: Autosaver reported that the backup file was not found!"
+                echo "Aborting startup to prevent overwriting your save data with a fresh world."
+                gosu steam bash -c "
+cd /home/steam/pz-saves
+export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
+CURRENT_IP=\$(jq -r '.ip // \"pending\"' server_info.json)
+CURRENT_PORT=\$(jq -r '.port // 0' server_info.json)
+echo \"{\\\"ip\\\": \\\"\$CURRENT_IP\\\", \\\"port\\\": \$CURRENT_PORT, \\\"status\\\": \\\"error\\\"}\" > server_info.json
+git add server_info.json
+git commit -m \"Server startup aborted due to missing backup\" || true
+push_with_retry
+"
+                echo "Sleeping for 1800 seconds (30 minutes) to preserve logs and prevent restart loops..."
+                sleep 1800
+                exit 1
+            fi
             sleep $RESTORE_POLL_INTERVAL_SEC
             gosu steam bash -c "cd /home/steam/pz-saves && export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\" && git pull > /dev/null 2>&1"
         done
