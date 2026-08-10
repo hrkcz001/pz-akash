@@ -4,7 +4,7 @@ echo "=== Starting Zomboid Autosave Service ==="
 # 1. Setup SSH key
 mkdir -p /root/.ssh
 chmod 700 /root/.ssh
-echo "$SSH_PRIVATE_KEY_BASE64" | base64 -d > /root/.ssh/id_rsa
+echo "$SSH_PRIVATE_KEY_BASE64" | tr -d ' ' | base64 -d > /root/.ssh/id_rsa
 chmod 600 /root/.ssh/id_rsa
 export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no"
 

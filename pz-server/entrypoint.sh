@@ -18,7 +18,7 @@ echo "Port $SSH_PORT" >> /etc/ssh/sshd_config
 # 2. Setup Steam SSH keys so Autosaver can SSH as steam
 mkdir -p /home/steam/.ssh
 chmod 700 /home/steam/.ssh
-echo "$SSH_PRIVATE_KEY_BASE64" | base64 -d > /home/steam/.ssh/id_rsa
+echo "$SSH_PRIVATE_KEY_BASE64" | tr -d ' ' | base64 -d > /home/steam/.ssh/id_rsa
 chmod 600 /home/steam/.ssh/id_rsa
 ssh-keygen -y -f /home/steam/.ssh/id_rsa > /home/steam/.ssh/id_rsa.pub
 cat /home/steam/.ssh/id_rsa.pub > /home/steam/.ssh/authorized_keys
