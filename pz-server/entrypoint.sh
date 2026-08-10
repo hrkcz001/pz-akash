@@ -192,11 +192,28 @@ else
 fi
 
 cd "$PZ_DIR"
-gosu steam "$PZ_PATH" -nosteam -servername "$SERVER_NAME" -adminpassword "$ADMIN_PASSWORD" -cachedir=/home/steam/Zomboid -Xmx$SERVER_MEMORY_MAX -Xms$SERVER_MEMORY_MIN &
+touch /tmp/server.log
+chown steam:steam /tmp/server.log
+
+gosu steam "$PZ_PATH" -nosteam -servername "$SERVER_NAME" -adminpassword "$ADMIN_PASSWORD" -cachedir=/home/steam/Zomboid -Xmx$SERVER_MEMORY_MAX -Xms$SERVER_MEMORY_MIN > /tmp/server.log 2>&1 &
 PZ_PID=$!
 
-# Let Autosaver know it's online
-gosu steam bash -c "
+tail -f /tmp/server.log &
+TAIL_PID=$!
+
+echo "Waiting for server to be fully started..."
+while ! grep -q "\*\*\* SERVER STARTED \*\*\*" /tmp/server.log; do
+    if ! kill -0 $PZ_PID 2>/dev/null; then
+        echo "Server process died during startup!"
+        break
+    fi
+    sleep 2
+done
+
+if kill -0 $PZ_PID 2>/dev/null; then
+    echo "Server is now fully online!"
+    # Let Autosaver know it's online
+    gosu steam bash -c "
 cd /home/steam/pz-saves
 push_with_retry() { for i in {1..5}; do git push && return 0; git pull --rebase >/dev/null 2>&1; sleep \$((RANDOM % 3 + 1)); done; }
 echo \"{\\\"ip\\\": \\\"$MY_IP\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"online\\\"}\" > server_info.json
@@ -205,9 +222,11 @@ git commit -m \"Server online\" || true
 export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
 push_with_retry
 "
+fi
 
 wait $PZ_PID
 EXIT_CODE=$?
+kill $TAIL_PID 2>/dev/null || true
 echo "=== Project Zomboid Server exited with code $EXIT_CODE ==="
 
 if [ $EXIT_CODE -ne 0 ]; then
