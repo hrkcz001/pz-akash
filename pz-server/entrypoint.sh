@@ -58,25 +58,36 @@ push_with_retry() {
         sleep \$((RANDOM % 3 + 1))
     done
 }
-echo \"{\\\"ip\\\": \\\"pending\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"booting\\\"}\" > server_info.json
+if [ -f server_info.json ]; then
+    CURRENT_IP=\$(jq -r '.ip // \"pending\"' server_info.json)
+    if [ \"\$CURRENT_IP\" = \"null\" ] || [ -z \"\$CURRENT_IP\" ]; then CURRENT_IP=\"pending\"; fi
+else
+    CURRENT_IP=\"pending\"
+fi
+echo \"{\\\"ip\\\": \\\"\$CURRENT_IP\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"booting\\\"}\" > server_info.json
 git add server_info.json
-git commit -m \"Server booting up, waiting for IP configuration\" || true
+git commit -m \"Server booting up, status set to booting\" || true
 export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
 push_with_retry
 
-echo \"Waiting for user to replace 'pending' with the real IP in server_info.json...\"
+echo \"Checking IP configuration in server_info.json...\"
 while true; do
+    if [ \"\$CURRENT_IP\" != \"pending\" ] && [ \"\$CURRENT_IP\" != \"null\" ] && [ -n \"\$CURRENT_IP\" ]; then
+        break
+    fi
+    echo \"Waiting for user to replace 'pending' with the real IP in server_info.json...\"
+    sleep 10
     git pull >/dev/null 2>&1
     if [ -f server_info.json ]; then
         CURRENT_IP=\$(jq -r '.ip' server_info.json)
-        if [ \"\$CURRENT_IP\" != \"pending\" ] && [ \"\$CURRENT_IP\" != \"null\" ] && [ -n \"\$CURRENT_IP\" ]; then
-            break
-        fi
     fi
-    sleep 10
 done
 echo \"IP configured as \$CURRENT_IP. Continuing boot...\"
 "
+
+# 4. Setup Directories (runs as steam)
+echo "=== Setting up Directories ==="
+gosu steam mkdir -p /home/steam/Zomboid/Server /home/steam/Zomboid/Saves /home/steam/Zomboid/db /home/steam/Zomboid/mods
 
 echo "=== Checking for Existing Backup to Restore ==="
 if [ -f /home/steam/pz-saves/restore_target ]; then
@@ -120,9 +131,6 @@ push_with_retry
 fi
 
 # 5. Original logic for PZ setup (runs as steam)
-echo "=== Setting up Directories ==="
-gosu steam mkdir -p /home/steam/Zomboid/Server /home/steam/Zomboid/Saves /home/steam/Zomboid/db /home/steam/Zomboid/mods
-
 echo "=== Linking Workshop Mods ==="
 if [ -d /home/steam/pz-server/steamapps/workshop/content/108600 ]; then
     find /home/steam/pz-server/steamapps/workshop/content/108600 -maxdepth 2 -type d -name "mods" | while read -r mod_dir; do
