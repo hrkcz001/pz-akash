@@ -1,14 +1,15 @@
-name: Build and Publish Docker Image
+name: Build and Publish Autosave Image
 
 on:
   push:
     branches: [ "main", "master" ]
+    paths:
+      - 'pz-autosave/**'
   workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
-  # github.repository is the format "owner/repo" (e.g. hrkcz001/pz-akash)
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: ${{ github.repository }}-autosave
 
 jobs:
   build-and-push-image:
@@ -40,7 +41,17 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
-          context: .
+          context: pz-autosave
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Update deployment.yaml with new image SHA
+        run: |
+          SHORT_SHA=$(git rev-parse --short HEAD)
+          sed -i "s|image: ghcr.io/hrkcz001/pz-akash-autosave:.*|image: ghcr.io/hrkcz001/pz-akash-autosave:sha-${SHORT_SHA}|g" pz-autosave/deployment.yaml
+          git config --global user.name 'github-actions[bot]'
+          git config --global user.email 'github-actions[bot]@users.noreply.github.com'
+          git add pz-autosave/deployment.yaml
+          git commit -m "chore(deploy): update pz-autosave image tag to sha-${SHORT_SHA} [skip ci]" || true
+          git push

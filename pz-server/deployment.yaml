@@ -2,7 +2,7 @@
 version: "2.0"
 services:
   pz-server:
-    image: ghcr.io/hrkcz001/pz-akash:sha-22829eb
+    image: ghcr.io/hrkcz001/pz-akash-server:latest
     expose:
       - port: 16261
         as: 16261
@@ -18,6 +18,12 @@ services:
             ip: pz-ip
       - port: 27015
         as: 27015
+        proto: tcp
+        to:
+          - global: true
+            ip: pz-ip
+      - port: 2222
+        as: 2222
         proto: tcp
         to:
           - global: true
