@@ -164,11 +164,15 @@ for d in /home/steam/Zomboid/mods/*; do
         MOD_ID=""
         MOD_INFO_FILE=""
         # Find the highest 42.x version subfolder that contains a mod.info.
-        # Handles 42, 42.0, 42.1, 42.2, etc. — picks the highest via version sort.
-        BEST_VERSION_DIR=$(find "$d" -maxdepth 1 -mindepth 1 -type d \( -name '42' -o -name '42.*' \) 2>/dev/null \
+        # Handles 42, 42.0, 42.1, 42.20, etc. — picks the highest via version sort.
+        # NOTE: We avoid `find` here because directory names with shell glob
+        # characters (e.g. "[B42] Mod Manager") can cause find to misinterpret
+        # brackets as character classes in the starting path.
+        # Use ls -d to expand globs against the literal path in $d.
+        BEST_VERSION_DIR=$(ls -d "$d"/42 "$d"/42.* 2>/dev/null \
             | sort -V -r \
             | while IFS= read -r vdir; do
-                if [ -f "$vdir/mod.info" ]; then
+                if [ -d "$vdir" ] && [ -f "$vdir/mod.info" ]; then
                     echo "$vdir"
                     break
                 fi
