@@ -159,18 +159,38 @@ for d in /home/steam/Zomboid/mods/*; do
     if [ -d "$d" ]; then
         # Read the canonical mod ID from mod.info
         # PZ mod.info uses "id=" as the field name (not "modId=")
+        # Build 42 mods often place their mod.info in a version subfolder
+        # (42/ or 42.0/). The game prioritizes these, so we should too.
         MOD_ID=""
-        if [ -f "$d/mod.info" ]; then
+        MOD_INFO_FILE=""
+        # Find the highest 42.x version subfolder that contains a mod.info.
+        # Handles 42, 42.0, 42.1, 42.2, etc. — picks the highest via version sort.
+        BEST_VERSION_DIR=$(find "$d" -maxdepth 1 -mindepth 1 -type d -name '42' -o -name '42.*' 2>/dev/null \
+            | sort -V -r \
+            | while IFS= read -r vdir; do
+                if [ -f "$vdir/mod.info" ]; then
+                    echo "$vdir"
+                    break
+                fi
+            done)
+        if [ -n "$BEST_VERSION_DIR" ]; then
+            MOD_INFO_FILE="$BEST_VERSION_DIR/mod.info"
+        fi
+        # Fall back to root mod.info if no versioned one exists
+        if [ -z "$MOD_INFO_FILE" ] && [ -f "$d/mod.info" ]; then
+            MOD_INFO_FILE="$d/mod.info"
+        fi
+        if [ -n "$MOD_INFO_FILE" ]; then
             # Try "id=" first (standard PZ format), then "modId=" (legacy)
-            MOD_ID=$(grep -i "^id=" "$d/mod.info" | head -n1 | cut -d= -f2- | tr -d '\r\n ')
+            MOD_ID=$(grep -i "^id=" "$MOD_INFO_FILE" | head -n1 | cut -d= -f2- | tr -d '\r\n ')
             if [ -z "$MOD_ID" ]; then
-                MOD_ID=$(grep -i "^modId=" "$d/mod.info" | head -n1 | cut -d= -f2- | tr -d '\r\n ')
+                MOD_ID=$(grep -i "^modId=" "$MOD_INFO_FILE" | head -n1 | cut -d= -f2- | tr -d '\r\n ')
             fi
         fi
-        # Fallback to folder name if mod.info is missing or has no id line
+        # Fallback to folder name if no mod.info found or has no id line
         if [ -z "$MOD_ID" ]; then
             MOD_ID=$(basename "$d")
-            echo "  [warn] No id= in $d/mod.info, using folder name: $MOD_ID"
+            echo "  [warn] No id= in mod.info for $d, using folder name: $MOD_ID"
         fi
         INSTALLED_MODS["$MOD_ID"]=1
     fi
@@ -223,34 +243,80 @@ fi
 echo "  Mods= finalized ($(echo "$FINAL_LIST" | tr ';' '\n' | wc -l) mods)"
 chown steam:steam "$INI_FILE"
 
-echo "=== Validating Map Directories ==="
-# Parse the Map= line from the server ini and verify each map entry is resolvable.
-# The PZ server finds maps by scanning mod directories for media/maps/<MapName>/.
-# If none are found the server crashes in WorldGen with a null worldgenTable error.
-INI_MAP_LINE=$(grep -i "^Map=" /home/steam/Zomboid/Server/${SERVER_NAME}.ini | head -n1 | cut -d= -f2-)
-if [ -z "$INI_MAP_LINE" ]; then
-    echo "WARNING: No Map= entry found in ${SERVER_NAME}.ini. Server may crash on worldgen."
-else
-    MISSING_MAPS=""
-    IFS=';' read -ra MAP_ENTRIES <<< "$INI_MAP_LINE"
-    for MAP_ENTRY in "${MAP_ENTRIES[@]}"; do
-        MAP_NAME=$(echo "$MAP_ENTRY" | xargs)  # trim whitespace
-        # Search for the map folder in vanilla data and linked mods
-        MAP_FOUND=$(find /home/steam/pz-server/media/maps \
-                         /home/steam/Zomboid/mods \
-                         -maxdepth 4 -type d -name "$MAP_NAME" 2>/dev/null | head -n1)
-        if [ -n "$MAP_FOUND" ]; then
-            echo "  [OK]      Map '$MAP_NAME' -> $MAP_FOUND"
+echo "=== Auto-configuring Maps in ${SERVER_NAME}.ini ==="
+# Discover maps provided by installed mods by scanning <mod>/common/media/maps/
+# Also checks versioned subfolders (e.g. 42.x/common/media/maps/) with highest version priority.
+declare -A INSTALLED_MAPS
+for d in /home/steam/Zomboid/mods/*; do
+    [ -d "$d" ] || continue
+    # Check versioned subfolders first (highest 42.x), then root
+    MAP_SEARCH_DIRS=""
+    BEST_VERSION_DIR=$(find "$d" -maxdepth 1 -mindepth 1 -type d -name '42' -o -name '42.*' 2>/dev/null \
+        | sort -V -r | head -n1)
+    if [ -n "$BEST_VERSION_DIR" ] && [ -d "$BEST_VERSION_DIR/common/media/maps" ]; then
+        MAP_SEARCH_DIRS="$BEST_VERSION_DIR/common/media/maps"
+    fi
+    # Also check root common/media/maps (some mods only have it here)
+    if [ -d "$d/common/media/maps" ]; then
+        MAP_SEARCH_DIRS="$MAP_SEARCH_DIRS $d/common/media/maps"
+    fi
+    for maps_dir in $MAP_SEARCH_DIRS; do
+        for map_entry in "$maps_dir"/*/; do
+            [ -d "$map_entry" ] || continue
+            MAP_NAME=$(basename "$map_entry")
+            if [ -z "${INSTALLED_MAPS[$MAP_NAME]+x}" ]; then
+                INSTALLED_MAPS["$MAP_NAME"]=1
+                echo "  [found] Map '$MAP_NAME' -> $map_entry"
+            fi
+        done
+    done
+done
+echo "  Discovered ${#INSTALLED_MAPS[@]} mod map(s)"
+
+# Reconcile with the declared Map= line: preserve order, strip missing, append new
+# "Muldraugh, KY" is the vanilla base map and is always kept.
+EXISTING_MAP_LINE=$(grep -i "^Map=" "$INI_FILE" | head -n1 | cut -d= -f2-)
+
+if [ -n "$EXISTING_MAP_LINE" ]; then
+    declare -A SEEN_MAPS
+    MAP_FINAL=""
+    MAP_REMOVED=""
+    IFS=';' read -ra DECLARED_MAPS <<< "$EXISTING_MAP_LINE"
+    for MAP in "${DECLARED_MAPS[@]}"; do
+        MAP=$(echo "$MAP" | xargs)  # trim whitespace
+        [ -z "$MAP" ] && continue
+        # Always keep vanilla map, otherwise check if mod map is still installed
+        if [ "$MAP" = "Muldraugh, KY" ] || [ -n "${INSTALLED_MAPS[$MAP]+x}" ]; then
+            if [ -z "$MAP_FINAL" ]; then MAP_FINAL="$MAP"; else MAP_FINAL="$MAP_FINAL;$MAP"; fi
+            SEEN_MAPS["$MAP"]=1
         else
-            echo "  [MISSING] Map '$MAP_NAME' not found in any mod or vanilla data!"
-            MISSING_MAPS="$MISSING_MAPS $MAP_NAME"
+            MAP_REMOVED="$MAP_REMOVED $MAP"
         fi
     done
-    if [ -n "$MISSING_MAPS" ]; then
-        echo "WARNING: The following maps were not found and will cause a WorldGen crash:$MISSING_MAPS"
-        echo "         Check that the corresponding workshop mods include a media/maps/<MapName>/ directory."
+    # Append any installed maps not already in the declared list
+    MAP_APPENDED=""
+    for MAP in "${!INSTALLED_MAPS[@]}"; do
+        if [ -z "${SEEN_MAPS[$MAP]+x}" ]; then
+            if [ -z "$MAP_FINAL" ]; then MAP_FINAL="$MAP"; else MAP_FINAL="$MAP_FINAL;$MAP"; fi
+            MAP_APPENDED="$MAP_APPENDED $MAP"
+        fi
+    done
+    if [ -n "$MAP_REMOVED" ]; then
+        echo "  [removed] Maps not found:$MAP_REMOVED"
     fi
+    if [ -n "$MAP_APPENDED" ]; then
+        echo "  [appended] New maps:$MAP_APPENDED"
+    fi
+    sed -i "s/^Map=.*/Map=$MAP_FINAL/" "$INI_FILE"
+else
+    # No existing Map= line — write vanilla + all discovered maps
+    MAP_FINAL="Muldraugh, KY"
+    for MAP in "${!INSTALLED_MAPS[@]}"; do
+        MAP_FINAL="$MAP_FINAL;$MAP"
+    done
+    echo "Map=$MAP_FINAL" >> "$INI_FILE"
 fi
+echo "  Map= finalized ($(echo "$MAP_FINAL" | tr ';' '\n' | wc -l) entries)"
 
 mark_server_stopped() {
     # Mark as stopped and request restore on next boot
