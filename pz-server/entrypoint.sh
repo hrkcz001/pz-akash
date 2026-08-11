@@ -408,6 +408,10 @@ fi
 
 cd "$PZ_DIR"
 
+# Ensure log file exists before launch (prevents tail race condition)
+touch /home/steam/server.log
+chown steam:steam /home/steam/server.log
+
 # Launch without -Xmx/-Xms CLI flags — those are unknown to pzexe and ignored.
 # Memory is now correctly set in ProjectZomboid64.json vmArgs above.
 gosu steam "$PZ_PATH" -nosteam -servername "$SERVER_NAME" -adminpassword "$ADMIN_PASSWORD" -cachedir=/home/steam/Zomboid > /home/steam/server.log 2>&1 &
