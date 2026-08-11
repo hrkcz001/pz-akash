@@ -309,7 +309,7 @@ fi
 MAP_APPENDED=""
 for MAP in "${!INSTALLED_MAPS[@]}"; do
     if [ -z "${SEEN_MAPS[$MAP]+x}" ]; then
-        MAP_FINAL="$MAP_FINAL;$MAP"
+        if [ -z "$MAP_FINAL" ]; then MAP_FINAL="$MAP"; else MAP_FINAL="$MAP_FINAL;$MAP"; fi
         MAP_APPENDED="$MAP_APPENDED $MAP"
     fi
 done
