@@ -1505,12 +1505,5 @@ SandboxVars = {
         VariableSpawnRateGunStoresRare = 1.0,
         -- Мин: 0,10 Макс: 10,00 По умолчанию: 1,50
         PlankStash = 1.5,
-    },
-    TikitownPower = {
-        -- Мин: -1,00 Макс: 10,00 По умолчанию: 2,00
-        DailyDegradeChance = 2.0,
-        -- Мин: 0,00 Макс: 5,00 По умолчанию: 1,10
-        RunningWearMultiplier = 1.1,
-        PartsCanBeDestroyed = true,
-    },
+    }
 }
