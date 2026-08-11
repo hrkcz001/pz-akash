@@ -8,6 +8,8 @@ ADMIN_PASSWORD=${ADMIN_PASSWORD:-"Qwerty01234**"}
 SERVER_MEMORY_MAX=${SERVER_MEMORY_MAX:-8192m}
 SERVER_MEMORY_MIN=${SERVER_MEMORY_MIN:-8192m}
 WAIT_ON_CRASH_SEC=${WAIT_ON_CRASH_SEC:-1800}
+AUTO_CONFIGURE_MODS=${AUTO_CONFIGURE_MODS:-true}
+AUTO_CONFIGURE_MAPS=${AUTO_CONFIGURE_MAPS:-true}
 
 # 1. Setup SSH Server
 echo "=== Setting up SSH Server ==="
@@ -152,210 +154,221 @@ echo "=== Copying Configs ==="
 gosu steam cp /home/steam/vsrania.ini /home/steam/Zomboid/Server/${SERVER_NAME}.ini
 gosu steam cp /home/steam/vsrania_SandboxVars.lua /home/steam/Zomboid/Server/${SERVER_NAME}_SandboxVars.lua
 
-echo "=== Auto-configuring Mods in ${SERVER_NAME}.ini ==="
-# 1. Build a set of all installed mod IDs by scanning mod directories
-declare -A INSTALLED_MODS
-for d in /home/steam/Zomboid/mods/*; do
-    if [ -d "$d" ]; then
-        # Read the canonical mod ID from mod.info
-        # PZ mod.info uses "id=" as the field name (not "modId=")
-        # Build 42 mods often place their mod.info in a version subfolder
-        # (42/ or 42.0/). The game prioritizes these, so we should too.
-        MOD_ID=""
-        MOD_INFO_FILE=""
-        # Find the highest 42.x version subfolder that contains a mod.info.
-        # Handles 42, 42.0, 42.1, 42.20, etc. — picks the highest via version sort.
-        # NOTE: We avoid find, ls -d, and even glob expansion on "$d"/42.*
-        # because directory names with shell glob characters (e.g. "[B42] Mod
-        # Manager") cause the brackets to be interpreted as character classes
-        # during pathname expansion. Instead, we loop over ALL children of $d
-        # and filter by basename regex — no globbing touches the parent path.
-        BEST_VERSION_DIR=""
+if [ "$AUTO_CONFIGURE_MODS" = "true" ]; then
+    echo "=== Auto-configuring Mods in ${SERVER_NAME}.ini ==="
+    # 1. Build a set of all installed mod IDs by scanning mod directories
+    declare -A INSTALLED_MODS
+    for d in /home/steam/Zomboid/mods/*; do
         if [ -d "$d" ]; then
-            BEST_VERSION_DIR=$(
-                for entry in "$d"/*/; do
-                    [ -d "$entry" ] || continue
-                    bname=$(basename "$entry")
-                    case "$bname" in
-                        42|42.*) echo "$entry" ;;
-                    esac
-                done | sort -V -r | while IFS= read -r vdir; do
-                    if [ -f "$vdir/mod.info" ]; then
-                        printf '%s' "$vdir"
-                        break
-                    fi
-                done
-            )
-        fi
-        if [ -n "$BEST_VERSION_DIR" ]; then
-            MOD_INFO_FILE="$BEST_VERSION_DIR/mod.info"
-        fi
-        # Fall back to root mod.info (legacy/B41 style)
-        if [ -z "$MOD_INFO_FILE" ] && [ -f "$d/mod.info" ]; then
-            MOD_INFO_FILE="$d/mod.info"
-        fi
-        # Fall back to common/mod.info as last resort (non-standard location,
-        # but some mods like CommonSense, better-auto-mechanics use it)
-        if [ -z "$MOD_INFO_FILE" ] && [ -f "$d/common/mod.info" ]; then
-            MOD_INFO_FILE="$d/common/mod.info"
-        fi
-        if [ -n "$MOD_INFO_FILE" ]; then
-            # Try "id=" first (standard PZ format), then "modId=" (legacy)
-            # Strip UTF-8 BOM (\xEF\xBB\xBF) and tolerate leading whitespace
-            MOD_ID=$(sed 's/^\xEF\xBB\xBF//' "$MOD_INFO_FILE" | grep -i "^\s*id=" | head -n1 | sed 's/^[[:space:]]*[iI][dD]=//' | tr -d '\r\n ')
-            if [ -z "$MOD_ID" ]; then
-                MOD_ID=$(sed 's/^\xEF\xBB\xBF//' "$MOD_INFO_FILE" | grep -i "^\s*modId=" | head -n1 | sed 's/^[[:space:]]*[mM][oO][dD][iI][dD]=//' | tr -d '\r\n ')
+            # Read the canonical mod ID from mod.info
+            # PZ mod.info uses "id=" as the field name (not "modId=")
+            # Build 42 mods often place their mod.info in a version subfolder
+            # (42/ or 42.0/). The game prioritizes these, so we should too.
+            MOD_ID=""
+            MOD_INFO_FILE=""
+            # Find the highest 42.x version subfolder that contains a mod.info.
+            # Handles 42, 42.0, 42.1, 42.20, etc. — picks the highest via version sort.
+            # NOTE: We avoid find, ls -d, and even glob expansion on "$d"/42.*
+            # because directory names with shell glob characters (e.g. "[B42] Mod
+            # Manager") cause the brackets to be interpreted as character classes
+            # during pathname expansion. Instead, we loop over ALL children of $d
+            # and filter by basename regex — no globbing touches the parent path.
+            BEST_VERSION_DIR=""
+            if [ -d "$d" ]; then
+                BEST_VERSION_DIR=$(
+                    for entry in "$d"/*/; do
+                        [ -d "$entry" ] || continue
+                        bname=$(basename "$entry")
+                        case "$bname" in
+                            42|42.*) echo "$entry" ;;
+                        esac
+                    done | sort -V -r | while IFS= read -r vdir; do
+                        if [ -f "$vdir/mod.info" ]; then
+                            printf '%s' "$vdir"
+                            break
+                        fi
+                    done
+                )
             fi
-        fi
-        # Fallback to folder name if no mod.info found or has no id line
-        if [ -z "$MOD_ID" ]; then
-            MOD_ID=$(basename "$d")
-            echo "  [warn] No id= in mod.info for $d, using folder name: $MOD_ID"
-        fi
-        INSTALLED_MODS["$MOD_ID"]=1
-    fi
-done
-echo "  Discovered ${#INSTALLED_MODS[@]} installed mod(s)"
-
-# 2. Reconcile with the declared Mods= line: preserve order, strip missing, append new
-INI_FILE="/home/steam/Zomboid/Server/${SERVER_NAME}.ini"
-MODS_LINE_EXISTS=$(grep -c "^Mods=" "$INI_FILE")
-EXISTING_MODS_LINE=$(grep "^Mods=" "$INI_FILE" | head -n1 | cut -d= -f2-)
-
-FINAL_LIST=""
-declare -A SEEN_MODS
-
-if [ -n "$EXISTING_MODS_LINE" ]; then
-    # Walk the declared list: keep entries that are installed, drop the rest
-    REMOVED=""
-    IFS=';' read -ra DECLARED <<< "$EXISTING_MODS_LINE"
-    for MOD in "${DECLARED[@]}"; do
-        MOD=$(echo "$MOD" | xargs)  # trim whitespace
-        [ -z "$MOD" ] && continue
-        if [ -n "${INSTALLED_MODS[$MOD]+x}" ]; then
-            if [ -z "$FINAL_LIST" ]; then FINAL_LIST="$MOD"; else FINAL_LIST="$FINAL_LIST;$MOD"; fi
-            SEEN_MODS["$MOD"]=1
-        else
-            REMOVED="$REMOVED $MOD"
+            if [ -n "$BEST_VERSION_DIR" ]; then
+                MOD_INFO_FILE="$BEST_VERSION_DIR/mod.info"
+            fi
+            # Fall back to root mod.info (legacy/B41 style)
+            if [ -z "$MOD_INFO_FILE" ] && [ -f "$d/mod.info" ]; then
+                MOD_INFO_FILE="$d/mod.info"
+            fi
+            # Fall back to common/mod.info as last resort (non-standard location,
+            # but some mods like CommonSense, better-auto-mechanics use it)
+            if [ -z "$MOD_INFO_FILE" ] && [ -f "$d/common/mod.info" ]; then
+                MOD_INFO_FILE="$d/common/mod.info"
+            fi
+            if [ -n "$MOD_INFO_FILE" ]; then
+                # Try "id=" first (standard PZ format), then "modId=" (legacy)
+                # Strip UTF-8 BOM (\xEF\xBB\xBF) and tolerate leading whitespace
+                MOD_ID=$(sed 's/^\xEF\xBB\xBF//' "$MOD_INFO_FILE" | grep -i "^\s*id=" | head -n1 | sed 's/^[[:space:]]*[iI][dD]=//' | tr -d '\r\n ')
+                if [ -z "$MOD_ID" ]; then
+                    MOD_ID=$(sed 's/^\xEF\xBB\xBF//' "$MOD_INFO_FILE" | grep -i "^\s*modId=" | head -n1 | sed 's/^[[:space:]]*[mM][oO][dD][iI][dD]=//' | tr -d '\r\n ')
+                fi
+            fi
+            # Fallback to folder name if no mod.info found or has no id line
+            if [ -z "$MOD_ID" ]; then
+                MOD_ID=$(basename "$d")
+                echo "  [warn] No id= in mod.info for $d, using folder name: $MOD_ID"
+            fi
+            INSTALLED_MODS["$MOD_ID"]=1
         fi
     done
-    if [ -n "$REMOVED" ]; then
-        echo "  [removed] Not installed:$REMOVED"
-    fi
-fi
+    echo "  Discovered ${#INSTALLED_MODS[@]} installed mod(s)"
 
-# Append any installed mods not already in the list
-APPENDED=""
-for MOD in "${!INSTALLED_MODS[@]}"; do
-    if [ -z "${SEEN_MODS[$MOD]+x}" ]; then
-        if [ -z "$FINAL_LIST" ]; then FINAL_LIST="$MOD"; else FINAL_LIST="$FINAL_LIST;$MOD"; fi
-        APPENDED="$APPENDED $MOD"
-    fi
-done
-if [ -n "$APPENDED" ]; then
-    echo "  [appended] New mods:$APPENDED"
-fi
+    # 2. Reconcile with the declared Mods= line: preserve order, strip missing, append new
+    INI_FILE="/home/steam/Zomboid/Server/${SERVER_NAME}.ini"
+    MODS_LINE_EXISTS=$(grep -c "^Mods=" "$INI_FILE")
+    EXISTING_MODS_LINE=$(grep "^Mods=" "$INI_FILE" | head -n1 | cut -d= -f2-)
 
-# Write the final Mods= line (replace in-place if it exists, otherwise append)
-if [ "$MODS_LINE_EXISTS" -gt 0 ] 2>/dev/null; then
-    sed -i "s/^Mods=.*/Mods=$FINAL_LIST/" "$INI_FILE"
-else
-    echo "Mods=$FINAL_LIST" >> "$INI_FILE"
-fi
-echo "  Mods= finalized ($(echo "$FINAL_LIST" | tr ';' '\n' | wc -l) mods)"
-chown steam:steam "$INI_FILE"
+    FINAL_LIST=""
+    declare -A SEEN_MODS
 
-echo "=== Auto-configuring Maps in ${SERVER_NAME}.ini ==="
-# Discover maps provided by installed mods by scanning <mod>/common/media/maps/
-# Prioritize the highest 42.x versioned subfolder if present.
-declare -A INSTALLED_MAPS
-for d in /home/steam/Zomboid/mods/*; do
-    [ -d "$d" ] || continue
-    MEDIA_MAPS_DIR=""
-    # Check highest 42.x versioned subfolder first
-    # NOTE: Same bracket-safe approach as the mods section above.
-    BEST_VERSION_DIR=""
-    BEST_VERSION_DIR=$(
-        for entry in "$d"/*/; do
-            [ -d "$entry" ] || continue
-            bname=$(basename "$entry")
-            case "$bname" in
-                42|42.*) echo "$entry" ;;
-            esac
-        done | sort -V -r | head -n1
-    )
-    if [ -n "$BEST_VERSION_DIR" ] && [ -d "$BEST_VERSION_DIR/common/media/maps" ]; then
-        MEDIA_MAPS_DIR="$BEST_VERSION_DIR/common/media/maps"
-    elif [ -d "$d/common/media/maps" ]; then
-        MEDIA_MAPS_DIR="$d/common/media/maps"
-    fi
-    if [ -n "$MEDIA_MAPS_DIR" ]; then
-        for map_entry in "$MEDIA_MAPS_DIR"/*/; do
-            [ -d "$map_entry" ] || continue
-            MAP_NAME=$(basename "$map_entry")
-            if [ -z "${INSTALLED_MAPS[$MAP_NAME]+x}" ]; then
-                INSTALLED_MAPS["$MAP_NAME"]=1
-                echo "  [found] Map '$MAP_NAME' -> $map_entry"
+    if [ -n "$EXISTING_MODS_LINE" ]; then
+        # Walk the declared list: keep entries that are installed, drop the rest
+        REMOVED=""
+        IFS=';' read -ra DECLARED <<< "$EXISTING_MODS_LINE"
+        for MOD in "${DECLARED[@]}"; do
+            MOD=$(echo "$MOD" | xargs)  # trim whitespace
+            [ -z "$MOD" ] && continue
+            if [ -n "${INSTALLED_MODS[$MOD]+x}" ]; then
+                if [ -z "$FINAL_LIST" ]; then FINAL_LIST="$MOD"; else FINAL_LIST="$FINAL_LIST;$MOD"; fi
+                SEEN_MODS["$MOD"]=1
+            else
+                REMOVED="$REMOVED $MOD"
             fi
         done
+        if [ -n "$REMOVED" ]; then
+            echo "  [removed] Not installed:$REMOVED"
+        fi
     fi
-done
-echo "  Discovered ${#INSTALLED_MAPS[@]} mod map(s)"
 
-# Reconcile with the declared Map= line: preserve order, strip missing, append new
-# "Muldraugh, KY" is the vanilla base map and is always appended LAST.
-# PZ loads maps left-to-right; mod maps must come first for proper priority.
-MAP_LINE_EXISTS=$(grep -ci "^Map=" "$INI_FILE")
-EXISTING_MAP_LINE=$(grep -i "^Map=" "$INI_FILE" | head -n1 | cut -d= -f2-)
-
-MAP_FINAL=""
-declare -A SEEN_MAPS
-
-if [ -n "$EXISTING_MAP_LINE" ]; then
-    # Walk the existing list: keep entries that still exist, drop the rest
-    MAP_FINAL=""
-    MAP_REMOVED=""
-    IFS=';' read -ra DECLARED_MAPS <<< "$EXISTING_MAP_LINE"
-    for MAP in "${DECLARED_MAPS[@]}"; do
-        MAP=$(echo "$MAP" | xargs)  # trim whitespace
-        [ -z "$MAP" ] && continue
-        # Skip vanilla map here; it will be appended at the end
-        [ "$MAP" = "Muldraugh, KY" ] && continue
-        if [ -n "${INSTALLED_MAPS[$MAP]+x}" ]; then
-            if [ -z "$MAP_FINAL" ]; then MAP_FINAL="$MAP"; else MAP_FINAL="$MAP_FINAL;$MAP"; fi
-            SEEN_MAPS["$MAP"]=1
-        else
-            MAP_REMOVED="$MAP_REMOVED $MAP"
+    # Append any installed mods not already in the list
+    APPENDED=""
+    for MOD in "${!INSTALLED_MODS[@]}"; do
+        if [ -z "${SEEN_MODS[$MOD]+x}" ]; then
+            if [ -z "$FINAL_LIST" ]; then FINAL_LIST="$MOD"; else FINAL_LIST="$FINAL_LIST;$MOD"; fi
+            APPENDED="$APPENDED $MOD"
         fi
     done
-
-    if [ -n "$MAP_REMOVED" ]; then
-        echo "  [removed] Maps not found:$MAP_REMOVED"
+    if [ -n "$APPENDED" ]; then
+        echo "  [appended] New mods:$APPENDED"
     fi
-fi
 
-# Append any discovered maps not already in the list
-MAP_APPENDED=""
-for MAP in "${!INSTALLED_MAPS[@]}"; do
-    if [ -z "${SEEN_MAPS[$MAP]+x}" ]; then
-        if [ -z "$MAP_FINAL" ]; then MAP_FINAL="$MAP"; else MAP_FINAL="$MAP_FINAL;$MAP"; fi
-        MAP_APPENDED="$MAP_APPENDED $MAP"
+    # Write the final Mods= line (replace in-place if it exists, otherwise append)
+    INI_FILE="/home/steam/Zomboid/Server/${SERVER_NAME}.ini"
+    MODS_LINE_EXISTS=$(grep -c "^Mods=" "$INI_FILE")
+    if [ "$MODS_LINE_EXISTS" -gt 0 ] 2>/dev/null; then
+        sed -i "s/^Mods=.*/Mods=$FINAL_LIST/" "$INI_FILE"
+    else
+        echo "Mods=$FINAL_LIST" >> "$INI_FILE"
     fi
-done
-if [ -n "$MAP_APPENDED" ]; then
-    echo "  [appended] New maps:$MAP_APPENDED"
-fi
-
-# Always append vanilla base map last
-if [ -z "$MAP_FINAL" ]; then MAP_FINAL="Muldraugh, KY"; else MAP_FINAL="$MAP_FINAL;Muldraugh, KY"; fi
-
-# Write the final Map= line (replace in-place if it exists, otherwise append)
-if [ "$MAP_LINE_EXISTS" -gt 0 ] 2>/dev/null; then
-    sed -i "s/^Map=.*/Map=$MAP_FINAL/" "$INI_FILE"
+    echo "  Mods= finalized ($(echo "$FINAL_LIST" | tr ';' '\n' | wc -l) mods)"
+    chown steam:steam "$INI_FILE"
 else
-    echo "Map=$MAP_FINAL" >> "$INI_FILE"
+    echo "=== Skipping Mods auto-configuration (AUTO_CONFIGURE_MODS=false) ==="
 fi
-echo "  Map= finalized ($(echo "$MAP_FINAL" | tr ';' '\n' | wc -l) entries)"
+
+if [ "$AUTO_CONFIGURE_MAPS" = "true" ]; then
+    echo "=== Auto-configuring Maps in ${SERVER_NAME}.ini ==="
+    # Discover maps provided by installed mods by scanning <mod>/common/media/maps/
+    # Prioritize the highest 42.x versioned subfolder if present.
+    declare -A INSTALLED_MAPS
+    for d in /home/steam/Zomboid/mods/*; do
+        [ -d "$d" ] || continue
+        MEDIA_MAPS_DIR=""
+        # Check highest 42.x versioned subfolder first
+        # NOTE: Same bracket-safe approach as the mods section above.
+        BEST_VERSION_DIR=""
+        BEST_VERSION_DIR=$(
+            for entry in "$d"/*/; do
+                [ -d "$entry" ] || continue
+                bname=$(basename "$entry")
+                case "$bname" in
+                    42|42.*) echo "$entry" ;;
+                esac
+            done | sort -V -r | head -n1
+        )
+        if [ -n "$BEST_VERSION_DIR" ] && [ -d "$BEST_VERSION_DIR/common/media/maps" ]; then
+            MEDIA_MAPS_DIR="$BEST_VERSION_DIR/common/media/maps"
+        elif [ -d "$d/common/media/maps" ]; then
+            MEDIA_MAPS_DIR="$d/common/media/maps"
+        fi
+        if [ -n "$MEDIA_MAPS_DIR" ]; then
+            for map_entry in "$MEDIA_MAPS_DIR"/*/; do
+                [ -d "$map_entry" ] || continue
+                MAP_NAME=$(basename "$map_entry")
+                if [ -z "${INSTALLED_MAPS[$MAP_NAME]+x}" ]; then
+                    INSTALLED_MAPS["$MAP_NAME"]=1
+                    echo "  [found] Map '$MAP_NAME' -> $map_entry"
+                fi
+            done
+        fi
+    done
+    echo "  Discovered ${#INSTALLED_MAPS[@]} mod map(s)"
+
+    # Reconcile with the declared Map= line: preserve order, strip missing, append new
+    # "Muldraugh, KY" is the vanilla base map and is always appended LAST.
+    # PZ loads maps left-to-right; mod maps must come first for proper priority.
+    INI_FILE="/home/steam/Zomboid/Server/${SERVER_NAME}.ini"
+    MAP_LINE_EXISTS=$(grep -ci "^Map=" "$INI_FILE")
+    EXISTING_MAP_LINE=$(grep -i "^Map=" "$INI_FILE" | head -n1 | cut -d= -f2-)
+
+    MAP_FINAL=""
+    declare -A SEEN_MAPS
+
+    if [ -n "$EXISTING_MAP_LINE" ]; then
+        # Walk the existing list: keep entries that still exist, drop the rest
+        MAP_FINAL=""
+        MAP_REMOVED=""
+        IFS=';' read -ra DECLARED_MAPS <<< "$EXISTING_MAP_LINE"
+        for MAP in "${DECLARED_MAPS[@]}"; do
+            MAP=$(echo "$MAP" | xargs)  # trim whitespace
+            [ -z "$MAP" ] && continue
+            # Skip vanilla map here; it will be appended at the end
+            [ "$MAP" = "Muldraugh, KY" ] && continue
+            if [ -n "${INSTALLED_MAPS[$MAP]+x}" ]; then
+                if [ -z "$MAP_FINAL" ]; then MAP_FINAL="$MAP"; else MAP_FINAL="$MAP_FINAL;$MAP"; fi
+                SEEN_MAPS["$MAP"]=1
+            else
+                MAP_REMOVED="$MAP_REMOVED $MAP"
+            fi
+        done
+
+        if [ -n "$MAP_REMOVED" ]; then
+            echo "  [removed] Maps not found:$MAP_REMOVED"
+        fi
+    fi
+
+    # Append any discovered maps not already in the list
+    MAP_APPENDED=""
+    for MAP in "${!INSTALLED_MAPS[@]}"; do
+        if [ -z "${SEEN_MAPS[$MAP]+x}" ]; then
+            if [ -z "$MAP_FINAL" ]; then MAP_FINAL="$MAP"; else MAP_FINAL="$MAP_FINAL;$MAP"; fi
+            MAP_APPENDED="$MAP_APPENDED $MAP"
+        fi
+    done
+    if [ -n "$MAP_APPENDED" ]; then
+        echo "  [appended] New maps:$MAP_APPENDED"
+    fi
+
+    # Always append vanilla base map last
+    if [ -z "$MAP_FINAL" ]; then MAP_FINAL="Muldraugh, KY"; else MAP_FINAL="$MAP_FINAL;Muldraugh, KY"; fi
+
+    # Write the final Map= line (replace in-place if it exists, otherwise append)
+    if [ "$MAP_LINE_EXISTS" -gt 0 ] 2>/dev/null; then
+        sed -i "s/^Map=.*/Map=$MAP_FINAL/" "$INI_FILE"
+    else
+        echo "Map=$MAP_FINAL" >> "$INI_FILE"
+    fi
+    echo "  Map= finalized ($(echo "$MAP_FINAL" | tr ';' '\n' | wc -l) entries)"
+else
+    echo "=== Skipping Maps auto-configuration (AUTO_CONFIGURE_MAPS=false) ==="
+fi
 
 mark_server_stopped() {
     # Mark as stopped and request restore on next boot
