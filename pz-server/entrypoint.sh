@@ -165,24 +165,39 @@ for d in /home/steam/Zomboid/mods/*; do
         MOD_INFO_FILE=""
         # Find the highest 42.x version subfolder that contains a mod.info.
         # Handles 42, 42.0, 42.1, 42.20, etc. — picks the highest via version sort.
-        # NOTE: We avoid `find` here because directory names with shell glob
-        # characters (e.g. "[B42] Mod Manager") can cause find to misinterpret
-        # brackets as character classes in the starting path.
-        # Use ls -d to expand globs against the literal path in $d.
-        BEST_VERSION_DIR=$(ls -d "$d"/42 "$d"/42.* 2>/dev/null \
-            | sort -V -r \
-            | while IFS= read -r vdir; do
-                if [ -d "$vdir" ] && [ -f "$vdir/mod.info" ]; then
-                    echo "$vdir"
-                    break
-                fi
-            done)
+        # NOTE: We avoid find, ls -d, and even glob expansion on "$d"/42.*
+        # because directory names with shell glob characters (e.g. "[B42] Mod
+        # Manager") cause the brackets to be interpreted as character classes
+        # during pathname expansion. Instead, we loop over ALL children of $d
+        # and filter by basename regex — no globbing touches the parent path.
+        BEST_VERSION_DIR=""
+        if [ -d "$d" ]; then
+            BEST_VERSION_DIR=$(
+                for entry in "$d"/*/; do
+                    [ -d "$entry" ] || continue
+                    bname=$(basename "$entry")
+                    case "$bname" in
+                        42|42.*) echo "$entry" ;;
+                    esac
+                done | sort -V -r | while IFS= read -r vdir; do
+                    if [ -f "$vdir/mod.info" ]; then
+                        printf '%s' "$vdir"
+                        break
+                    fi
+                done
+            )
+        fi
         if [ -n "$BEST_VERSION_DIR" ]; then
             MOD_INFO_FILE="$BEST_VERSION_DIR/mod.info"
         fi
-        # Fall back to root mod.info if no versioned one exists
+        # Fall back to root mod.info (legacy/B41 style)
         if [ -z "$MOD_INFO_FILE" ] && [ -f "$d/mod.info" ]; then
             MOD_INFO_FILE="$d/mod.info"
+        fi
+        # Fall back to common/mod.info as last resort (non-standard location,
+        # but some mods like CommonSense, better-auto-mechanics use it)
+        if [ -z "$MOD_INFO_FILE" ] && [ -f "$d/common/mod.info" ]; then
+            MOD_INFO_FILE="$d/common/mod.info"
         fi
         if [ -n "$MOD_INFO_FILE" ]; then
             # Try "id=" first (standard PZ format), then "modId=" (legacy)
@@ -258,8 +273,17 @@ for d in /home/steam/Zomboid/mods/*; do
     [ -d "$d" ] || continue
     MEDIA_MAPS_DIR=""
     # Check highest 42.x versioned subfolder first
-    BEST_VERSION_DIR=$(find "$d" -maxdepth 1 -mindepth 1 -type d \( -name '42' -o -name '42.*' \) 2>/dev/null \
-        | sort -V -r | head -n1)
+    # NOTE: Same bracket-safe approach as the mods section above.
+    BEST_VERSION_DIR=""
+    BEST_VERSION_DIR=$(
+        for entry in "$d"/*/; do
+            [ -d "$entry" ] || continue
+            bname=$(basename "$entry")
+            case "$bname" in
+                42|42.*) echo "$entry" ;;
+            esac
+        done | sort -V -r | head -n1
+    )
     if [ -n "$BEST_VERSION_DIR" ] && [ -d "$BEST_VERSION_DIR/common/media/maps" ]; then
         MEDIA_MAPS_DIR="$BEST_VERSION_DIR/common/media/maps"
     elif [ -d "$d/common/media/maps" ]; then
