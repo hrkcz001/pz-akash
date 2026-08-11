@@ -165,7 +165,7 @@ for d in /home/steam/Zomboid/mods/*; do
         MOD_INFO_FILE=""
         # Find the highest 42.x version subfolder that contains a mod.info.
         # Handles 42, 42.0, 42.1, 42.2, etc. — picks the highest via version sort.
-        BEST_VERSION_DIR=$(find "$d" -maxdepth 1 -mindepth 1 -type d -name '42' -o -name '42.*' 2>/dev/null \
+        BEST_VERSION_DIR=$(find "$d" -maxdepth 1 -mindepth 1 -type d \( -name '42' -o -name '42.*' \) 2>/dev/null \
             | sort -V -r \
             | while IFS= read -r vdir; do
                 if [ -f "$vdir/mod.info" ]; then
@@ -182,9 +182,10 @@ for d in /home/steam/Zomboid/mods/*; do
         fi
         if [ -n "$MOD_INFO_FILE" ]; then
             # Try "id=" first (standard PZ format), then "modId=" (legacy)
-            MOD_ID=$(grep -i "^id=" "$MOD_INFO_FILE" | head -n1 | cut -d= -f2- | tr -d '\r\n ')
+            # Strip UTF-8 BOM (\xEF\xBB\xBF) and tolerate leading whitespace
+            MOD_ID=$(sed 's/^\xEF\xBB\xBF//' "$MOD_INFO_FILE" | grep -i "^\s*id=" | head -n1 | sed 's/^[[:space:]]*[iI][dD]=//' | tr -d '\r\n ')
             if [ -z "$MOD_ID" ]; then
-                MOD_ID=$(grep -i "^modId=" "$MOD_INFO_FILE" | head -n1 | cut -d= -f2- | tr -d '\r\n ')
+                MOD_ID=$(sed 's/^\xEF\xBB\xBF//' "$MOD_INFO_FILE" | grep -i "^\s*modId=" | head -n1 | sed 's/^[[:space:]]*[mM][oO][dD][iI][dD]=//' | tr -d '\r\n ')
             fi
         fi
         # Fallback to folder name if no mod.info found or has no id line
