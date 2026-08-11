@@ -28,7 +28,7 @@ To force an immediate backup at any time:
 
 ### Halting the Server (Graceful Shutdown)
 To safely stop your server (which triggers a final backup, saves the world, sets the status to `stopped`, and prepares for a future restore):
-1. In your `pz-saves` repository, create an empty file named `halt_request` (or use the `halt_server.sh` script in the deployment repo).
+1. In your `pz-saves` repository, create an empty file named `halt_request`
 2. Commit and push the file.
 3. The Autosaver will perform a safe backup, update the `restore_target`, and issue a `quit` command to the server. The server will gracefully shut down and update `server_info.json` to `"stopped"`.
 

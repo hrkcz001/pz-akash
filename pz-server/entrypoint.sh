@@ -37,15 +37,6 @@ if [ ! -d /home/steam/pz-saves ]; then
 else
     cd /home/steam/pz-saves && git pull
 fi
-
-push_with_retry() {
-    for i in {1..5}; do
-        git push && return 0
-        git pull --rebase >/dev/null 2>&1
-        sleep \$((RANDOM % 3 + 1))
-    done
-    echo \"WARNING: Git push failed after 5 retries\"
-}
 "
 
 gosu steam bash -c "
@@ -165,7 +156,16 @@ echo "=== Auto-configuring Mods in ${SERVER_NAME}.ini ==="
 MODS_LIST=""
 for d in /home/steam/Zomboid/mods/*; do
     if [ -d "$d" ]; then
-        MOD_ID=$(basename "$d")
+        # Read the canonical mod ID from mod.info (PZ Mods= field uses modId, not folder name)
+        MOD_ID=""
+        if [ -f "$d/mod.info" ]; then
+            MOD_ID=$(grep -i "^modId=" "$d/mod.info" | head -n1 | cut -d= -f2- | tr -d '\r\n ')
+        fi
+        # Fallback to folder name if mod.info is missing or has no modId line
+        if [ -z "$MOD_ID" ]; then
+            MOD_ID=$(basename "$d")
+            echo "  [warn] No modId in $d/mod.info, using folder name: $MOD_ID"
+        fi
         if [ -z "$MODS_LIST" ]; then
             MODS_LIST="$MOD_ID"
         else
@@ -250,7 +250,7 @@ graceful_shutdown() {
 trap graceful_shutdown SIGTERM SIGINT
 
 echo "=== Starting Project Zomboid Dedicated Server ==="
-PZ_PATH=$(find /home/steam/pz-server / -name "start-server.sh" -o -name "StartServer64.sh" 2>/dev/null | head -n 1)
+PZ_PATH=$(find /home/steam/pz-server -name "start-server.sh" -o -name "StartServer64.sh" 2>/dev/null | head -n 1)
 if [ -z "$PZ_PATH" ]; then
     echo "ERROR: Server launch script not found!"
     exit 1
@@ -333,7 +333,8 @@ kill $TAIL_PID 2>/dev/null || true
 echo "=== Project Zomboid Server exited with code $EXIT_CODE ==="
 
 if [ $EXIT_CODE -ne 0 ]; then
-    echo "ERROR: Server crashed unexpectedly! Sleeping for $WAIT_ON_CRASH_SEC seconds to preserve logs for debugging..."
+    echo "ERROR: Server crashed unexpectedly! Marking as stopped and sleeping for $WAIT_ON_CRASH_SEC seconds to preserve logs..."
+    mark_server_stopped
     sleep $WAIT_ON_CRASH_SEC
 else
     echo "Server exited cleanly. Marking as stopped..."

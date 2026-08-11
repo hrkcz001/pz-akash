@@ -2,7 +2,7 @@
 version: "2.0"
 services:
   pz-server:
-    image: ghcr.io/hrkcz001/pz-akash-server:sha-f080cc4
+    image: ghcr.io/hrkcz001/pz-akash-server:sha-6251831
     expose:
       - port: 16261
         as: 16261
@@ -30,14 +30,15 @@ services:
             ip: pz-ip
     env:
       - >-
-        SSH_PRIVATE_KEY_BASE64=
+        SSH_PRIVATE_KEY_BASE64=YOUR_BASE64_ENCODED_SSH_PRIVATE_KEY_HERE
+      - REPO_URL=git@github.com:hrkcz001/pz-saves.git
       - GIT_USER_NAME=hrkcz001
       - GIT_USER_EMAIL=hrkcz001@gmail.com
       - SSH_PORT=2222
       - SERVER_NAME=vsrania
-      - ADMIN_PASSWORD=Qwerty0123**
-      - SERVER_MEMORY_MAX=8192m
-      - SERVER_MEMORY_MIN=8192m
+      - ADMIN_PASSWORD=CHANGE_ME
+      - SERVER_MEMORY_MAX=14336m
+      - SERVER_MEMORY_MIN=14336m
       - RESTORE_POLL_INTERVAL_SEC=10
       - WAIT_ON_CRASH_SEC=1800
 profiles:
@@ -45,11 +46,11 @@ profiles:
     pz-server:
       resources:
         cpu:
-          units: 4
+          units: 8
         memory:
-          size: 10Gi
+          size: 16Gi
         storage:
-          - size: 20Gi
+          - size: 30Gi
   placement:
     pz-placement:
       pricing:

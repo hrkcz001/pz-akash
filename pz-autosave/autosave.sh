@@ -49,7 +49,9 @@ push_with_retry
 echo "=== Entering Autosaver Loop ==="
 while true; do
     cd /root/pz-saves
-    git pull >/dev/null 2>&1
+    if ! git pull >/dev/null 2>&1; then
+        echo "WARNING: git pull failed — continuing with potentially stale state"
+    fi
     
     IS_PAUSED=false
     if [ -f pause_autosave ] && grep -iq "true" pause_autosave; then
@@ -119,12 +121,20 @@ while true; do
                     
                     # Stream zip safely directly from server to local disk
                     ssh -p $SERVER_PORT -o StrictHostKeyChecking=no steam@$SERVER_IP "cd /home/steam/Zomboid/Saves && zip -q -r - ." > /data/backups/$BACKUP_NAME
-                    
+                    BACKUP_EXIT=${PIPESTATUS[0]}
+
+                    # Validate the backup before committing it as the restore target
+                    if [ $BACKUP_EXIT -ne 0 ] || [ ! -s /data/backups/$BACKUP_NAME ]; then
+                        echo "ERROR: Backup $BACKUP_NAME failed or is empty (ssh/zip exit=$BACKUP_EXIT). Removing partial file."
+                        rm -f /data/backups/$BACKUP_NAME
+                        continue
+                    fi
+
                     echo $CURRENT_TIME > /data/last_backup_time
-                    
-                    # Auto-set the latest backup into restore_target
+
+                    # Auto-set the latest backup into restore_target only after validation
                     echo $BACKUP_NAME > restore_target
-                    
+
                     > backup_request
                     git add backup_request restore_target
                     git commit -m "Created safe backup $BACKUP_NAME and updated restore_target" || true
