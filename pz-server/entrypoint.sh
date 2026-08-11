@@ -153,36 +153,75 @@ gosu steam cp /home/steam/vsrania.ini /home/steam/Zomboid/Server/${SERVER_NAME}.
 gosu steam cp /home/steam/vsrania_SandboxVars.lua /home/steam/Zomboid/Server/${SERVER_NAME}_SandboxVars.lua
 
 echo "=== Auto-configuring Mods in ${SERVER_NAME}.ini ==="
-MODS_LIST=""
+# 1. Build a set of all installed mod IDs by scanning mod directories
+declare -A INSTALLED_MODS
 for d in /home/steam/Zomboid/mods/*; do
     if [ -d "$d" ]; then
-        # Read the canonical mod ID from mod.info (PZ Mods= field uses modId, not folder name)
+        # Read the canonical mod ID from mod.info
+        # PZ mod.info uses "id=" as the field name (not "modId=")
         MOD_ID=""
         if [ -f "$d/mod.info" ]; then
-            MOD_ID=$(grep -i "^modId=" "$d/mod.info" | head -n1 | cut -d= -f2- | tr -d '\r\n ')
+            # Try "id=" first (standard PZ format), then "modId=" (legacy)
+            MOD_ID=$(grep -i "^id=" "$d/mod.info" | head -n1 | cut -d= -f2- | tr -d '\r\n ')
+            if [ -z "$MOD_ID" ]; then
+                MOD_ID=$(grep -i "^modId=" "$d/mod.info" | head -n1 | cut -d= -f2- | tr -d '\r\n ')
+            fi
         fi
-        # Fallback to folder name if mod.info is missing or has no modId line
+        # Fallback to folder name if mod.info is missing or has no id line
         if [ -z "$MOD_ID" ]; then
             MOD_ID=$(basename "$d")
-            echo "  [warn] No modId in $d/mod.info, using folder name: $MOD_ID"
+            echo "  [warn] No id= in $d/mod.info, using folder name: $MOD_ID"
         fi
-        if [ -z "$MODS_LIST" ]; then
-            MODS_LIST="$MOD_ID"
-        else
-            MODS_LIST="$MODS_LIST;$MOD_ID"
-        fi
+        INSTALLED_MODS["$MOD_ID"]=1
     fi
 done
+echo "  Discovered ${#INSTALLED_MODS[@]} installed mod(s)"
 
-if [ -n "$MODS_LIST" ]; then
-    if grep -q "^Mods=" /home/steam/Zomboid/Server/${SERVER_NAME}.ini; then
-        sed -i "s/^Mods=/Mods=$MODS_LIST;/g" /home/steam/Zomboid/Server/${SERVER_NAME}.ini
-    else
-        echo "Mods=$MODS_LIST" >> /home/steam/Zomboid/Server/${SERVER_NAME}.ini
+# 2. Reconcile with the declared Mods= line: preserve order, strip missing, append new
+INI_FILE="/home/steam/Zomboid/Server/${SERVER_NAME}.ini"
+EXISTING_MODS_LINE=$(grep "^Mods=" "$INI_FILE" | head -n1 | cut -d= -f2-)
+
+if [ -n "$EXISTING_MODS_LINE" ]; then
+    # Walk the declared list: keep entries that are installed, drop the rest
+    declare -A SEEN_MODS
+    FINAL_LIST=""
+    REMOVED=""
+    IFS=';' read -ra DECLARED <<< "$EXISTING_MODS_LINE"
+    for MOD in "${DECLARED[@]}"; do
+        MOD=$(echo "$MOD" | xargs)  # trim whitespace
+        [ -z "$MOD" ] && continue
+        if [ -n "${INSTALLED_MODS[$MOD]+x}" ]; then
+            if [ -z "$FINAL_LIST" ]; then FINAL_LIST="$MOD"; else FINAL_LIST="$FINAL_LIST;$MOD"; fi
+            SEEN_MODS["$MOD"]=1
+        else
+            REMOVED="$REMOVED $MOD"
+        fi
+    done
+    # Append any installed mods not already in the declared list
+    APPENDED=""
+    for MOD in "${!INSTALLED_MODS[@]}"; do
+        if [ -z "${SEEN_MODS[$MOD]+x}" ]; then
+            if [ -z "$FINAL_LIST" ]; then FINAL_LIST="$MOD"; else FINAL_LIST="$FINAL_LIST;$MOD"; fi
+            APPENDED="$APPENDED $MOD"
+        fi
+    done
+    if [ -n "$REMOVED" ]; then
+        echo "  [removed] Not installed:$REMOVED"
     fi
-    echo "Added Mods to ${SERVER_NAME}.ini: $MODS_LIST"
+    if [ -n "$APPENDED" ]; then
+        echo "  [appended] New mods:$APPENDED"
+    fi
+    sed -i "s/^Mods=.*/Mods=$FINAL_LIST/" "$INI_FILE"
+else
+    # No existing Mods= line — write all discovered mods
+    FINAL_LIST=""
+    for MOD in "${!INSTALLED_MODS[@]}"; do
+        if [ -z "$FINAL_LIST" ]; then FINAL_LIST="$MOD"; else FINAL_LIST="$FINAL_LIST;$MOD"; fi
+    done
+    echo "Mods=$FINAL_LIST" >> "$INI_FILE"
 fi
-chown steam:steam /home/steam/Zomboid/Server/${SERVER_NAME}.ini
+echo "  Mods= finalized ($(echo "$FINAL_LIST" | tr ';' '\n' | wc -l) mods)"
+chown steam:steam "$INI_FILE"
 
 echo "=== Validating Map Directories ==="
 # Parse the Map= line from the server ini and verify each map entry is resolvable.
