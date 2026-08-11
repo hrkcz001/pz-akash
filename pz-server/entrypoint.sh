@@ -199,12 +199,14 @@ echo "  Discovered ${#INSTALLED_MODS[@]} installed mod(s)"
 
 # 2. Reconcile with the declared Mods= line: preserve order, strip missing, append new
 INI_FILE="/home/steam/Zomboid/Server/${SERVER_NAME}.ini"
+MODS_LINE_EXISTS=$(grep -c "^Mods=" "$INI_FILE")
 EXISTING_MODS_LINE=$(grep "^Mods=" "$INI_FILE" | head -n1 | cut -d= -f2-)
+
+FINAL_LIST=""
+declare -A SEEN_MODS
 
 if [ -n "$EXISTING_MODS_LINE" ]; then
     # Walk the declared list: keep entries that are installed, drop the rest
-    declare -A SEEN_MODS
-    FINAL_LIST=""
     REMOVED=""
     IFS=';' read -ra DECLARED <<< "$EXISTING_MODS_LINE"
     for MOD in "${DECLARED[@]}"; do
@@ -217,27 +219,27 @@ if [ -n "$EXISTING_MODS_LINE" ]; then
             REMOVED="$REMOVED $MOD"
         fi
     done
-    # Append any installed mods not already in the declared list
-    APPENDED=""
-    for MOD in "${!INSTALLED_MODS[@]}"; do
-        if [ -z "${SEEN_MODS[$MOD]+x}" ]; then
-            if [ -z "$FINAL_LIST" ]; then FINAL_LIST="$MOD"; else FINAL_LIST="$FINAL_LIST;$MOD"; fi
-            APPENDED="$APPENDED $MOD"
-        fi
-    done
     if [ -n "$REMOVED" ]; then
         echo "  [removed] Not installed:$REMOVED"
     fi
-    if [ -n "$APPENDED" ]; then
-        echo "  [appended] New mods:$APPENDED"
+fi
+
+# Append any installed mods not already in the list
+APPENDED=""
+for MOD in "${!INSTALLED_MODS[@]}"; do
+    if [ -z "${SEEN_MODS[$MOD]+x}" ]; then
+        if [ -z "$FINAL_LIST" ]; then FINAL_LIST="$MOD"; else FINAL_LIST="$FINAL_LIST;$MOD"; fi
+        APPENDED="$APPENDED $MOD"
     fi
+done
+if [ -n "$APPENDED" ]; then
+    echo "  [appended] New mods:$APPENDED"
+fi
+
+# Write the final Mods= line (replace in-place if it exists, otherwise append)
+if [ "$MODS_LINE_EXISTS" -gt 0 ] 2>/dev/null; then
     sed -i "s/^Mods=.*/Mods=$FINAL_LIST/" "$INI_FILE"
 else
-    # No existing Mods= line — write all discovered mods
-    FINAL_LIST=""
-    for MOD in "${!INSTALLED_MODS[@]}"; do
-        if [ -z "$FINAL_LIST" ]; then FINAL_LIST="$MOD"; else FINAL_LIST="$FINAL_LIST;$MOD"; fi
-    done
     echo "Mods=$FINAL_LIST" >> "$INI_FILE"
 fi
 echo "  Mods= finalized ($(echo "$FINAL_LIST" | tr ';' '\n' | wc -l) mods)"
@@ -245,23 +247,21 @@ chown steam:steam "$INI_FILE"
 
 echo "=== Auto-configuring Maps in ${SERVER_NAME}.ini ==="
 # Discover maps provided by installed mods by scanning <mod>/common/media/maps/
-# Also checks versioned subfolders (e.g. 42.x/common/media/maps/) with highest version priority.
+# Prioritize the highest 42.x versioned subfolder if present.
 declare -A INSTALLED_MAPS
 for d in /home/steam/Zomboid/mods/*; do
     [ -d "$d" ] || continue
-    # Check versioned subfolders first (highest 42.x), then root
-    MAP_SEARCH_DIRS=""
-    BEST_VERSION_DIR=$(find "$d" -maxdepth 1 -mindepth 1 -type d -name '42' -o -name '42.*' 2>/dev/null \
+    MEDIA_MAPS_DIR=""
+    # Check highest 42.x versioned subfolder first
+    BEST_VERSION_DIR=$(find "$d" -maxdepth 1 -mindepth 1 -type d \( -name '42' -o -name '42.*' \) 2>/dev/null \
         | sort -V -r | head -n1)
     if [ -n "$BEST_VERSION_DIR" ] && [ -d "$BEST_VERSION_DIR/common/media/maps" ]; then
-        MAP_SEARCH_DIRS="$BEST_VERSION_DIR/common/media/maps"
+        MEDIA_MAPS_DIR="$BEST_VERSION_DIR/common/media/maps"
+    elif [ -d "$d/common/media/maps" ]; then
+        MEDIA_MAPS_DIR="$d/common/media/maps"
     fi
-    # Also check root common/media/maps (some mods only have it here)
-    if [ -d "$d/common/media/maps" ]; then
-        MAP_SEARCH_DIRS="$MAP_SEARCH_DIRS $d/common/media/maps"
-    fi
-    for maps_dir in $MAP_SEARCH_DIRS; do
-        for map_entry in "$maps_dir"/*/; do
+    if [ -n "$MEDIA_MAPS_DIR" ]; then
+        for map_entry in "$MEDIA_MAPS_DIR"/*/; do
             [ -d "$map_entry" ] || continue
             MAP_NAME=$(basename "$map_entry")
             if [ -z "${INSTALLED_MAPS[$MAP_NAME]+x}" ]; then
@@ -269,51 +269,61 @@ for d in /home/steam/Zomboid/mods/*; do
                 echo "  [found] Map '$MAP_NAME' -> $map_entry"
             fi
         done
-    done
+    fi
 done
 echo "  Discovered ${#INSTALLED_MAPS[@]} mod map(s)"
 
 # Reconcile with the declared Map= line: preserve order, strip missing, append new
-# "Muldraugh, KY" is the vanilla base map and is always kept.
+# "Muldraugh, KY" is the vanilla base map and is always appended LAST.
+# PZ loads maps left-to-right; mod maps must come first for proper priority.
+MAP_LINE_EXISTS=$(grep -ci "^Map=" "$INI_FILE")
 EXISTING_MAP_LINE=$(grep -i "^Map=" "$INI_FILE" | head -n1 | cut -d= -f2-)
 
+MAP_FINAL=""
+declare -A SEEN_MAPS
+
 if [ -n "$EXISTING_MAP_LINE" ]; then
-    declare -A SEEN_MAPS
+    # Walk the existing list: keep entries that still exist, drop the rest
     MAP_FINAL=""
     MAP_REMOVED=""
     IFS=';' read -ra DECLARED_MAPS <<< "$EXISTING_MAP_LINE"
     for MAP in "${DECLARED_MAPS[@]}"; do
         MAP=$(echo "$MAP" | xargs)  # trim whitespace
         [ -z "$MAP" ] && continue
-        # Always keep vanilla map, otherwise check if mod map is still installed
-        if [ "$MAP" = "Muldraugh, KY" ] || [ -n "${INSTALLED_MAPS[$MAP]+x}" ]; then
+        # Skip vanilla map here; it will be appended at the end
+        [ "$MAP" = "Muldraugh, KY" ] && continue
+        if [ -n "${INSTALLED_MAPS[$MAP]+x}" ]; then
             if [ -z "$MAP_FINAL" ]; then MAP_FINAL="$MAP"; else MAP_FINAL="$MAP_FINAL;$MAP"; fi
             SEEN_MAPS["$MAP"]=1
         else
             MAP_REMOVED="$MAP_REMOVED $MAP"
         fi
     done
-    # Append any installed maps not already in the declared list
-    MAP_APPENDED=""
-    for MAP in "${!INSTALLED_MAPS[@]}"; do
-        if [ -z "${SEEN_MAPS[$MAP]+x}" ]; then
-            if [ -z "$MAP_FINAL" ]; then MAP_FINAL="$MAP"; else MAP_FINAL="$MAP_FINAL;$MAP"; fi
-            MAP_APPENDED="$MAP_APPENDED $MAP"
-        fi
-    done
+
     if [ -n "$MAP_REMOVED" ]; then
         echo "  [removed] Maps not found:$MAP_REMOVED"
     fi
-    if [ -n "$MAP_APPENDED" ]; then
-        echo "  [appended] New maps:$MAP_APPENDED"
+fi
+
+# Append any discovered maps not already in the list
+MAP_APPENDED=""
+for MAP in "${!INSTALLED_MAPS[@]}"; do
+    if [ -z "${SEEN_MAPS[$MAP]+x}" ]; then
+        MAP_FINAL="$MAP_FINAL;$MAP"
+        MAP_APPENDED="$MAP_APPENDED $MAP"
     fi
+done
+if [ -n "$MAP_APPENDED" ]; then
+    echo "  [appended] New maps:$MAP_APPENDED"
+fi
+
+# Always append vanilla base map last
+if [ -z "$MAP_FINAL" ]; then MAP_FINAL="Muldraugh, KY"; else MAP_FINAL="$MAP_FINAL;Muldraugh, KY"; fi
+
+# Write the final Map= line (replace in-place if it exists, otherwise append)
+if [ "$MAP_LINE_EXISTS" -gt 0 ] 2>/dev/null; then
     sed -i "s/^Map=.*/Map=$MAP_FINAL/" "$INI_FILE"
 else
-    # No existing Map= line — write vanilla + all discovered maps
-    MAP_FINAL="Muldraugh, KY"
-    for MAP in "${!INSTALLED_MAPS[@]}"; do
-        MAP_FINAL="$MAP_FINAL;$MAP"
-    done
     echo "Map=$MAP_FINAL" >> "$INI_FILE"
 fi
 echo "  Map= finalized ($(echo "$MAP_FINAL" | tr ';' '\n' | wc -l) entries)"
