@@ -224,6 +224,8 @@ if [ "$AUTO_CONFIGURE_MODS" = "true" ]; then
     INI_FILE="/home/steam/Zomboid/Server/${SERVER_NAME}.ini"
     MODS_LINE_EXISTS=$(grep -c "^Mods=" "$INI_FILE")
     EXISTING_MODS_LINE=$(grep "^Mods=" "$INI_FILE" | head -n1 | cut -d= -f2-)
+    # Self-heal: strip accidental leading "Mods=" prefix (caused by a prior doubled write)
+    EXISTING_MODS_LINE="${EXISTING_MODS_LINE#Mods=}"
 
     FINAL_LIST=""
     declare -A SEEN_MODS
