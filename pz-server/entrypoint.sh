@@ -20,9 +20,18 @@ echo "Port $SSH_PORT" >> /etc/ssh/sshd_config
 # 2. Setup Steam SSH keys so Autosaver can SSH as steam
 mkdir -p /home/steam/.ssh
 chmod 700 /home/steam/.ssh
+if [ -z "$SSH_PRIVATE_KEY_BASE64" ]; then
+    echo "ERROR: SSH_PRIVATE_KEY_BASE64 is not set! Git sync will fail."
+fi
+echo "  Decoding SSH private key..."
 echo "$SSH_PRIVATE_KEY_BASE64" | tr -d ' "\r\n' | base64 -d > /home/steam/.ssh/id_rsa
 chmod 600 /home/steam/.ssh/id_rsa
-ssh-keygen -y -f /home/steam/.ssh/id_rsa > /home/steam/.ssh/id_rsa.pub
+echo "  Validating SSH private key..."
+if ! ssh-keygen -y -f /home/steam/.ssh/id_rsa > /home/steam/.ssh/id_rsa.pub 2>&1; then
+    echo "ERROR: SSH private key is invalid or corrupted! Check SSH_PRIVATE_KEY_BASE64."
+else
+    echo "  SSH key OK."
+fi
 cat /home/steam/.ssh/id_rsa.pub > /home/steam/.ssh/authorized_keys
 chmod 600 /home/steam/.ssh/authorized_keys
 chown -R steam:steam /home/steam/.ssh
@@ -30,16 +39,21 @@ chown -R steam:steam /home/steam/.ssh
 # 3. Setup git and clone repo (as steam)
 echo "=== Syncing with Git ==="
 chown -R steam:steam /home/steam
+echo "  REPO_URL: ${REPO_URL:-NOT SET}"
+echo "  GIT_USER_NAME: ${GIT_USER_NAME:-NOT SET}"
 gosu steam bash -c "
-export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
+export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no -v -i /home/steam/.ssh/id_rsa\"
 git config --global user.name \"$GIT_USER_NAME\"
 git config --global user.email \"$GIT_USER_EMAIL\"
 if [ ! -d /home/steam/pz-saves ]; then
-    git clone \"$REPO_URL\" /home/steam/pz-saves || { echo \"ERROR: Git clone failed\"; exit 1; }
+    echo \"  Cloning repo from $REPO_URL ...\"
+    git clone \"$REPO_URL\" /home/steam/pz-saves || { echo \"ERROR: Git clone failed (exit \$?)\"; exit 1; }
+    echo \"  Clone complete.\"
 else
-    cd /home/steam/pz-saves && git pull
+    echo \"  Pulling latest from existing repo...\"
+    cd /home/steam/pz-saves && git pull && echo \"  Pull complete.\"
 fi
-"
+" || echo "ERROR: Git sync subshell failed with exit code $?"
 
 gosu steam bash -c "
 cd /home/steam/pz-saves
