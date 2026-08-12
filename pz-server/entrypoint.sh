@@ -164,6 +164,19 @@ else
 fi
 chown -R steam:steam /home/steam/Zomboid/mods
 
+# Patch: damnlib ships its content under 42.17/ but the game expects 42.20/
+# Rename the real directory (symlinks point into the workshop content folder).
+echo "=== Patching damnlib version directory (42.17 -> 42.20) ==="
+DAMNLIB_REAL=$(realpath /home/steam/Zomboid/mods/damnlib 2>/dev/null || true)
+if [ -n "$DAMNLIB_REAL" ] && [ -d "$DAMNLIB_REAL/42.17" ]; then
+    mv "$DAMNLIB_REAL/42.17" "$DAMNLIB_REAL/42.20"
+    echo "  Renamed $DAMNLIB_REAL/42.17 -> 42.20"
+elif [ -n "$DAMNLIB_REAL" ] && [ -d "$DAMNLIB_REAL/42.20" ]; then
+    echo "  damnlib/42.20 already exists, no patch needed."
+else
+    echo "  WARNING: damnlib mod not found or 42.17 dir missing — skipping patch."
+fi
+
 echo "=== Copying Configs ==="
 gosu steam cp /home/steam/vsrania.ini /home/steam/Zomboid/Server/${SERVER_NAME}.ini
 gosu steam cp /home/steam/vsrania_SandboxVars.lua /home/steam/Zomboid/Server/${SERVER_NAME}_SandboxVars.lua
