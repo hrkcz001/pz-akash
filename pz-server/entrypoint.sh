@@ -164,6 +164,21 @@ else
 fi
 chown -R steam:steam /home/steam/Zomboid/mods
 
+# Patch: damnlib ships its content under 42.17/ but the game (42.20) expects
+# the mod's active content under 42.20/. Rename the real directory (the mods
+# dir entry is a symlink into the workshop content folder, so realpath first).
+# Scoped to damnlib only — no other mod is installed.
+echo "=== Patching damnlib version directory (42.17 -> 42.20) ==="
+DAMNLIB_REAL=$(realpath /home/steam/Zomboid/mods/damnlib 2>/dev/null || true)
+if [ -n "$DAMNLIB_REAL" ] && [ -d "$DAMNLIB_REAL/42.17" ]; then
+    mv "$DAMNLIB_REAL/42.17" "$DAMNLIB_REAL/42.20"
+    echo "  Renamed $DAMNLIB_REAL/42.17 -> 42.20"
+elif [ -n "$DAMNLIB_REAL" ] && [ -d "$DAMNLIB_REAL/42.20" ]; then
+    echo "  damnlib/42.20 already exists, no patch needed."
+else
+    echo "  WARNING: damnlib mod not found or 42.17 dir missing — skipping patch."
+fi
+
 echo "=== Copying Configs ==="
 gosu steam cp /home/steam/vsrania.ini /home/steam/Zomboid/Server/${SERVER_NAME}.ini
 gosu steam cp /home/steam/vsrania_SandboxVars.lua /home/steam/Zomboid/Server/${SERVER_NAME}_SandboxVars.lua
@@ -423,12 +438,14 @@ echo "  Applied lowercase aliases to $ALIASED mod folder(s)."
 # resolve back to the real directory (this path contains 'Zomboid').
 ln -sfn /home/steam/Zomboid /home/steam/zomboid 2>/dev/null || true
 
-# Sanity check: the exact DamnLib script path the game failed on should now
-# resolve (in the B42 version dir or the legacy root media dir).
-if find -L /home/steam/Zomboid/mods/damnlib -type f -path "*/media/scripts/airbrake/template_airbrake.txt" 2>/dev/null | grep -q .; then
-    echo "  [ok] DamnLib lowercase script path resolves"
+# Sanity check: the exact DamnLib paths the game crashed on should now resolve:
+# 1. the ScriptManager script path (case-sensitive dirs)
+# 2. the AdvancedAnimator animset path its checksum build failed on (version dir)
+if find -L /home/steam/Zomboid/mods/damnlib -type f -path "*/media/scripts/airbrake/template_airbrake.txt" 2>/dev/null | grep -q . \
+   && find -L /home/steam/Zomboid/mods/damnlib -type f -path "*/media/animsets/player-vehicle/enter/damn_enter.xml" 2>/dev/null | grep -q .; then
+    echo "  [ok] DamnLib script + animset paths resolve"
 else
-    echo "  [warn] DamnLib lowercase script path still NOT found (check mod layout)"
+    echo "  [warn] DamnLib script/animset paths still NOT found (check mod layout)"
 fi
 
 mark_server_stopped() {
