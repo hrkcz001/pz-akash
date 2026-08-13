@@ -81,7 +81,7 @@ run_backup() {
   sleep 5
 
   ssh -p "$port" -o StrictHostKeyChecking=no -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
-    "steam@$ip" "cd /home/steam/zomboid/Saves && zip -q -r - ." > "$BACKUP_DIR/$name"
+    "steam@$ip" "cd /home/steam/Zomboid/Saves && zip -q -r - ." > "$BACKUP_DIR/$name"
   local exit_code=${PIPESTATUS[0]}
 
   if [ "$exit_code" -ne 0 ] || [ ! -s "$BACKUP_DIR/$name" ]; then

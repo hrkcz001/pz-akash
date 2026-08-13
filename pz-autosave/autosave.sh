@@ -103,7 +103,7 @@ while true; do
                             scp -P $SERVER_PORT -o StrictHostKeyChecking=no -o ConnectTimeout=$SSH_CONNECT_TIMEOUT /data/backups/$TARGET steam@$SERVER_IP:/tmp/ && break || sleep 5
                         done
                         
-                        ssh -p $SERVER_PORT -o StrictHostKeyChecking=no steam@$SERVER_IP "mkdir -p /home/steam/zomboid/Saves && cd /home/steam/zomboid/Saves && rm -rf * && unzip -o /tmp/$TARGET && rm /tmp/$TARGET"
+                        ssh -p $SERVER_PORT -o StrictHostKeyChecking=no steam@$SERVER_IP "mkdir -p /home/steam/Zomboid/Saves && cd /home/steam/Zomboid/Saves && rm -rf * && unzip -o /tmp/$TARGET && rm /tmp/$TARGET"
                         
                         echo "Restore completed."
                         echo "Clearing request_restore completely"

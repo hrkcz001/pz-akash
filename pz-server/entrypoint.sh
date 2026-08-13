@@ -102,7 +102,20 @@ echo \"IP configured as \$CURRENT_IP. Continuing boot...\"
 
 # 4. Setup Directories (runs as steam)
 echo "=== Setting up Directories ==="
-gosu steam mkdir -p /home/steam/zomboid/Server /home/steam/zomboid/Saves /home/steam/zomboid/db /home/steam/zomboid/mods
+gosu steam mkdir -p /home/steam/Zomboid/Server /home/steam/Zomboid/Saves /home/steam/Zomboid/db /home/steam/Zomboid/mods
+
+# The game reads mods from ~/Zomboid/mods (capital Z, hardcoded from $HOME),
+# but builds some internal paths (checksum/animsets) in lowercase ~/zomboid
+# regardless of -cachedir. Point both names at the SAME real directory
+# (/home/steam/Zomboid). ext4 does not support directory hardlinks, so this is
+# a symlink — the game follows it fine (the old lowercase aliases in earlier
+# boots proved that).
+if [ -e /home/steam/zomboid ] && [ ! -L /home/steam/zomboid ]; then
+    echo "  Removing leftover real directory /home/steam/zomboid (replaced by symlink to Zomboid)"
+    rm -rf /home/steam/zomboid
+fi
+ln -sfn /home/steam/Zomboid /home/steam/zomboid
+echo "  Linked /home/steam/zomboid -> /home/steam/Zomboid"
 
 echo "=== Checking for Existing Backup to Restore ==="
 if [ -f /home/steam/pz-saves/restore_target ]; then
@@ -150,8 +163,8 @@ fi
 # ALL names already lowercased (see Dockerfile). Copy them into the game's mods
 # dir as REAL directories (hardlinks) — no symlinks: the game's checksum code
 # could not resolve symlinked mods. The cachedir is lowercase
-# (/home/steam/zomboid) to match the path the game builds internally for
-# checksums.
+# The game looks up mods in ~/Zomboid/mods (capital Z) regardless of
+# -cachedir; file names inside mods are lowercased at build time (Dockerfile).
 echo "=== Installing Mods (real copies from image) ==="
 IMAGE_MODS="/home/steam/pz-server/mods"
 MOD_COPY_COUNT=0
@@ -159,7 +172,7 @@ if [ -d "$IMAGE_MODS" ]; then
     while IFS= read -r mod_dir; do
         [ -d "$mod_dir" ] || continue
         name=$(basename "$mod_dir")
-        dest="/home/steam/zomboid/mods/$name"
+        dest="/home/steam/Zomboid/mods/$name"
         if [ ! -e "$dest" ]; then
             mkdir -p "$dest"
             cp -al "$mod_dir/." "$dest/" 2>/dev/null || cp -a "$mod_dir/." "$dest/"
@@ -173,18 +186,18 @@ if [ -d "$IMAGE_MODS" ]; then
 else
     echo "WARNING: No mods directory found in image at $IMAGE_MODS — no mods will be loaded."
 fi
-chown -R steam:steam /home/steam/zomboid/mods
+chown -R steam:steam /home/steam/Zomboid/mods
 
 
 echo "=== Copying Configs ==="
-gosu steam cp /home/steam/vsrania.ini /home/steam/zomboid/Server/${SERVER_NAME}.ini
-gosu steam cp /home/steam/vsrania_SandboxVars.lua /home/steam/zomboid/Server/${SERVER_NAME}_SandboxVars.lua
+gosu steam cp /home/steam/vsrania.ini /home/steam/Zomboid/Server/${SERVER_NAME}.ini
+gosu steam cp /home/steam/vsrania_SandboxVars.lua /home/steam/Zomboid/Server/${SERVER_NAME}_SandboxVars.lua
 
 if [ "$AUTO_CONFIGURE_MODS" = "true" ]; then
     echo "=== Auto-configuring Mods in ${SERVER_NAME}.ini ==="
     # 1. Build a set of all installed mod IDs by scanning mod directories
     declare -A INSTALLED_MODS
-    for d in /home/steam/zomboid/mods/*; do
+    for d in /home/steam/Zomboid/mods/*; do
         if [ -d "$d" ]; then
             # Read the canonical mod ID from mod.info
             # PZ mod.info uses "id=" as the field name (not "modId=")
@@ -247,7 +260,7 @@ if [ "$AUTO_CONFIGURE_MODS" = "true" ]; then
     echo "  Discovered ${#INSTALLED_MODS[@]} installed mod(s)"
 
     # 2. Reconcile with the declared Mods= line: preserve order, strip missing, append new
-    INI_FILE="/home/steam/zomboid/Server/${SERVER_NAME}.ini"
+    INI_FILE="/home/steam/Zomboid/Server/${SERVER_NAME}.ini"
     MODS_LINE_EXISTS=$(grep -c "^Mods=" "$INI_FILE")
     EXISTING_MODS_LINE=$(grep "^Mods=" "$INI_FILE" | head -n1 | cut -d= -f2-)
 
@@ -286,7 +299,7 @@ if [ "$AUTO_CONFIGURE_MODS" = "true" ]; then
     fi
 
     # Write the final Mods= line (replace in-place if it exists, otherwise append)
-    INI_FILE="/home/steam/zomboid/Server/${SERVER_NAME}.ini"
+    INI_FILE="/home/steam/Zomboid/Server/${SERVER_NAME}.ini"
     MODS_LINE_EXISTS=$(grep -c "^Mods=" "$INI_FILE")
     if [ "$MODS_LINE_EXISTS" -gt 0 ] 2>/dev/null; then
         sed -i "s/^Mods=.*/Mods=$FINAL_LIST/" "$INI_FILE"
@@ -304,7 +317,7 @@ if [ "$AUTO_CONFIGURE_MAPS" = "true" ]; then
     # Discover maps provided by installed mods by scanning <mod>/common/media/maps/
     # Prioritize the highest 42.x versioned subfolder if present.
     declare -A INSTALLED_MAPS
-    for d in /home/steam/zomboid/mods/*; do
+    for d in /home/steam/Zomboid/mods/*; do
         [ -d "$d" ] || continue
         MEDIA_MAPS_DIR=""
         # Check highest 42.x versioned subfolder first
@@ -340,7 +353,7 @@ if [ "$AUTO_CONFIGURE_MAPS" = "true" ]; then
     # Reconcile with the declared Map= line: preserve order, strip missing, append new
     # "Muldraugh, KY" is the vanilla base map and is always appended LAST.
     # PZ loads maps left-to-right; mod maps must come first for proper priority.
-    INI_FILE="/home/steam/zomboid/Server/${SERVER_NAME}.ini"
+    INI_FILE="/home/steam/Zomboid/Server/${SERVER_NAME}.ini"
     MAP_LINE_EXISTS=$(grep -ci "^Map=" "$INI_FILE")
     EXISTING_MAP_LINE=$(grep -i "^Map=" "$INI_FILE" | head -n1 | cut -d= -f2-)
 
@@ -486,7 +499,7 @@ chown steam:steam /home/steam/server.log
 
 # Launch without -Xmx/-Xms CLI flags — those are unknown to pzexe and ignored.
 # Memory is now correctly set in ProjectZomboid64.json vmArgs above.
-gosu steam "$PZ_PATH" -nosteam -servername "$SERVER_NAME" -adminpassword "$ADMIN_PASSWORD" -cachedir=/home/steam/zomboid > /home/steam/server.log 2>&1 &
+gosu steam "$PZ_PATH" -nosteam -servername "$SERVER_NAME" -adminpassword "$ADMIN_PASSWORD" -cachedir=/home/steam/Zomboid > /home/steam/server.log 2>&1 &
 PZ_PID=$!
 
 tail -f /home/steam/server.log &
