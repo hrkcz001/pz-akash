@@ -164,21 +164,6 @@ else
 fi
 chown -R steam:steam /home/steam/Zomboid/mods
 
-# Patch: damnlib ships its content under 42.17/ but the game (42.20) expects
-# the mod's active content under 42.20/. Rename the real directory (the mods
-# dir entry is a symlink into the workshop content folder, so realpath first).
-# Scoped to damnlib only — no other mod is installed.
-echo "=== Patching damnlib version directory (42.17 -> 42.20) ==="
-DAMNLIB_REAL=$(realpath /home/steam/Zomboid/mods/damnlib 2>/dev/null || true)
-if [ -n "$DAMNLIB_REAL" ] && [ -d "$DAMNLIB_REAL/42.17" ]; then
-    mv "$DAMNLIB_REAL/42.17" "$DAMNLIB_REAL/42.20"
-    echo "  Renamed $DAMNLIB_REAL/42.17 -> 42.20"
-elif [ -n "$DAMNLIB_REAL" ] && [ -d "$DAMNLIB_REAL/42.20" ]; then
-    echo "  damnlib/42.20 already exists, no patch needed."
-else
-    echo "  WARNING: damnlib mod not found or 42.17 dir missing — skipping patch."
-fi
-
 echo "=== Copying Configs ==="
 gosu steam cp /home/steam/vsrania.ini /home/steam/Zomboid/Server/${SERVER_NAME}.ini
 gosu steam cp /home/steam/vsrania_SandboxVars.lua /home/steam/Zomboid/Server/${SERVER_NAME}_SandboxVars.lua
@@ -434,18 +419,83 @@ for d in /home/steam/Zomboid/mods/*/; do
 done
 echo "  Applied lowercase aliases to $ALIASED mod folder(s)."
 
-# PZ also lowercases the absolute mods-dir path; make the lowercased form
-# resolve back to the real directory (this path contains 'Zomboid').
-ln -sfn /home/steam/Zomboid /home/steam/zomboid 2>/dev/null || true
+# PZ builds animset checksum paths against the LOWERCASED cachedir
+# (/home/steam/zomboid/...) while walking mods via the real /home/steam/Zomboid.
+# A symlink alias for the lowercased root proved insufficient (the 08-13 boots
+# still failed to resolve /home/steam/zomboid/...). Instead, build /home/steam/zomboid
+# as a REAL directory: hardlink-copy every installed mod (dereferenced) plus
+# REAL lowercase-named copies of uppercase entries — no symlinks in the tree at
+# all, so the checksum path resolves no matter how the game opens files.
+echo "=== Building real lowercase mods mirror (/home/steam/zomboid) ==="
+if [ -e /home/steam/zomboid ] || [ -L /home/steam/zomboid ]; then
+    rm -rf /home/steam/zomboid
+fi
+mkdir -p /home/steam/zomboid/mods
 
-# Sanity check: the exact DamnLib paths the game crashed on should now resolve:
-# 1. the ScriptManager script path (case-sensitive dirs)
-# 2. the AdvancedAnimator animset path its checksum build failed on (version dir)
-if find -L /home/steam/Zomboid/mods/damnlib -type f -path "*/media/scripts/airbrake/template_airbrake.txt" 2>/dev/null | grep -q . \
-   && find -L /home/steam/Zomboid/mods/damnlib -type f -path "*/media/animsets/player-vehicle/enter/damn_enter.xml" 2>/dev/null | grep -q .; then
-    echo "  [ok] DamnLib script + animset paths resolve"
+MIRRORED=0
+for mod_dir in /home/steam/Zomboid/mods/*/; do
+    [ -d "$mod_dir" ] || continue
+    name=$(basename "$mod_dir")
+    dest="/home/steam/zomboid/mods/$name"
+    mkdir -p "$dest"
+    # mod_dir is a symlink into the workshop content; the trailing '/.'
+    # dereferences it so the mirror holds real content, not another symlink.
+    # cp -al hardlinks files (same inodes, no extra disk); fall back to a real
+    # copy if hardlinks aren't supported.
+    if ! cp -al "$mod_dir/." "$dest/" 2>/dev/null; then
+        cp -a "$mod_dir/." "$dest/"
+    fi
+    # Drop symlinks copied from the case-alias pass; real copies are made below.
+    find "$dest" -type l -delete 2>/dev/null || true
+    MIRRORED=$((MIRRORED + 1))
+done
+
+echo "  Mirrored $MIRRORED mod folder(s); creating real lowercase names..."
+# REAL lowercase-named hardlink copies of uppercase entries (e.g. the game asks
+# for media/animsets/... but the mod ships media/AnimSets/...).
+mirror_lowercase_copies() {
+    local root="$1"
+    [ -d "$root" ] || return 0
+    local entry parent name lower
+    while IFS= read -r -d '' entry; do
+        [ -L "$entry" ] && continue
+        parent=$(dirname "$entry")
+        name=$(basename "$entry")
+        lower=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')
+        [ "$name" = "$lower" ] && continue
+        [ -e "$parent/$lower" ] && continue
+        cp -al "$entry" "$parent/$lower" 2>/dev/null || true
+    done < <(find "$root" -not -type l -print0 2>/dev/null | sort -z)
+}
+mirror_lowercase_copies /home/steam/zomboid/mods
+chown -R steam:steam /home/steam/zomboid
+
+# Sanity check: the exact DamnLib paths the game needs should resolve.
+# 1. the ScriptManager script path (case-sensitive dirs, via the mods dir)
+# 2. the AdvancedAnimator animset checksum path (via the LOWERCASED cachedir) —
+#    this is the exact string the game failed on in the 08-13 boots.
+echo "=== Verifying DamnLib paths ==="
+if find -L /home/steam/Zomboid/mods/damnlib -type f -path "*/media/scripts/airbrake/template_airbrake.txt" 2>/dev/null | grep -q .; then
+    echo "  [ok] DamnLib script path resolves"
 else
-    echo "  [warn] DamnLib script/animset paths still NOT found (check mod layout)"
+    echo "  [warn] DamnLib script path NOT found (check mod layout)"
+fi
+
+CRASH_PATH="/home/steam/zomboid/mods/damnlib/42.20/media/animsets/player-vehicle/enter/damn_enter.xml"
+if [ -f "$CRASH_PATH" ]; then
+    echo "  [ok] DamnLib animset checksum path resolves: $CRASH_PATH"
+else
+    echo "  [FAIL] DamnLib animset checksum path NOT found: $CRASH_PATH"
+    cur=""
+    for comp in home steam zomboid mods damnlib 42.20 media animsets player-vehicle enter damn_enter.xml; do
+        cur="$cur/$comp"
+        if [ -e "$cur" ]; then
+            echo "    [ok] $cur"
+        else
+            echo "    [MISSING] $cur"
+            break
+        fi
+    done
 fi
 
 mark_server_stopped() {
