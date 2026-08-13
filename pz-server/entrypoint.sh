@@ -68,6 +68,14 @@ push_with_retry() {
 if [ -f server_info.json ]; then
     CURRENT_IP=\$(jq -r '.ip // \"pending\"' server_info.json)
     if [ \"\$CURRENT_IP\" = \"null\" ] || [ -z \"\$CURRENT_IP\" ]; then CURRENT_IP=\"pending\"; fi
+    PREV_STATUS=\$(jq -r '.status // \"unknown\"' server_info.json)
+    # A previous run that ended (stopped/error) means the recorded IP belongs to
+    # the old Akash lease - it will not come back. Reset to pending so we wait
+    # for the new deployment's IP instead of reusing a dead one.
+    if [ \"\$PREV_STATUS\" = \"stopped\" ] || [ \"\$PREV_STATUS\" = \"error\" ]; then
+        echo \"Previous run ended with status '\$PREV_STATUS' - discarding stale IP, waiting for new one.\"
+        CURRENT_IP=\"pending\"
+    fi
 else
     CURRENT_IP=\"pending\"
 fi
