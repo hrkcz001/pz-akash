@@ -35,7 +35,10 @@
 #
 # Optional env (defaults in brackets):
 #   API_BASE [https://console-api.akash.network]
-#   DEPLOY_DAYS [7]                escrow covers this many days at max price
+#   DEPLOY_DAYS [7]                escrow horizon: schedule.sh tops the lease up
+#                                  to this many days at the ACTUAL bid price
+#   INITIAL_DEPOSIT_DAYS [1]       initial escrow deposit at deploy time — ONE
+#                                  day at max price (small; top-up happens after)
 #   MIN_PRICE_USD [0.001]          ignore bids below this (USD/day)
 #   MAX_PRICE_USD [3.0]            cap bids + SDL pricing (USD/day). Roughly
 #                                  $1-3/day is the market for an 8 vCPU/16Gi
@@ -78,6 +81,7 @@ BIDS_JSON="$STATE_DIR/bids.json"
 
 # --- configuration -----------------------------------------------------------
 DEPLOY_DAYS="${DEPLOY_DAYS:-7}"
+INITIAL_DEPOSIT_DAYS="${INITIAL_DEPOSIT_DAYS:-1}"
 MIN_PRICE_USD="${MIN_PRICE_USD:-0.001}"
 MAX_PRICE_USD="${MAX_PRICE_USD:-3.0}"
 PRICE_TOLERANCE="${PRICE_TOLERANCE:-0.20}"
@@ -470,7 +474,11 @@ attempt_deploy() { # $1 = attempt number
 
   close_previous
 
-  AKT_USD=$(fetch_akt_usd) || die "Cannot get AKT/USD (CoinGecko unreachable and AKT_USD_FALLBACK unset) — aborting cycle."
+  # Fetch AKT/USD once per deploy cycle (CoinGecko rate-limits quickly if
+  # hammered on every attempt).
+  if [ -z "${AKT_USD:-}" ]; then
+    AKT_USD=$(fetch_akt_usd) || die "Cannot get AKT/USD (CoinGecko unreachable and AKT_USD_FALLBACK unset) — aborting cycle."
+  fi
 
   local max_uakt deposit_usd
   max_uakt=$(python3 - "$MAX_PRICE_USD" "$AKT_USD" "$BLOCKS_PER_DAY" <<'PYEOF'
@@ -479,7 +487,10 @@ usd, rate, bpd = float(sys.argv[1]), float(sys.argv[2]), int(sys.argv[3])
 print(max(0, int(usd * 1e6 / (rate * bpd))))
 PYEOF
 )
-  deposit_usd=$(python3 - "$MAX_PRICE_USD" "$DEPLOY_DAYS" "$DEPOSIT_MARGIN" <<'PYEOF'
+  # Initial escrow deposit: one day at max price. schedule.sh tops the escrow
+  # up to DEPLOY_DAYS at the ACTUAL lease price shortly after the deploy, so
+  # the wallet only needs to cover this small amount to get the server up.
+  deposit_usd=$(python3 - "$MAX_PRICE_USD" "$INITIAL_DEPOSIT_DAYS" "$DEPOSIT_MARGIN" <<'PYEOF'
 import sys
 usd, days, margin = float(sys.argv[1]), int(sys.argv[2]), float(sys.argv[3])
 print(max(0.5, round(usd * days * margin, 2)))
@@ -487,7 +498,7 @@ PYEOF
 )
   [ "$max_uakt" -gt 0 ] || die "Computed max bid is 0 uakt/block (MAX_PRICE_USD too low for AKT/USD=$AKT_USD)."
 
-  log "AKT/USD=$AKT_USD · max bid=${max_uakt} uakt/block · deposit=${deposit_usd} USD (~${DEPLOY_DAYS}d at max price)"
+  log "AKT/USD=$AKT_USD · max bid=${max_uakt} uakt/block · initial deposit=${deposit_usd} USD (${INITIAL_DEPOSIT_DAYS}d at max price; schedule tops up to ${DEPLOY_DAYS}d at actual price)"
 
   build_sdl "$max_uakt" || die "SDL build failed."
   if grep -q '__[A-Z_]*__' "$SDL_OUT"; then
@@ -499,6 +510,10 @@ PYEOF
   dseq=$(echo "$resp" | jq -r '.data.dseq // empty' 2>/dev/null)
   if [ -z "$dseq" ]; then
     log "Deployment create failed: $(echo "$resp" | head -c 400)"
+    if echo "$resp" | grep -qi 'insufficient balance\|PaymentRequired'; then
+      log "FATAL: wallet balance too low for the initial deposit (\$${deposit_usd} USD) — top up AKT in the Akash Console, then push start again."
+      return 2
+    fi
     return 1
   fi
   manifest=$(echo "$resp" | jq -r '.data.manifest // empty' 2>/dev/null)
