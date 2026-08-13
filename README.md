@@ -50,13 +50,13 @@ By default, the Autosaver backs up the server every hour.
 2. Commit and push. The Autosaver will skip periodic backups until you remove the word `true`. (Manual backups will still work).
 
 ### Downloading & Viewing Backups
-The Autosaver runs a web server on port `80`.
-1. Open `http://<autosaver-ip>:80/` in your browser.
+The Autosaver runs a web server on port `8000` (HTTP_PORT).
+1. Open `http://<autosaver-ip>:8000/` in your browser.
 2. You will see a list of all your `.zip` backup files. Click any file to download it.
 
 ### Uploading Backups
 You can upload old or custom `.zip` backups directly into the Autosaver system.
-1. Open `http://<autosaver-ip>:80/upload` in your browser.
+1. Open `http://<autosaver-ip>:8000/upload` in your browser.
 2. Select your `.zip` file and click upload.
 3. The file will instantly be available for restoring!
 

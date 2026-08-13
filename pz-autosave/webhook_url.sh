@@ -50,11 +50,20 @@ for l in leases:
                 if ip:
                     print(f"http://{ip}:{wh_port}/webhook")
                     sys.exit(0)
-        # shared endpoint: forwarded port is provider-assigned (host + externalPort)
+        # shared endpoint: forwarded port is provider-assigned (host + externalPort).
+        # Pick the entry whose container port is the webhook port — never fp[0]
+        # (the service may also expose the upload server on another port).
         fp = (st.get("forwarded_ports") or {}).get(name) or []
-        if fp and fp[0].get("host"):
-            ext = fp[0].get("external_port") or fp[0].get("externalPort") or wh_port
-            print(f"http://{fp[0]['host']}:{ext}/webhook")
+        wh = None
+        for e in fp:
+            if str(e.get("port")) == str(wh_port) and e.get("host"):
+                wh = e
+                break
+        if wh is None:
+            wh = next((e for e in fp if e.get("host")), None)
+        if wh:
+            ext = wh.get("external_port") or wh.get("externalPort") or wh_port
+            print(f"http://{wh['host']}:{ext}/webhook")
             sys.exit(0)
 PYEOF
 )

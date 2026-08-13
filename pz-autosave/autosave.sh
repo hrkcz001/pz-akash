@@ -15,7 +15,7 @@ git config --global user.name "${GIT_USER_NAME:-autosaver}"
 git config --global user.email "${GIT_USER_EMAIL:-autosaver@localhost}"
 
 # Configuration variables
-HTTP_PORT=${HTTP_PORT:-80}
+HTTP_PORT=${HTTP_PORT:-8000}   # file/upload server — MUST differ from WEBHOOK_PORT
 BACKUP_INTERVAL_SEC=${BACKUP_INTERVAL_SEC:-3600}
 BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-7}
 # RCON_PASSWORD/RCON_PORT are resolved by state.sh from the server SDL in
@@ -32,6 +32,11 @@ WEBHOOK_PORT=${WEBHOOK_PORT:-8080}
 
 if [ ! -d /root/pz-saves ]; then
     git clone "$REPO_URL" /root/pz-saves || { echo "ERROR: Git clone failed"; exit 1; }
+fi
+
+if [ "$HTTP_PORT" = "$WEBHOOK_PORT" ]; then
+    echo "ERROR: HTTP_PORT ($HTTP_PORT) and WEBHOOK_PORT ($WEBHOOK_PORT) must be different — the file upload server and the webhook listener cannot share a port. Fix the env and restart."
+    exit 1
 fi
 
 mkdir -p /data/backups
