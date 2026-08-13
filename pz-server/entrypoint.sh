@@ -94,7 +94,7 @@ echo \"IP configured as \$CURRENT_IP. Continuing boot...\"
 
 # 4. Setup Directories (runs as steam)
 echo "=== Setting up Directories ==="
-gosu steam mkdir -p /home/steam/Zomboid/Server /home/steam/Zomboid/Saves /home/steam/Zomboid/db /home/steam/Zomboid/mods
+gosu steam mkdir -p /home/steam/zomboid/Server /home/steam/zomboid/Saves /home/steam/zomboid/db /home/steam/zomboid/mods
 
 echo "=== Checking for Existing Backup to Restore ==="
 if [ -f /home/steam/pz-saves/restore_target ]; then
@@ -137,42 +137,63 @@ push_with_retry
     fi
 fi
 
-# 5. Original logic for PZ setup (runs as steam)
-echo "=== Linking Workshop Mods ==="
-WORKSHOP_ROOT="/home/steam/pz-server/steamapps/workshop/content/108600"
-MOD_LINK_COUNT=0
-if [ -d "$WORKSHOP_ROOT" ]; then
-    # Search up to depth 4 to handle varied workshop mod structures:
-    #   <item_id>/mods/<ModName>/           (standard)
-    #   <item_id>/Contents/mods/<ModName>/  (some mods wrap in Contents/)
-    # Using relative symlinks (-r) avoids double-path bugs where
-    # ScriptManager.Load prefixes the mods dir onto an already-absolute path.
+# 5. Install mods (runs as steam)
+# Mods are staged into the image at build time (/home/steam/pz-server/mods) with
+# ALL names already lowercased (see Dockerfile). Copy them into the game's mods
+# dir as REAL directories (hardlinks) — no symlinks: the game's checksum code
+# could not resolve symlinked mods. The cachedir is lowercase
+# (/home/steam/zomboid) to match the path the game builds internally for
+# checksums.
+echo "=== Installing Mods (real copies from image) ==="
+IMAGE_MODS="/home/steam/pz-server/mods"
+MOD_COPY_COUNT=0
+if [ -d "$IMAGE_MODS" ]; then
     while IFS= read -r mod_dir; do
-        while IFS= read -r mod_content; do
-            link_name="/home/steam/Zomboid/mods/$(basename "$mod_content")"
-            if [ ! -e "$link_name" ]; then
-                ln -srf "$mod_content" "$link_name"
-                MOD_LINK_COUNT=$((MOD_LINK_COUNT + 1))
-            else
-                echo "  [skip] $(basename "$mod_content") already linked"
-            fi
-        done < <(find "$mod_dir" -maxdepth 1 -mindepth 1 -type d 2>/dev/null)
-    done < <(find "$WORKSHOP_ROOT" -maxdepth 4 -type d -name "mods" 2>/dev/null)
-    echo "Workshop mods linked: $MOD_LINK_COUNT mod folder(s)."
+        [ -d "$mod_dir" ] || continue
+        name=$(basename "$mod_dir")
+        dest="/home/steam/zomboid/mods/$name"
+        if [ ! -e "$dest" ]; then
+            mkdir -p "$dest"
+            cp -al "$mod_dir/." "$dest/" 2>/dev/null || cp -a "$mod_dir/." "$dest/"
+            MOD_COPY_COUNT=$((MOD_COPY_COUNT + 1))
+            echo "  [installed] $name"
+        else
+            echo "  [skip] $name already installed"
+        fi
+    done < <(find "$IMAGE_MODS" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
+    echo "Mods installed: $MOD_COPY_COUNT mod folder(s)."
 else
-    echo "WARNING: Workshop content directory not found at $WORKSHOP_ROOT — no mods will be loaded."
+    echo "WARNING: No mods directory found in image at $IMAGE_MODS — no mods will be loaded."
 fi
-chown -R steam:steam /home/steam/Zomboid/mods
+chown -R steam:steam /home/steam/zomboid/mods
+
+# Optional: rename each mod's highest version dir to the game version. The
+# game's AdvancedAnimator looks for mod media under <mod>/<game_version>/media/
+# (and <mod>/common/media/). DamnLib ships its animsets under 42.17/media/ —
+# whether a <game_version> dir is actually required is UNPROVEN (other mods run
+# fine without one), so this is OFF by default. Enable with
+# DAMNLIB_RENAME_42_20=true.
+DAMNLIB_RENAME_42_20=${DAMNLIB_RENAME_42_20:-false}
+if [ "$DAMNLIB_RENAME_42_20" = "true" ]; then
+    echo "=== Renaming mod version dir (42.17 -> 42.20) ==="
+    for mod_dir in /home/steam/zomboid/mods/*/; do
+        [ -d "$mod_dir" ] || continue
+        if [ -d "$mod_dir/42.17" ] && [ ! -e "$mod_dir/42.20" ]; then
+            mv "$mod_dir/42.17" "$mod_dir/42.20"
+            echo "  Renamed $(basename "$mod_dir") 42.17 -> 42.20"
+        fi
+    done
+fi
 
 echo "=== Copying Configs ==="
-gosu steam cp /home/steam/vsrania.ini /home/steam/Zomboid/Server/${SERVER_NAME}.ini
-gosu steam cp /home/steam/vsrania_SandboxVars.lua /home/steam/Zomboid/Server/${SERVER_NAME}_SandboxVars.lua
+gosu steam cp /home/steam/vsrania.ini /home/steam/zomboid/Server/${SERVER_NAME}.ini
+gosu steam cp /home/steam/vsrania_SandboxVars.lua /home/steam/zomboid/Server/${SERVER_NAME}_SandboxVars.lua
 
 if [ "$AUTO_CONFIGURE_MODS" = "true" ]; then
     echo "=== Auto-configuring Mods in ${SERVER_NAME}.ini ==="
     # 1. Build a set of all installed mod IDs by scanning mod directories
     declare -A INSTALLED_MODS
-    for d in /home/steam/Zomboid/mods/*; do
+    for d in /home/steam/zomboid/mods/*; do
         if [ -d "$d" ]; then
             # Read the canonical mod ID from mod.info
             # PZ mod.info uses "id=" as the field name (not "modId=")
@@ -235,7 +256,7 @@ if [ "$AUTO_CONFIGURE_MODS" = "true" ]; then
     echo "  Discovered ${#INSTALLED_MODS[@]} installed mod(s)"
 
     # 2. Reconcile with the declared Mods= line: preserve order, strip missing, append new
-    INI_FILE="/home/steam/Zomboid/Server/${SERVER_NAME}.ini"
+    INI_FILE="/home/steam/zomboid/Server/${SERVER_NAME}.ini"
     MODS_LINE_EXISTS=$(grep -c "^Mods=" "$INI_FILE")
     EXISTING_MODS_LINE=$(grep "^Mods=" "$INI_FILE" | head -n1 | cut -d= -f2-)
 
@@ -274,7 +295,7 @@ if [ "$AUTO_CONFIGURE_MODS" = "true" ]; then
     fi
 
     # Write the final Mods= line (replace in-place if it exists, otherwise append)
-    INI_FILE="/home/steam/Zomboid/Server/${SERVER_NAME}.ini"
+    INI_FILE="/home/steam/zomboid/Server/${SERVER_NAME}.ini"
     MODS_LINE_EXISTS=$(grep -c "^Mods=" "$INI_FILE")
     if [ "$MODS_LINE_EXISTS" -gt 0 ] 2>/dev/null; then
         sed -i "s/^Mods=.*/Mods=$FINAL_LIST/" "$INI_FILE"
@@ -292,7 +313,7 @@ if [ "$AUTO_CONFIGURE_MAPS" = "true" ]; then
     # Discover maps provided by installed mods by scanning <mod>/common/media/maps/
     # Prioritize the highest 42.x versioned subfolder if present.
     declare -A INSTALLED_MAPS
-    for d in /home/steam/Zomboid/mods/*; do
+    for d in /home/steam/zomboid/mods/*; do
         [ -d "$d" ] || continue
         MEDIA_MAPS_DIR=""
         # Check highest 42.x versioned subfolder first
@@ -328,7 +349,7 @@ if [ "$AUTO_CONFIGURE_MAPS" = "true" ]; then
     # Reconcile with the declared Map= line: preserve order, strip missing, append new
     # "Muldraugh, KY" is the vanilla base map and is always appended LAST.
     # PZ loads maps left-to-right; mod maps must come first for proper priority.
-    INI_FILE="/home/steam/Zomboid/Server/${SERVER_NAME}.ini"
+    INI_FILE="/home/steam/zomboid/Server/${SERVER_NAME}.ini"
     MAP_LINE_EXISTS=$(grep -ci "^Map=" "$INI_FILE")
     EXISTING_MAP_LINE=$(grep -i "^Map=" "$INI_FILE" | head -n1 | cut -d= -f2-)
 
@@ -384,98 +405,16 @@ else
     echo "=== Skipping Maps auto-configuration (AUTO_CONFIGURE_MAPS=false) ==="
 fi
 
-# === Fix B42 Linux mod case-sensitivity (DamnLib et al.) ===
-# Since B42.13 PZ lowercases mod file paths internally (scripts, checksums,
-# animsets). Mods like DamnLib ship uppercase names (airBrake/, AnimSets/,
-# DAMN_Client.lua, ...) which then can't be found on Linux's case-sensitive
-# filesystem. Create lowercase symlink aliases for every file and directory
-# in each installed mod. Safe to re-run (skips existing symlinks).
-echo "=== Fixing mod case-sensitivity for Linux (B42 regression) ==="
-
-create_lowercase_aliases() {
-    local root="$1"
-    [ -d "$root" ] || return 0
-    local entry parent name lower link_path
-    while IFS= read -r -d '' entry; do
-        [ -L "$entry" ] && continue
-        parent=$(dirname "$entry")
-        name=$(basename "$entry")
-        lower=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')
-        [ "$name" = "$lower" ] && continue
-        link_path="$parent/$lower"
-        # Don't clobber a real (non-symlink) entry that already exists
-        if [ -e "$link_path" ] && [ ! -L "$link_path" ]; then
-            continue
-        fi
-        ln -sfn "$name" "$link_path" 2>/dev/null || true
-    done < <(find "$root" -not -type l -print0 2>/dev/null | sort -z)
-}
-
-ALIASED=0
-for d in /home/steam/Zomboid/mods/*/; do
-    [ -d "$d" ] || continue
-    create_lowercase_aliases "$d"
-    ALIASED=$((ALIASED + 1))
-done
-echo "  Applied lowercase aliases to $ALIASED mod folder(s)."
-
-# PZ builds animset checksum paths against the LOWERCASED cachedir
-# (/home/steam/zomboid/...) while walking mods via the real /home/steam/Zomboid.
-# A symlink alias for the lowercased root proved insufficient (the 08-13 boots
-# still failed to resolve /home/steam/zomboid/...). Instead, build /home/steam/zomboid
-# as a REAL directory: hardlink-copy every installed mod (dereferenced) plus
-# REAL lowercase-named copies of uppercase entries — no symlinks in the tree at
-# all, so the checksum path resolves no matter how the game opens files.
-echo "=== Building real lowercase mods mirror (/home/steam/zomboid) ==="
-if [ -e /home/steam/zomboid ] || [ -L /home/steam/zomboid ]; then
-    rm -rf /home/steam/zomboid
-fi
-mkdir -p /home/steam/zomboid/mods
-
-MIRRORED=0
-for mod_dir in /home/steam/Zomboid/mods/*/; do
-    [ -d "$mod_dir" ] || continue
-    name=$(basename "$mod_dir")
-    dest="/home/steam/zomboid/mods/$name"
-    mkdir -p "$dest"
-    # mod_dir is a symlink into the workshop content; the trailing '/.'
-    # dereferences it so the mirror holds real content, not another symlink.
-    # cp -al hardlinks files (same inodes, no extra disk); fall back to a real
-    # copy if hardlinks aren't supported.
-    if ! cp -al "$mod_dir/." "$dest/" 2>/dev/null; then
-        cp -a "$mod_dir/." "$dest/"
-    fi
-    # Drop symlinks copied from the case-alias pass; real copies are made below.
-    find "$dest" -type l -delete 2>/dev/null || true
-    MIRRORED=$((MIRRORED + 1))
-done
-
-echo "  Mirrored $MIRRORED mod folder(s); creating real lowercase names..."
-# REAL lowercase-named hardlink copies of uppercase entries (e.g. the game asks
-# for media/animsets/... but the mod ships media/AnimSets/...).
-mirror_lowercase_copies() {
-    local root="$1"
-    [ -d "$root" ] || return 0
-    local entry parent name lower
-    while IFS= read -r -d '' entry; do
-        [ -L "$entry" ] && continue
-        parent=$(dirname "$entry")
-        name=$(basename "$entry")
-        lower=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')
-        [ "$name" = "$lower" ] && continue
-        [ -e "$parent/$lower" ] && continue
-        cp -al "$entry" "$parent/$lower" 2>/dev/null || true
-    done < <(find "$root" -not -type l -print0 2>/dev/null | sort -z)
-}
-mirror_lowercase_copies /home/steam/zomboid/mods
-chown -R steam:steam /home/steam/zomboid
+# Case-sensitivity is handled at IMAGE BUILD time (all mod file names are
+# lowercased in the Dockerfile) and the cachedir is already lowercase — no
+# runtime aliases or mirrors needed.
 
 # Sanity check: the exact DamnLib paths the game needs should resolve.
 # 1. the ScriptManager script path (case-sensitive dirs, via the mods dir)
 # 2. the AdvancedAnimator animset checksum path (via the LOWERCASED cachedir) —
 #    this is the exact string the game failed on in the 08-13 boots.
 echo "=== Verifying DamnLib paths ==="
-if find -L /home/steam/Zomboid/mods/damnlib -type f -path "*/media/scripts/airbrake/template_airbrake.txt" 2>/dev/null | grep -q .; then
+if find /home/steam/zomboid/mods/damnlib -type f -path "*/media/scripts/airbrake/template_airbrake.txt" 2>/dev/null | grep -q .; then
     echo "  [ok] DamnLib script path resolves"
 else
     echo "  [warn] DamnLib script path NOT found (check mod layout)"
@@ -584,7 +523,7 @@ chown steam:steam /home/steam/server.log
 
 # Launch without -Xmx/-Xms CLI flags — those are unknown to pzexe and ignored.
 # Memory is now correctly set in ProjectZomboid64.json vmArgs above.
-gosu steam "$PZ_PATH" -nosteam -servername "$SERVER_NAME" -adminpassword "$ADMIN_PASSWORD" -cachedir=/home/steam/Zomboid > /home/steam/server.log 2>&1 &
+gosu steam "$PZ_PATH" -nosteam -servername "$SERVER_NAME" -adminpassword "$ADMIN_PASSWORD" -cachedir=/home/steam/zomboid > /home/steam/server.log 2>&1 &
 PZ_PID=$!
 
 tail -f /home/steam/server.log &

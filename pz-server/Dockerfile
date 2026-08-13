@@ -13,7 +13,7 @@ RUN mkdir -p /steamcmd /pz-server && \
 RUN /steamcmd/steamcmd.sh +@sSteamCmdForcePlatformType linux +login anonymous +force_install_dir /pz-server +app_update 380870 validate +quit
 
 COPY mods.json /steamcmd/mods.json
-RUN if [ -s /steamcmd/mods.json ]; then \
+RUN    if [ -s /steamcmd/mods.json ]; then \
         if jq -e '. | type == "array" and length > 0' /steamcmd/mods.json > /dev/null 2>&1; then \
             echo "@sSteamCmdForcePlatformType linux" > /steamcmd/download_mods.txt && \
             echo "force_install_dir /pz-server" >> /steamcmd/download_mods.txt && \
@@ -26,6 +26,30 @@ RUN if [ -s /steamcmd/mods.json ]; then \
         else \
             echo "mods.json is empty, not an array, or invalid. Skipping mod download."; \
         fi \
+    fi
+
+# Move downloaded mods out of the steamcmd workshop structure into a clean
+# /pz-server/mods directory and lowercase every file/dir name. The game
+# lowercases mod paths internally (B42); real lowercase names mean the runtime
+# needs no symlink aliases, and a clean mods dir means no workshop symlinks.
+RUN mkdir -p /pz-server/mods && \
+    if [ -s /steamcmd/mods.json ]; then \
+        for mod in $(jq -r '.[]' /steamcmd/mods.json); do \
+            mods_dir="/pz-server/steamapps/workshop/content/108600/$mod/mods"; \
+            if [ -d "$mods_dir" ]; then \
+                for d in "$mods_dir"/*/; do \
+                    [ -d "$d" ] || continue; \
+                    mv "$d" "/pz-server/mods/$(basename "$d")"; \
+                done; \
+            fi; \
+        done; \
+        find /pz-server/mods -depth | while read -r p; do \
+            d=$(dirname "$p"); b=$(basename "$p"); l=$(printf '%s' "$b" | tr '[:upper:]' '[:lower:]'); \
+            [ "$b" = "$l" ] && continue; \
+            [ -e "$d/$l" ] && continue; \
+            mv "$d/$b" "$d/$l"; \
+        done; \
+        rm -rf /pz-server/steamapps/workshop/content/108600; \
     fi
 
 # Stage 2: Minimal Runtime
