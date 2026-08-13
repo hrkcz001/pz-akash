@@ -10,9 +10,10 @@
 #   1. Fetch AKT/USD (CoinGecko), derive max bid (uakt/block) from
 #      MAX_PRICE_USD and the escrow deposit from DEPLOY_DAYS.
 #   2. Take the SDL from the server's deployment.yaml in the pz-saves repo
-#      (fallback: the sdl.template bundled in the image). Tokens like
-#      __SERVER_IMAGE__ / __MAX_PRICE_UAKT__ are substituted; any other
-#      __TOKEN__ left unresolved aborts the deploy.
+#      (fallback: the sdl.template bundled in the image). The pricing
+#      amount: is overwritten with the computed max bid (from MAX_PRICE_USD)
+#      — the server SDL carries no deploy-policy tokens. Any legacy __TOKEN__
+#      left unresolved aborts the deploy.
 #   3. POST /v1/deployments  -> dseq
 #   4. Poll /v1/bids. Filter: EU, healthy, IP-lease capable, in price band,
 #      not on the skip list. Scoring: cheapest wins; any bid within
@@ -151,27 +152,33 @@ fetch_akt_usd() {
 }
 
 build_sdl() { # $1 = max uakt/block
-  python3 - "$SDL_SOURCE" "$SDL_OUT" \
+  # The price lives in the autosaver env (MAX_PRICE_USD). The SDL from
+  # pz-saves carries no tokens: after substituting any legacy tokens, we
+  # overwrite the numeric `amount:` in the pricing block with the computed
+  # max bid. The server file/container never sees the price policy.
+  python3 - "$SDL_SOURCE" "$SDL_OUT" "$1" \
     "${SERVER_IMAGE:-}" "${SSH_PRIVATE_KEY_BASE64:-}" "${REPO_URL:-}" \
     "${GIT_USER_NAME:-}" "${GIT_USER_EMAIL:-}" "$SSH_PORT" \
     "${SERVER_NAME:-}" "${ADMIN_PASSWORD:-}" "${SERVER_MEMORY_MAX:-}" \
     "${SERVER_MEMORY_MIN:-}" "${RESTORE_POLL_INTERVAL_SEC:-}" \
     "${WAIT_ON_CRASH_SEC:-}" "${AUTO_CONFIGURE_MAPS:-}" \
-    "${AUTO_CONFIGURE_MODS:-}" "$1" <<'PYEOF'
-import sys
-tpl, out = sys.argv[1], sys.argv[2]
+    "${AUTO_CONFIGURE_MODS:-}" <<'PYEOF'
+import re, sys
+tpl, out, max_uakt = sys.argv[1], sys.argv[2], str(sys.argv[3])
 tokens = ["__SERVER_IMAGE__", "__SSH_PRIVATE_KEY_BASE64__", "__REPO_URL__",
           "__GIT_USER_NAME__", "__GIT_USER_EMAIL__", "__SSH_PORT__",
           "__SERVER_NAME__", "__ADMIN_PASSWORD__", "__SERVER_MEMORY_MAX__",
           "__SERVER_MEMORY_MIN__", "__RESTORE_POLL_INTERVAL_SEC__",
           "__WAIT_ON_CRASH_SEC__", "__AUTO_CONFIGURE_MAPS__",
           "__AUTO_CONFIGURE_MODS__", "__MAX_PRICE_UAKT__"]
-vals = sys.argv[3:18]
+vals = sys.argv[4:19]
 s = open(tpl).read()
 for t, v in zip(tokens, vals):
     s = s.replace(t, str(v))
+# Inject the autosaver-controlled max bid into every numeric pricing amount.
+s = re.sub(r'(?m)^(\s*amount:\s*)[0-9]+(\.[0-9]+)?\s*$', r'\g<1>' + max_uakt, s)
 open(out, "w").write(s)
-print(f"SDL written: {out} (max {vals[-1]} uakt/block)")
+print(f"SDL written: {out} (max {max_uakt} uakt/block)")
 PYEOF
 }
 

@@ -78,7 +78,7 @@ Push a file named `start` to the `pz-saves` repo and the Autosaver will:
 3. **Writes the IP** into `server_info.json` (`status: booting`) so the server boots without manual IP configuration.
 4. **Provider failures**: closes the deployment, remembers the provider (skip list), and retries with a fresh deployment. Failed providers are forgotten as soon as a deploy succeeds.
 
-**Server SDL**: the deploy script uses the server's `deployment.yaml` from the **pz-saves** repo (falls back to the template bundled in the image). That file is **self-sufficient** — image tag, ports, env (incl. the SSH deploy key) all live there; only the `__MAX_PRICE_UAKT__` token is filled at deploy time from the autosaver's `MAX_PRICE_USD`. Bump the image tag in it after rebuilding `pz-server`. Any other `__TOKEN__` left unresolved aborts the deploy.
+**Server SDL**: the deploy script uses the server's `deployment.yaml` from the **pz-saves** repo (falls back to the template bundled in the image). That file is **self-sufficient** — image tag, ports, env (incl. the SSH deploy key) all live there, **no deploy-policy tokens**. The pricing `amount:` is a placeholder for manual deploys: the autosaver overwrites it at deploy time from its own `MAX_PRICE_USD`. Bump the image tag in it after rebuilding `pz-server`.
 
 **Required env in the Autosaver deployment** (no server info — the autosaver reads the server SDL from pz-saves; RCON credentials are extracted from `ADMIN_PASSWORD` there):
 - `AKASH_API_KEY` — Console managed-wallet API key (Console → Settings → API Keys)
