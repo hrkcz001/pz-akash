@@ -167,23 +167,6 @@ else
 fi
 chown -R steam:steam /home/steam/zomboid/mods
 
-# Optional: rename each mod's highest version dir to the game version. The
-# game's AdvancedAnimator looks for mod media under <mod>/<game_version>/media/
-# (and <mod>/common/media/). DamnLib ships its animsets under 42.17/media/ —
-# whether a <game_version> dir is actually required is UNPROVEN (other mods run
-# fine without one), so this is OFF by default. Enable with
-# DAMNLIB_RENAME_42_20=true.
-DAMNLIB_RENAME_42_20=${DAMNLIB_RENAME_42_20:-false}
-if [ "$DAMNLIB_RENAME_42_20" = "true" ]; then
-    echo "=== Renaming mod version dir (42.17 -> 42.20) ==="
-    for mod_dir in /home/steam/zomboid/mods/*/; do
-        [ -d "$mod_dir" ] || continue
-        if [ -d "$mod_dir/42.17" ] && [ ! -e "$mod_dir/42.20" ]; then
-            mv "$mod_dir/42.17" "$mod_dir/42.20"
-            echo "  Renamed $(basename "$mod_dir") 42.17 -> 42.20"
-        fi
-    done
-fi
 
 echo "=== Copying Configs ==="
 gosu steam cp /home/steam/vsrania.ini /home/steam/zomboid/Server/${SERVER_NAME}.ini
@@ -408,34 +391,6 @@ fi
 # Case-sensitivity is handled at IMAGE BUILD time (all mod file names are
 # lowercased in the Dockerfile) and the cachedir is already lowercase — no
 # runtime aliases or mirrors needed.
-
-# Sanity check: the exact DamnLib paths the game needs should resolve.
-# 1. the ScriptManager script path (case-sensitive dirs, via the mods dir)
-# 2. the AdvancedAnimator animset checksum path (via the LOWERCASED cachedir) —
-#    this is the exact string the game failed on in the 08-13 boots.
-echo "=== Verifying DamnLib paths ==="
-if find /home/steam/zomboid/mods/damnlib -type f -path "*/media/scripts/airbrake/template_airbrake.txt" 2>/dev/null | grep -q .; then
-    echo "  [ok] DamnLib script path resolves"
-else
-    echo "  [warn] DamnLib script path NOT found (check mod layout)"
-fi
-
-CRASH_PATH="/home/steam/zomboid/mods/damnlib/42.20/media/animsets/player-vehicle/enter/damn_enter.xml"
-if [ -f "$CRASH_PATH" ]; then
-    echo "  [ok] DamnLib animset checksum path resolves: $CRASH_PATH"
-else
-    echo "  [FAIL] DamnLib animset checksum path NOT found: $CRASH_PATH"
-    cur=""
-    for comp in home steam zomboid mods damnlib 42.20 media animsets player-vehicle enter damn_enter.xml; do
-        cur="$cur/$comp"
-        if [ -e "$cur" ]; then
-            echo "    [ok] $cur"
-        else
-            echo "    [MISSING] $cur"
-            break
-        fi
-    done
-fi
 
 mark_server_stopped() {
     # Mark as stopped and request restore on next boot
