@@ -26,12 +26,11 @@
 #
 # Required env (set in the autosaver deployment):
 #   AKASH_API_KEY   Console managed-wallet API key
-#   SERVER_IMAGE    image tag (e.g. ghcr.io/hrkcz001/pz-akash-server:sha-X)
-#                   only if the SDL uses the __SERVER_IMAGE__ token
-#   ...plus all pz-server env vars used by the SDL (SSH_PRIVATE_KEY_BASE64,
-#   REPO_URL, GIT_USER_NAME, GIT_USER_EMAIL, SERVER_NAME, ADMIN_PASSWORD,
-#   SERVER_MEMORY_MAX, SERVER_MEMORY_MIN, RESTORE_POLL_INTERVAL_SEC,
-#   WAIT_ON_CRASH_SEC, AUTO_CONFIGURE_MAPS, AUTO_CONFIGURE_MODS).
+#   SERVER_IMAGE    image tag — ONLY if the SDL still uses the
+#                   __SERVER_IMAGE__ token (the pz-saves deployment.yaml is
+#                   self-sufficient and hardcodes the tag instead)
+# No pz-server env vars are needed here: the SDL from pz-saves carries them
+# (SSH key, REPO_URL, SERVER_NAME, ADMIN_PASSWORD, memory, etc.).
 #
 # Optional env (defaults in brackets):
 #   API_BASE [https://console-api.akash.network]

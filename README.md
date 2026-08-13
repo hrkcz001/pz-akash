@@ -78,12 +78,13 @@ Push a file named `start` to the `pz-saves` repo and the Autosaver will:
 3. **Writes the IP** into `server_info.json` (`status: booting`) so the server boots without manual IP configuration.
 4. **Provider failures**: closes the deployment, remembers the provider (skip list), and retries with a fresh deployment. Failed providers are forgotten as soon as a deploy succeeds.
 
-**Server SDL**: the deploy script uses the server's `deployment.yaml` from the **pz-saves** repo (falls back to the template bundled in the image). You can put `__SERVER_IMAGE__` and `__MAX_PRICE_UAKT__` tokens in it (filled at deploy time) or hardcode the values; any other `__TOKEN__` left unresolved aborts the deploy.
+**Server SDL**: the deploy script uses the server's `deployment.yaml` from the **pz-saves** repo (falls back to the template bundled in the image). That file is **self-sufficient** — image tag, ports, env (incl. the SSH deploy key) all live there; only the `__MAX_PRICE_UAKT__` token is filled at deploy time from the autosaver's `MAX_PRICE_USD`. Bump the image tag in it after rebuilding `pz-server`. Any other `__TOKEN__` left unresolved aborts the deploy.
 
-**Required env in the Autosaver deployment:**
+**Required env in the Autosaver deployment** (no server info — the autosaver reads the server SDL from pz-saves; RCON credentials are extracted from `ADMIN_PASSWORD` there):
 - `AKASH_API_KEY` — Console managed-wallet API key (Console → Settings → API Keys)
-- `SERVER_IMAGE` — image tag, only if the SDL uses the `__SERVER_IMAGE__` token
-- …plus all pz-server env vars used by the SDL: `SSH_PRIVATE_KEY_BASE64`, `REPO_URL`, `GIT_USER_NAME`, `GIT_USER_EMAIL`, `SERVER_NAME`, `ADMIN_PASSWORD`, `SERVER_MEMORY_MAX`, `SERVER_MEMORY_MIN`, `RESTORE_POLL_INTERVAL_SEC`, `WAIT_ON_CRASH_SEC`, `AUTO_CONFIGURE_MAPS`, `AUTO_CONFIGURE_MODS`.
+- `SSH_PRIVATE_KEY_BASE64` — deploy key for pz-saves
+- `REPO_URL`, `GIT_USER_NAME`, `GIT_USER_EMAIL`
+- `WEBHOOK_SECRET` — for the GitHub webhook (see the webhook section)
 
 **Tuning env (defaults in brackets):**
 - `DEPLOY_DAYS [7]` — escrow covers this many days at max price

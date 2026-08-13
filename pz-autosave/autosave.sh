@@ -18,8 +18,8 @@ git config --global user.email "${GIT_USER_EMAIL:-autosaver@localhost}"
 HTTP_PORT=${HTTP_PORT:-80}
 BACKUP_INTERVAL_SEC=${BACKUP_INTERVAL_SEC:-3600}
 BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-7}
-RCON_PASSWORD=${RCON_PASSWORD:-"Qwerty0123**"}
-RCON_PORT=${RCON_PORT:-27015}
+# RCON_PASSWORD/RCON_PORT are resolved by state.sh from the server SDL in
+# pz-saves — the autosaver deployment carries no server info.
 AUTOSAVER_POLL_SEC=${AUTOSAVER_POLL_SEC:-60}
 SSH_CONNECT_TIMEOUT=${SSH_CONNECT_TIMEOUT:-10}
 # Webhook mode: WEBHOOK_ENABLED starts the listener; WEBHOOK_MODE=true makes

@@ -1,30 +1,29 @@
 ---
 # Example SDL for the AUTOSAVER container (deploy it manually via Akash Console).
+# This file is ONLY about the autosaver: git access to pz-saves, the Akash API
+# key, the webhook, and deploy pricing policy. The autosaver gets everything
+# else from the SERVER's deployment.yaml in the pz-saves repo — it needs no
+# server info here (image tag, ports, SSH key, RCON password etc. all live in
+# pz-saves/deployment.yaml).
+#
 # NOTE: uses SHARED endpoints, not an IP lease (IP leases are rare on Akash).
 # The provider assigns external ports, so the webhook URL is only known AFTER
 # deploy: read it from /data/webhook.log in the container (the autosaver logs it
 # a few minutes after boot), run /usr/local/bin/webhook_url.sh via the Console
 # shell, or check the lease status in the Akash Console.
 #
-# Copy this file, fill in the three secrets (SSH_PRIVATE_KEY_BASE64,
-# AKASH_API_KEY, WEBHOOK_SECRET) and the SERVER_IMAGE tag, and deploy it as
-# your autosaver deployment.
-#
 # Required env:
 #   AKASH_API_KEY        Console managed-wallet API key (Settings -> API Keys)
-#   SERVER_IMAGE         ghcr.io/hrkcz001/pz-akash-server:<sha> — the tag from
-#                        the latest pz-server image build (docker-build-server
-#                        workflow output). The server's deployment.yaml in
-#                        pz-saves uses the __SERVER_IMAGE__ token.
 #   SSH_PRIVATE_KEY_BASE64  deploy key for pz-saves (same one used by the
 #                           server, see pz-saves/deployment.yaml)
 #   REPO_URL, GIT_USER_NAME, GIT_USER_EMAIL
-#   RCON_PASSWORD        server admin password (RCON)
 #   WEBHOOK_SECRET       any long random string — paste the same value into the
 #                        GitHub webhook settings
 #
-# The server SDL env (SERVER_NAME, ADMIN_PASSWORD, memory, etc.) lives in
-# pz-saves/deployment.yaml — the autosaver does not need those.
+# Optional env (defaults in brackets):
+#   WEBHOOK_PORT [8080] / WEBHOOK_MODE [false]
+#   MAX_PRICE_USD [3.0] / MIN_PRICE_USD [0.001] / DEPLOY_DAYS [7]
+#   PRICE_TOLERANCE [0.20] / REF_LAT [52.2297] / REF_LON [21.0122]
 version: "2.0"
 services:
   autosave:
@@ -48,15 +47,10 @@ services:
       - SSH_PRIVATE_KEY_BASE64=<your deploy key base64>
       # --- Akash managed-wallet API (Settings -> API Keys) ---
       - AKASH_API_KEY=<your console api key>
-      # --- server image (filled into the __SERVER_IMAGE__ token) ---
-      - SERVER_IMAGE=ghcr.io/hrkcz001/pz-akash-server:sha-XXXXXXX
       # --- webhook ---
       - WEBHOOK_PORT=8080
       - WEBHOOK_SECRET=<pick a long random string>
       - WEBHOOK_MODE=true
-      # --- RCON (backup/halt) ---
-      - RCON_PASSWORD=Qwerty0123**
-      - RCON_PORT=27015
       # --- server deploy pricing (USD per day) ---
       - MAX_PRICE_USD=3.0
       - MIN_PRICE_USD=0.001

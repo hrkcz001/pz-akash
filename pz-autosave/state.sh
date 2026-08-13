@@ -16,10 +16,22 @@ set -uo pipefail
 SERVES_REPO="${SERVES_REPO:-/root/pz-saves}"
 BACKUP_DIR="${BACKUP_DIR:-/data/backups}"
 STATE_DIR="${STATE_DIR:-/data}"
-RCON_PASSWORD="${RCON_PASSWORD:-Qwerty0123**}"
+RCON_PASSWORD="${RCON_PASSWORD:-}"
 RCON_PORT="${RCON_PORT:-27015}"
 SSH_CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-10}"
 BACKUP_LOCK="$STATE_DIR/backup.lock"
+
+# RCON credentials come from the server SDL in the pz-saves repo (single
+# source of truth) unless explicitly overridden in the autosaver env — the
+# autosaver deployment itself carries no server info.
+resolve_rcon() {
+  if [ -z "$RCON_PASSWORD" ]; then
+    if [ -f "$SERVES_REPO/deployment.yaml" ]; then
+      RCON_PASSWORD=$(grep -oE 'ADMIN_PASSWORD=[^[:space:]]+' "$SERVES_REPO/deployment.yaml" 2>/dev/null | head -1 | cut -d= -f2-)
+    fi
+    RCON_PASSWORD="${RCON_PASSWORD:-Qwerty0123**}"
+  fi
+}
 
 push_with_retry() {
   for i in {1..5}; do
@@ -53,6 +65,7 @@ server_info_val() { # $1 = key, $2 = default
 # update restore_target. If do_halt=1 also RCON-quit the server afterwards.
 run_backup() {
   local do_halt="${1:-0}"
+  resolve_rcon
   if ! mkdir "$BACKUP_LOCK" 2>/dev/null; then
     echo "[backup] another backup is already running — skipping"
     return 1
