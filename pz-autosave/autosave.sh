@@ -1,6 +1,9 @@
 #!/bin/bash
 echo "=== Starting Zomboid Autosave Service ==="
 
+# Shared helpers (git state, consume-on-trigger files, safe backup)
+source /usr/local/bin/state.sh
+
 # 1. Setup SSH key
 mkdir -p /root/.ssh
 chmod 700 /root/.ssh
@@ -19,29 +22,45 @@ RCON_PASSWORD=${RCON_PASSWORD:-"Qwerty0123**"}
 RCON_PORT=${RCON_PORT:-27015}
 AUTOSAVER_POLL_SEC=${AUTOSAVER_POLL_SEC:-60}
 SSH_CONNECT_TIMEOUT=${SSH_CONNECT_TIMEOUT:-10}
+# Webhook mode: WEBHOOK_ENABLED starts the listener; WEBHOOK_MODE=true makes
+# the loop rely on webhooks and only poll as a slow safety net.
+WEBHOOK_ENABLED=${WEBHOOK_ENABLED:-true}
+WEBHOOK_MODE=${WEBHOOK_MODE:-false}
+WEBHOOK_POLL_SEC=${WEBHOOK_POLL_SEC:-300}
+WEBHOOK_PORT=${WEBHOOK_PORT:-8080}
 
 
 if [ ! -d /root/pz-saves ]; then
     git clone "$REPO_URL" /root/pz-saves || { echo "ERROR: Git clone failed"; exit 1; }
 fi
 
-push_with_retry() {
-    for i in {1..5}; do
-        git push && return 0
-        git pull --rebase >/dev/null 2>&1
-        sleep $((RANDOM % 3 + 1))
-    done
-    echo "WARNING: Git push failed after 5 retries"
-}
-
 mkdir -p /data/backups
 cd /data/backups
 echo "=== Starting HTTP File & Upload Server on port $HTTP_PORT ==="
 python3 -m uploadserver $HTTP_PORT &
 
+if [ "$WEBHOOK_ENABLED" = "true" ]; then
+    echo "=== Starting GitHub webhook listener on port $WEBHOOK_PORT ==="
+    nohup python3 /usr/local/bin/webhook.py >> /data/webhook.log 2>&1 &
+    echo "webhook listener started (pid $!) — see /data/webhook.log"
+    # Best-effort: print the public webhook URL once the lease status is ready,
+    # so it can be pasted into GitHub -> pz-saves -> Settings -> Webhooks.
+    (
+        for i in 1 2 3 4 5 6; do
+            sleep 30
+            URL=$(/usr/local/bin/webhook_url.sh 2>/dev/null || true)
+            if [ -n "$URL" ]; then
+                echo "WEBHOOK URL (use in GitHub webhook settings): $URL"
+                exit 0
+            fi
+        done
+        echo "WEBHOOK URL: not resolved yet — run /usr/local/bin/webhook_url.sh inside the container or check the Akash Console."
+    ) >> /data/webhook.log 2>&1 &
+fi
+
 cd /root/pz-saves
 # Ensure files exist to avoid errors
-touch backup_log restore_target backup_request server_info.json
+touch backup_log restore_target server_info.json
 git add .
 git commit -m "Initialize state files" || true
 push_with_retry
@@ -49,9 +68,14 @@ push_with_retry
 echo "=== Entering Autosaver Loop ==="
 while true; do
     cd /root/pz-saves
-    if ! git pull >/dev/null 2>&1; then
-        echo "WARNING: git pull failed — continuing with potentially stale state"
-    fi
+
+    # Sync state + consume trigger files (start/backup/halt). In webhook mode
+    # this still runs as a slow safety net; webhooks make it near-instant.
+    git_pull_state
+    process_triggers
+
+    # Scheduled stop + escrow top-up (no-ops unless stop_at / active deployment)
+    /usr/local/bin/schedule.sh >> /data/schedule.log 2>&1
     
     IS_PAUSED=false
     if [ -f pause_autosave ] && grep -iq "true" pause_autosave; then
@@ -99,57 +123,16 @@ while true; do
                 fi
             fi
             
-            # Check if manual backup requested OR time for periodic backup
+            # Periodic backup only — manual backups (`backup`) and halts (`halt`)
+            # are handled by process_triggers.
             if [ "$STATUS" = "online" ]; then
                 CURRENT_TIME=$(date +%s)
                 LAST_BACKUP=$(cat /data/last_backup_time 2>/dev/null || echo "0")
                 DIFF=$((CURRENT_TIME - LAST_BACKUP))
                 
-                if [ -f halt_request ] || [ -s backup_request ] || { [ "$IS_PAUSED" = "false" ] && [ $DIFF -gt $BACKUP_INTERVAL_SEC ]; }; then
-                    echo "Starting safe manual/periodic backup from $SERVER_IP:$SERVER_PORT"
-                    TIMESTAMP=$(date +%Y%m%d_%H%M%S)
-                    BACKUP_NAME="backup_$TIMESTAMP.zip"
-                    
-                    # Send save command via RCON
-                    if ! python3 /usr/local/bin/rcon.py "$SERVER_IP" "$RCON_PORT" "$RCON_PASSWORD" "save"; then
-                        echo "ERROR: RCON save command failed. Aborting backup to prevent corruption."
-                        continue
-                    fi
-                    
-                    # Wait for disk flush
-                    sleep 5
-                    
-                    # Stream zip safely directly from server to local disk
-                    ssh -p $SERVER_PORT -o StrictHostKeyChecking=no steam@$SERVER_IP "cd /home/steam/zomboid/Saves && zip -q -r - ." > /data/backups/$BACKUP_NAME
-                    BACKUP_EXIT=${PIPESTATUS[0]}
-
-                    # Validate the backup before committing it as the restore target
-                    if [ $BACKUP_EXIT -ne 0 ] || [ ! -s /data/backups/$BACKUP_NAME ]; then
-                        echo "ERROR: Backup $BACKUP_NAME failed or is empty (ssh/zip exit=$BACKUP_EXIT). Removing partial file."
-                        rm -f /data/backups/$BACKUP_NAME
-                        continue
-                    fi
-
-                    echo $CURRENT_TIME > /data/last_backup_time
-
-                    # Auto-set the latest backup into restore_target only after validation
-                    echo $BACKUP_NAME > restore_target
-
-                    > backup_request
-                    git add backup_request restore_target
-                    git commit -m "Created safe backup $BACKUP_NAME and updated restore_target" || true
-                    
-                    if [ -f halt_request ]; then
-                        echo "Halt requested. Sending quit command via RCON..."
-                        python3 /usr/local/bin/rcon.py "$SERVER_IP" "$RCON_PORT" "$RCON_PASSWORD" "quit" || true
-                        rm -f halt_request
-                        git rm halt_request 2>/dev/null || true
-                        git commit -m "Processed halt_request and issued quit command" || true
-                    fi
-                    
-                    push_with_retry
-                    
-                    echo "Backup $BACKUP_NAME finished and logged."
+                if [ "$IS_PAUSED" = "false" ] && [ $DIFF -gt $BACKUP_INTERVAL_SEC ]; then
+                    echo "Time for periodic backup."
+                    run_backup 0
                 fi
             fi
         fi
@@ -169,5 +152,10 @@ while true; do
         rm -f backup_log.tmp
     fi
 
-    sleep $AUTOSAVER_POLL_SEC
+    if [ "$WEBHOOK_MODE" = "true" ]; then
+        # Webhook-driven: poll only as a slow safety net.
+        sleep $WEBHOOK_POLL_SEC
+    else
+        sleep $AUTOSAVER_POLL_SEC
+    fi
 done
