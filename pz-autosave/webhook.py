@@ -15,6 +15,7 @@ Env:
 import hashlib
 import hmac
 import os
+import shlex
 import subprocess
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -57,11 +58,15 @@ class Handler(BaseHTTPRequestHandler):
 
         try:
             os.makedirs(os.path.dirname(LOG), exist_ok=True)
-            with open(LOG, "ab") as f:
-                subprocess.Popen([TRIGGER], stdout=f, stderr=subprocess.STDOUT)
+            # Trigger output goes BOTH to the container stdout (visible in the
+            # Akash Console logs) and to the webhook log file.
+            subprocess.Popen(
+                ["bash", "-c", "%s 2>&1 | tee -a %s" % (shlex.quote(TRIGGER), shlex.quote(LOG))]
+            )
         except OSError as e:
             self._send(500, ("trigger spawn failed: %s" % e).encode())
             return
+        print("[webhook] POST /webhook accepted, trigger spawned", flush=True)
         self._send(200, b'{"ok": true}')
 
 

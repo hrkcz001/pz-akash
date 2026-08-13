@@ -129,8 +129,10 @@ process_triggers() {
     if [ -z "${AKASH_API_KEY:-}" ]; then
       echo "[trigger] WARNING: AKASH_API_KEY is not set — cannot deploy, start consumed anyway."
     else
-      nohup /usr/local/bin/deploy.sh >> "$STATE_DIR/deploy.log" 2>&1 &
-      echo "[trigger] deploy.sh started in background (pid $!) — see $STATE_DIR/deploy.log"
+      # Stream deploy output to BOTH the container stdout (Akash Console logs)
+      # and the deploy log file.
+      nohup /usr/local/bin/deploy.sh 2>&1 | tee -a "$STATE_DIR/deploy.log" &
+      echo "[trigger] deploy.sh started in background (pid $!) — logs follow in the console and $STATE_DIR/deploy.log"
     fi
   fi
 

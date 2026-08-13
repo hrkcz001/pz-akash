@@ -46,8 +46,8 @@ python3 -m uploadserver $HTTP_PORT &
 
 if [ "$WEBHOOK_ENABLED" = "true" ]; then
     echo "=== Starting GitHub webhook listener on port $WEBHOOK_PORT ==="
-    nohup python3 /usr/local/bin/webhook.py >> /data/webhook.log 2>&1 &
-    echo "webhook listener started (pid $!) — see /data/webhook.log"
+    nohup python3 /usr/local/bin/webhook.py 2>&1 | tee -a /data/webhook.log &
+    echo "webhook listener started (pid $!) — logs follow in the console and /data/webhook.log"
     # Best-effort: print the public webhook URL once the lease status is ready,
     # so it can be pasted into GitHub -> pz-saves -> Settings -> Webhooks.
     (
@@ -60,7 +60,7 @@ if [ "$WEBHOOK_ENABLED" = "true" ]; then
             fi
         done
         echo "WEBHOOK URL: not resolved yet — run /usr/local/bin/webhook_url.sh inside the container or check the Akash Console."
-    ) >> /data/webhook.log 2>&1 &
+    ) 2>&1 | tee -a /data/webhook.log &
 fi
 
 cd /root/pz-saves
@@ -80,7 +80,7 @@ while true; do
     process_triggers
 
     # Scheduled stop + escrow top-up (no-ops unless stop_at / active deployment)
-    /usr/local/bin/schedule.sh >> /data/schedule.log 2>&1
+    /usr/local/bin/schedule.sh 2>&1 | tee -a /data/schedule.log
     
     IS_PAUSED=false
     if [ -f pause_autosave ] && grep -iq "true" pause_autosave; then

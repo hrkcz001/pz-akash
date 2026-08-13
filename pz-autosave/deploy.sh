@@ -122,7 +122,7 @@ push_with_retry() {
 # api METHOD PATH [BODY] — Console API call with x-api-key; retries once on 429.
 api() {
   local method="$1" path="$2" body="${3:-}"
-  local args=(-sS -X "$method" "$API_BASE$path" -H "x-api-key: $AKASH_API_KEY" -H "Content-Type: application/json")
+  local args=(-sS --max-time 30 -X "$method" "$API_BASE$path" -H "x-api-key: $AKASH_API_KEY" -H "Content-Type: application/json")
   [ -n "$body" ] && args+=(-d "$body")
   local raw code
   raw=$(curl "${args[@]}" -w $'\n%{http_code}' 2>/dev/null)
@@ -132,6 +132,10 @@ api() {
     sleep 15
     raw=$(curl "${args[@]}" -w $'\n%{http_code}' 2>/dev/null)
     code=$(printf '%s' "$raw" | tail -n1)
+  fi
+  if [ -z "$code" ] || [ "$code" = "000" ]; then
+    log "WARNING: API call $method $path failed (no response) — continuing with empty result."
+    return 1
   fi
   printf '%s' "$raw" | head -n -1
 }
