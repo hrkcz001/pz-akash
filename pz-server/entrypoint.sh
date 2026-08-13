@@ -164,19 +164,6 @@ else
 fi
 chown -R steam:steam /home/steam/Zomboid/mods
 
-# Patch: damnlib ships its content under 42.17/ but the game expects 42.20/
-# Rename the real directory (symlinks point into the workshop content folder).
-echo "=== Patching damnlib version directory (42.17 -> 42.20) ==="
-DAMNLIB_REAL=$(realpath /home/steam/Zomboid/mods/damnlib 2>/dev/null || true)
-if [ -n "$DAMNLIB_REAL" ] && [ -d "$DAMNLIB_REAL/42.17" ]; then
-    mv "$DAMNLIB_REAL/42.17" "$DAMNLIB_REAL/42.20"
-    echo "  Renamed $DAMNLIB_REAL/42.17 -> 42.20"
-elif [ -n "$DAMNLIB_REAL" ] && [ -d "$DAMNLIB_REAL/42.20" ]; then
-    echo "  damnlib/42.20 already exists, no patch needed."
-else
-    echo "  WARNING: damnlib mod not found or 42.17 dir missing — skipping patch."
-fi
-
 echo "=== Copying Configs ==="
 gosu steam cp /home/steam/vsrania.ini /home/steam/Zomboid/Server/${SERVER_NAME}.ini
 gosu steam cp /home/steam/vsrania_SandboxVars.lua /home/steam/Zomboid/Server/${SERVER_NAME}_SandboxVars.lua
@@ -251,8 +238,6 @@ if [ "$AUTO_CONFIGURE_MODS" = "true" ]; then
     INI_FILE="/home/steam/Zomboid/Server/${SERVER_NAME}.ini"
     MODS_LINE_EXISTS=$(grep -c "^Mods=" "$INI_FILE")
     EXISTING_MODS_LINE=$(grep "^Mods=" "$INI_FILE" | head -n1 | cut -d= -f2-)
-    # Self-heal: strip accidental leading "Mods=" prefix (caused by a prior doubled write)
-    EXISTING_MODS_LINE="${EXISTING_MODS_LINE#Mods=}"
 
     FINAL_LIST=""
     declare -A SEEN_MODS
@@ -397,6 +382,53 @@ if [ "$AUTO_CONFIGURE_MAPS" = "true" ]; then
     echo "  Map= finalized ($(echo "$MAP_FINAL" | tr ';' '\n' | wc -l) entries)"
 else
     echo "=== Skipping Maps auto-configuration (AUTO_CONFIGURE_MAPS=false) ==="
+fi
+
+# === Fix B42 Linux mod case-sensitivity (DamnLib et al.) ===
+# Since B42.13 PZ lowercases mod file paths internally (scripts, checksums,
+# animsets). Mods like DamnLib ship uppercase names (airBrake/, AnimSets/,
+# DAMN_Client.lua, ...) which then can't be found on Linux's case-sensitive
+# filesystem. Create lowercase symlink aliases for every file and directory
+# in each installed mod. Safe to re-run (skips existing symlinks).
+echo "=== Fixing mod case-sensitivity for Linux (B42 regression) ==="
+
+create_lowercase_aliases() {
+    local root="$1"
+    [ -d "$root" ] || return 0
+    local entry parent name lower link_path
+    while IFS= read -r -d '' entry; do
+        [ -L "$entry" ] && continue
+        parent=$(dirname "$entry")
+        name=$(basename "$entry")
+        lower=$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')
+        [ "$name" = "$lower" ] && continue
+        link_path="$parent/$lower"
+        # Don't clobber a real (non-symlink) entry that already exists
+        if [ -e "$link_path" ] && [ ! -L "$link_path" ]; then
+            continue
+        fi
+        ln -sfn "$name" "$link_path" 2>/dev/null || true
+    done < <(find "$root" -not -type l -print0 2>/dev/null | sort -z)
+}
+
+ALIASED=0
+for d in /home/steam/Zomboid/mods/*/; do
+    [ -d "$d" ] || continue
+    create_lowercase_aliases "$d"
+    ALIASED=$((ALIASED + 1))
+done
+echo "  Applied lowercase aliases to $ALIASED mod folder(s)."
+
+# PZ also lowercases the absolute mods-dir path; make the lowercased form
+# resolve back to the real directory (this path contains 'Zomboid').
+ln -sfn /home/steam/Zomboid /home/steam/zomboid 2>/dev/null || true
+
+# Sanity check: the exact DamnLib script path the game failed on should now
+# resolve (in the B42 version dir or the legacy root media dir).
+if find -L /home/steam/Zomboid/mods/damnlib -type f -path "*/media/scripts/airbrake/template_airbrake.txt" 2>/dev/null | grep -q .; then
+    echo "  [ok] DamnLib lowercase script path resolves"
+else
+    echo "  [warn] DamnLib lowercase script path still NOT found (check mod layout)"
 fi
 
 mark_server_stopped() {
