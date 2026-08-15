@@ -39,6 +39,7 @@ The Autosaver listens for GitHub webhooks on port `8080` (`WEBHOOK_PORT`). Setup
 3. **Create the webhook in GitHub**: `pz-saves` repo → Settings → Webhooks → Add webhook → Payload URL: `http://<public-ip>:8080/webhook`, Content type: `application/json`, Secret: the same value as `WEBHOOK_SECRET` → Add webhook (default events are fine — pushes).
 4. **Set in the Autosaver deployment**: `WEBHOOK_SECRET` (same value) and `WEBHOOK_MODE=true`. The loop then only polls as a slow safety net (`WEBHOOK_POLL_SEC`, default 300s).
 5. Every push (trigger files, `stop_at`, `server_info.json` from the server) is processed within seconds instead of a polling interval.
+6. **Self-healing**: the Autosaver probes the listener (`/healthz`) on every loop iteration and restarts it if it dies, logs a heartbeat every 10 min, and re-resolves the public webhook URL every 10 min — if the provider re-maps the shared-endpoint port it logs a prominent WARNING telling you to update the URL in GitHub. The polling loop remains the safety net regardless.
 
 ### Pricing
 - **`MAX_PRICE_USD` (default `3.0`)** — the bid ceiling in USD per day. An 8 vCPU / 16Gi / 30Gi server with an IP lease typically goes for ~$1–3/day on Akash; this cap only sets the ceiling, the winning bid lands below it. `pz-server/deployment.yaml` (manual deploys) uses `amount: 400` uakt/block ≈ $2.9/day at AKT ~$0.5.

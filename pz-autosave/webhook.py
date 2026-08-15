@@ -7,22 +7,33 @@ POST /webhook  -> verifies X-Hub-Signature-256 (when WEBHOOK_SECRET is set),
                   (git pull + consume start/backup/halt triggers).
 GET  /healthz  -> 200 OK
 
+Self-healing: the listener writes its PID to WEBHOOK_PID_FILE so the
+autosaver loop can restart it when /healthz stops answering, and logs a
+heartbeat every WEBHOOK_HEARTBEAT_SEC so a silently dead listener is visible
+in the container logs.
+
 Env:
-  WEBHOOK_PORT    listen port (default 8080)
-  WEBHOOK_SECRET  shared secret configured in the GitHub webhook (optional,
-                  but strongly recommended)
+  WEBHOOK_PORT            listen port (default 8080)
+  WEBHOOK_SECRET          shared secret configured in the GitHub webhook
+                          (optional, but strongly recommended)
+  WEBHOOK_PID_FILE        pid file for the watchdog (default /data/webhook.pid)
+  WEBHOOK_HEARTBEAT_SEC   heartbeat interval in seconds (default 600)
 """
 import hashlib
 import hmac
 import os
 import shlex
 import subprocess
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 PORT = int(os.environ.get("WEBHOOK_PORT", "8080"))
 SECRET = os.environ.get("WEBHOOK_SECRET", "")
 TRIGGER = os.environ.get("WEBHOOK_TRIGGER", "/usr/local/bin/trigger.sh")
 LOG = os.environ.get("WEBHOOK_LOG", "/data/webhook.log")
+PID_FILE = os.environ.get("WEBHOOK_PID_FILE", "/data/webhook.pid")
+HEARTBEAT_SEC = int(os.environ.get("WEBHOOK_HEARTBEAT_SEC", "600"))
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -70,7 +81,19 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, b'{"ok": true}')
 
 
+def heartbeat():
+    while True:
+        time.sleep(HEARTBEAT_SEC)
+        print(f"[webhook] heartbeat — listener alive (pid {os.getpid()})", flush=True)
+
+
 if __name__ == "__main__":
+    try:
+        with open(PID_FILE, "w") as f:
+            f.write(str(os.getpid()))
+    except OSError as e:
+        print(f"[webhook] WARNING: cannot write pid file {PID_FILE}: {e}", flush=True)
+    threading.Thread(target=heartbeat, daemon=True).start()
     server = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
     print(f"webhook listening on :{PORT} (secret={'set' if SECRET else 'NOT SET'})", flush=True)
     server.serve_forever()

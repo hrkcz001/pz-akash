@@ -44,7 +44,11 @@ push_with_retry() {
 }
 
 git_pull_state() {
-  ( cd "$SERVES_REPO" && git pull >/dev/null 2>&1 )
+  if ! ( cd "$SERVES_REPO" && git pull >/dev/null 2>&1 ); then
+    echo "[state] WARNING: git pull in $SERVES_REPO failed — state may be stale (triggers not seen until the next successful pull)" >&2
+    return 1
+  fi
+  return 0
 }
 
 consume_file() { # $1 = filename (start|backup|halt|stop_at)

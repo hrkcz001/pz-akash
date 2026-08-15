@@ -28,6 +28,8 @@ WEBHOOK_ENABLED=${WEBHOOK_ENABLED:-true}
 WEBHOOK_MODE=${WEBHOOK_MODE:-false}
 WEBHOOK_POLL_SEC=${WEBHOOK_POLL_SEC:-300}
 WEBHOOK_PORT=${WEBHOOK_PORT:-8080}
+WEBHOOK_PID_FILE=${WEBHOOK_PID_FILE:-/data/webhook.pid}
+WEBHOOK_HEARTBEAT_SEC=${WEBHOOK_HEARTBEAT_SEC:-600}
 
 
 if [ ! -d /root/pz-saves ]; then
@@ -63,6 +65,41 @@ if [ "$WEBHOOK_ENABLED" = "true" ]; then
     ) 2>&1 | tee -a /data/webhook.log &
 fi
 
+# webhook_watchdog — keep the GitHub webhook listener alive and flag URL drift.
+# The listener can die silently (slim container: no ps/traceback), and providers
+# can re-map shared-endpoint external ports, which silently breaks GitHub
+# deliveries. Runs once per loop iteration (cheap /healthz probe).
+webhook_watchdog() {
+    [ "$WEBHOOK_ENABLED" = "true" ] || return 0
+
+    # 1. Liveness: restart the listener when /healthz stops answering.
+    if ! curl -sf --max-time 5 "http://127.0.0.1:$WEBHOOK_PORT/healthz" >/dev/null 2>&1; then
+        echo "[autosave] WARNING: webhook listener not answering on :$WEBHOOK_PORT — restarting."
+        if [ -f "$WEBHOOK_PID_FILE" ]; then
+            kill "$(cat "$WEBHOOK_PID_FILE")" 2>/dev/null || true
+            rm -f "$WEBHOOK_PID_FILE"
+        fi
+        nohup python3 /usr/local/bin/webhook.py 2>&1 | tee -a /data/webhook.log &
+        echo "[autosave] webhook listener restarted (pid $!)."
+    fi
+
+    # 2. URL drift: shared-endpoint external ports can be re-mapped by the
+    #    provider; GitHub deliveries then fail until the webhook URL is
+    #    updated. Re-resolve the URL and warn on change (at most every 10 min).
+    [ -n "${AKASH_API_KEY:-}" ] || return 0
+    local last_check now url
+    last_check=$(cat /data/webhook_url.check 2>/dev/null || echo 0)
+    now=$(date +%s)
+    [ $((now - last_check)) -ge 600 ] || return 0
+    echo "$now" > /data/webhook_url.check
+    url=$(/usr/local/bin/webhook_url.sh 2>/dev/null || true)
+    [ -n "$url" ] || return 0
+    if [ -f /data/webhook_url ] && [ "$(cat /data/webhook_url)" != "$url" ]; then
+        echo "[autosave] WARNING: webhook URL changed to $url — update it in GitHub -> pz-saves -> Settings -> Webhooks, or deliveries keep failing."
+    fi
+    echo "$url" > /data/webhook_url
+}
+
 cd /root/pz-saves
 # Ensure files exist to avoid errors
 touch backup_log restore_target server_info.json
@@ -81,7 +118,10 @@ while true; do
 
     # Scheduled stop + escrow top-up (no-ops unless stop_at / active deployment)
     /usr/local/bin/schedule.sh 2>&1 | tee -a /data/schedule.log
-    
+
+    # Keep the webhook listener alive + flag URL drift (see function above)
+    webhook_watchdog
+
     IS_PAUSED=false
     if [ -f pause_autosave ] && grep -iq "true" pause_autosave; then
         IS_PAUSED=true
