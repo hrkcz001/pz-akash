@@ -7,7 +7,8 @@
 # like `start`:
 #   start  -> launch deploy.sh (background)
 #   backup -> one manual safe backup
-#   halt   -> one manual safe backup, then RCON quit (graceful shutdown)
+#   halt   -> one manual safe backup, then RCON quit (graceful shutdown), then
+#             close the Akash deployment (billing stops, escrow refunded)
 #   stop_at -> handled by schedule.sh (scheduled stop + escrow top-up)
 # =============================================================================
 
@@ -59,6 +60,50 @@ consume_file() { # $1 = filename (start|backup|halt|stop_at)
 
 server_info_val() { # $1 = key, $2 = default
   jq -r --arg k "$1" --arg d "$2" '.[$k] // $d' "$SERVES_REPO/server_info.json" 2>/dev/null || echo "$2"
+}
+
+# --- shared Akash lifecycle helpers (used by both the halt trigger below and
+# schedule.sh's stop_at path). schedule.sh shadows log/api with its own
+# equivalents — identical behavior, just a different log prefix.
+log() { echo "[autosaver] $(date -u +%FT%TZ) $*"; }
+
+API_BASE="${API_BASE:-https://console-api.akash.network}"
+ACTIVE_DSEQ_FILE="${ACTIVE_DSEQ_FILE:-$STATE_DIR/active_dseq}"
+HALT_CONFIRM_SEC="${HALT_CONFIRM_SEC:-180}"
+
+# api METHOD PATH [BODY] — Console API call with x-api-key (no retry; deploy.sh
+# brings its own richer helper for the deploy cycle).
+api() {
+  local method="$1" path="$2" body="${3:-}"
+  local args=(-sS -X "$method" "$API_BASE$path" -H "x-api-key: $AKASH_API_KEY" -H "Content-Type: application/json")
+  [ -n "$body" ] && args+=(-d "$body")
+  curl "${args[@]}" 2>/dev/null
+}
+
+# wait_server_stopped — poll server_info.json until status == "stopped".
+wait_server_stopped() {
+  local deadline st
+  deadline=$(( $(date +%s) + HALT_CONFIRM_SEC ))
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    git_pull_state
+    st=$(server_info_val status "")
+    if [ "$st" = "stopped" ]; then
+      return 0
+    fi
+    sleep 10
+  done
+  return 1
+}
+
+# close_deployment — close the active Akash deployment. This stops billing and
+# the unspent escrow is refunded to the wallet. No-op without an active dseq.
+close_deployment() {
+  local dseq
+  dseq=$(cat "$ACTIVE_DSEQ_FILE" 2>/dev/null || echo "")
+  [ -n "$dseq" ] || return 0
+  log "Closing deployment $dseq."
+  api DELETE "/v1/deployments/$dseq" >/dev/null
+  rm -f "$ACTIVE_DSEQ_FILE"
 }
 
 # run_backup [do_halt] — safe backup: RCON save -> stream zip -> validate ->
@@ -146,5 +191,17 @@ process_triggers() {
     echo "[trigger] halt trigger detected (halt) — consuming"
     consume_file halt
     run_backup 1
+    # Halt = graceful stop + close the Akash deployment (billing stops, unspent
+    # escrow refunded), mirroring the stop_at path in schedule.sh.
+    if [ -n "${AKASH_API_KEY:-}" ] && [ -f "$ACTIVE_DSEQ_FILE" ]; then
+      if wait_server_stopped; then
+        echo "[trigger] server reported 'stopped' — closing deployment to stop billing."
+      else
+        echo "[trigger] server did not report 'stopped' within ${HALT_CONFIRM_SEC}s — closing deployment anyway."
+      fi
+      close_deployment
+    else
+      echo "[trigger] AKASH_API_KEY not set or no active deployment — skipped deployment close."
+    fi
   fi
 }

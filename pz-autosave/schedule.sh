@@ -69,28 +69,9 @@ PYEOF
 }
 
 # --- scheduled stop -----------------------------------------------------------
-wait_server_stopped() {
-  local deadline st
-  deadline=$(( $(date +%s) + HALT_CONFIRM_SEC ))
-  while [ "$(date +%s)" -lt "$deadline" ]; do
-    git_pull_state
-    st=$(server_info_val status "")
-    if [ "$st" = "stopped" ]; then
-      return 0
-    fi
-    sleep 10
-  done
-  return 1
-}
-
-close_deployment() {
-  local dseq
-  dseq=$(cat "$ACTIVE_DSEQ_FILE" 2>/dev/null || echo "")
-  [ -n "$dseq" ] || return 0
-  log "Closing deployment $dseq (scheduled stop)."
-  api DELETE "/v1/deployments/$dseq" >/dev/null
-  rm -f "$ACTIVE_DSEQ_FILE"
-}
+# wait_server_stopped / close_deployment are shared helpers from state.sh.
+# (schedule.sh's own api()/log() shadow the state.sh versions — identical
+# behavior, just a [schedule] log prefix.)
 
 check_stop_time() {
   local stop_epoch now

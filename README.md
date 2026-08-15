@@ -24,7 +24,7 @@ The Autosaver securely streams `.zip` backups directly from the game server via 
 To force an immediate backup at any time, push a file named `backup` (any content) to `pz-saves`. The Autosaver consumes it (removes + pushes), runs a safe backup (RCON save → zip → updates `restore_target`), and is done.
 
 ### Halting the Server (Graceful Shutdown)
-Push a file named `halt` to `pz-saves`. The Autosaver consumes it, performs a safe backup, and issues a `quit` command to the server. The server gracefully shuts down and updates `server_info.json` to `"stopped"`.
+Push a file named `halt` to `pz-saves`. The Autosaver consumes it, performs a safe backup, and issues a `quit` command to the server. The server gracefully shuts down and updates `server_info.json` to `"stopped"`, then the Autosaver **closes the Akash deployment** — billing stops and the unspent escrow is refunded to your wallet. To start again later, push `start` and it deploys fresh.
 
 ### Scheduled Stop + Auto Top-up
 Push a file named `stop_at` with a stop time — epoch seconds or `YYYY-MM-DD HH:MM[:SS]` (UTC):
