@@ -29,9 +29,9 @@ RUN    if [ -s /steamcmd/mods.json ]; then \
     fi
 
 # Move downloaded mods out of the steamcmd workshop structure into a clean
-# /pz-server/mods directory and lowercase every file/dir name. The game
-# lowercases mod paths internally (B42); real lowercase names mean the runtime
-# needs no symlink aliases, and a clean mods dir means no workshop symlinks.
+# /pz-server/mods directory, keeping the original file/dir names — the runtime
+# copies them into ~/Zomboid/mods as-is. A clean mods dir means no workshop
+# symlinks.
 RUN mkdir -p /pz-server/mods && \
     if [ -s /steamcmd/mods.json ]; then \
         for mod in $(jq -r '.[]' /steamcmd/mods.json); do \
@@ -42,12 +42,6 @@ RUN mkdir -p /pz-server/mods && \
                     mv "$d" "/pz-server/mods/$(basename "$d")"; \
                 done; \
             fi; \
-        done; \
-        find /pz-server/mods -depth | while read -r p; do \
-            d=$(dirname "$p"); b=$(basename "$p"); l=$(printf '%s' "$b" | tr '[:upper:]' '[:lower:]'); \
-            [ "$b" = "$l" ] && continue; \
-            [ -e "$d/$l" ] && continue; \
-            mv "$d/$b" "$d/$l"; \
         done; \
         rm -rf /pz-server/steamapps/workshop/content/108600; \
     fi

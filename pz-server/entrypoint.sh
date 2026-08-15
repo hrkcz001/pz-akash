@@ -37,8 +37,11 @@ chmod 600 /home/steam/.ssh/authorized_keys
 chown -R steam:steam /home/steam/.ssh
 
 # 3. Setup git and clone repo (as steam)
+# NOTE: no `chown -R /home/steam` here — the image already owns everything
+# steam:steam (Dockerfile COPY --chown) and a recursive chown over the
+# multi-GB game tree at boot costs minutes. The only root-created paths
+# (.ssh, server.log) get explicit chowns below.
 echo "=== Syncing with Git ==="
-chown -R steam:steam /home/steam
 echo "  REPO_URL: ${REPO_URL:-NOT SET}"
 echo "  GIT_USER_NAME: ${GIT_USER_NAME:-NOT SET}"
 gosu steam bash -c "
@@ -159,12 +162,11 @@ push_with_retry
 fi
 
 # 5. Install mods (runs as steam)
-# Mods are staged into the image at build time (/home/steam/pz-server/mods) with
-# ALL names already lowercased (see Dockerfile). Copy them into the game's mods
+# Mods are staged into the image at build time (/home/steam/pz-server/mods)
+# with their ORIGINAL names (see Dockerfile). Copy them into the game's mods
 # dir as REAL directories (hardlinks) — no symlinks: the game's checksum code
-# could not resolve symlinked mods. The cachedir is lowercase
-# The game looks up mods in ~/Zomboid/mods (capital Z) regardless of
-# -cachedir; file names inside mods are lowercased at build time (Dockerfile).
+# could not resolve symlinked mods. The game looks up mods in ~/Zomboid/mods
+# (capital Z) regardless of -cachedir.
 echo "=== Installing Mods (real copies from image) ==="
 IMAGE_MODS="/home/steam/pz-server/mods"
 MOD_COPY_COUNT=0
@@ -186,7 +188,8 @@ if [ -d "$IMAGE_MODS" ]; then
 else
     echo "WARNING: No mods directory found in image at $IMAGE_MODS — no mods will be loaded."
 fi
-chown -R steam:steam /home/steam/Zomboid/mods
+# No chown needed: the mods dir was created by `gosu steam mkdir -p` and the
+# hardlinks/copies inherit steam ownership from the image's mods directory.
 
 
 echo "=== Copying Configs ==="
@@ -409,9 +412,8 @@ else
     echo "=== Skipping Maps auto-configuration (AUTO_CONFIGURE_MAPS=false) ==="
 fi
 
-# Case-sensitivity is handled at IMAGE BUILD time (all mod file names are
-# lowercased in the Dockerfile) and the cachedir is already lowercase — no
-# runtime aliases or mirrors needed.
+# Mod names are kept as-is from the image (no runtime renaming or aliases
+# needed); the cachedir is already lowercase.
 
 mark_server_stopped() {
     # Mark as stopped and request restore on next boot
@@ -457,7 +459,10 @@ if [ -z "$PZ_PATH" ]; then
 fi
 PZ_DIR=$(dirname "$PZ_PATH")
 chmod +x "$PZ_PATH" "$PZ_DIR"/ProjectZomboid64 "$PZ_DIR"/jre64/bin/java 2>/dev/null || true
-chown -R steam:steam /home/steam/pz-server
+# No `chown -R /home/steam/pz-server` — the image already owns it steam:steam
+# (COPY --chown); a recursive chown over the whole game tree at boot costs
+# minutes. The one file patched below (ProjectZomboid64.json) is re-chowned
+# individually.
 
 JSON_CONFIG="$PZ_DIR/ProjectZomboid64.json"
 if [ -f "$JSON_CONFIG" ]; then
@@ -487,6 +492,9 @@ PYEOF
     else
         echo "WARNING: python3 not available, skipping memory vmArgs injection into JSON. Using JSON defaults."
     fi
+    # The patch above ran as root — hand the file back to steam (single file,
+    # cheap; avoids a full-tree chown).
+    chown steam:steam "$JSON_CONFIG"
 else
     echo "WARNING: ProjectZomboid64.json not found, relying on launch flags only."
 fi
