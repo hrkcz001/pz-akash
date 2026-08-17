@@ -13,6 +13,8 @@ RUN mkdir -p /steamcmd /build/pz-saves /packages && \
 
 ARG REPO_URL="https://github.com/hrkcz001/pz-saves.git"
 ARG REPO_BRANCH="main"
+ARG AUTO_CONFIGURE_MODS="true"
+ARG AUTO_CONFIGURE_MAPS="true"
 
 COPY build_packages.py /usr/local/bin/build_packages.py
 RUN chmod +x /usr/local/bin/build_packages.py
@@ -32,7 +34,12 @@ RUN if [ -d /tmp/context/pz-saves ] && [ -d /tmp/context/pz-saves/common ]; then
     fi && \
     rm -rf /tmp/context
 
-RUN python3 /usr/local/bin/build_packages.py --repo-path /build/pz-saves --output-dir /packages --steamcmd /steamcmd/steamcmd.sh
+RUN python3 /usr/local/bin/build_packages.py \
+    --repo-path /build/pz-saves \
+    --output-dir /packages \
+    --steamcmd /steamcmd/steamcmd.sh \
+    --auto-configure-mods "${AUTO_CONFIGURE_MODS}" \
+    --auto-configure-maps "${AUTO_CONFIGURE_MAPS}"
 
 # Stage 2: Controller Runtime
 FROM debian:bookworm-slim
