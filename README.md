@@ -16,8 +16,9 @@ The system consists of two primary services communicating via the private `pz-sa
      - `client.zip`: Client-specific mods & configs (Public).
      - `server.zip`: Server-specific mods, `.ini`s, and `.lua` files (🔒 Protected).
    - **HTTP Hub & Dashboard (`:8000`)**:
-     - Web UI showing live server IP, status, and download links for players.
-     - Public endpoints: `/`, `/client.zip`, `/common.zip`, `/server_info.json`, `/healthz`.
+     - Web UI showing live server IP & Port (with 1-click copy buttons), live status badges, clean game client `.torrent` download, and package statistics (mod count, config file count, archive size).
+     - Dynamically renders player guide from `README.md` in `pz-saves`.
+     - Public endpoints: `/`, `/client.zip`, `/common.zip`, `/game.torrent`, `/server_info.json`, `/manifest`, `/healthz`.
      - Protected endpoints (requires `STORAGE_PASSWORD`): `/server.zip`, `/upload`, `/backups/*`.
    - **Akash Orchestrator & Auto-Backups**: Triggers server deployments on `start`, safe RCON backups on schedule or `backup`, and graceful halts on `halt` or `stop_at`.
 
@@ -29,10 +30,13 @@ The system consists of two primary services communicating via the private `pz-sa
 
 ## 📁 `pz-saves` Repository Structure
 
-The `pz-saves` repository maintains your world state and configurations using three root folders:
+The `pz-saves` repository maintains your world state and configurations:
 
 ```text
 pz-saves/
+├── README.md                 <-- Player connection & mod installation guide (rendered on web hub)
+├── game.torrent              <-- Torrent file for clean game installation (downloadable from hub)
+├── deployment.yaml           <-- Akash deployment configuration for dedicated server
 ├── common/                   <-- Shared between client & server
 │   └── mods.json             <-- List of Workshop IDs common to both
 ├── client/                   <-- Client-only files & configs
@@ -44,7 +48,8 @@ pz-saves/
 │       ├── vsrania.ini
 │       ├── vsrania_SandboxVars.lua
 │       └── vsrania_spawnregions.lua
-├── server_info.json          <-- Live server IP, port, and status
+├── server_info.json          <-- Live server IP, port, and status (auto-managed)
+├── controller_info.json      <-- Auto-discovered controller ingress URL (auto-managed)
 └── restore_target            <-- Target backup file for auto-restore
 ```
 
@@ -52,17 +57,21 @@ pz-saves/
 
 ## 🎮 Player Experience & Connecting
 
-1. Open `http://<controller-ip>:8000/` in any browser.
-2. View the current live **Server IP & Port** and **Status**.
-3. Click to download **`common.zip`** and **`client.zip`**.
-4. Extract both `.zip` archives directly into your local Zomboid folder:
+1. Open `http://<controller-ip>:8000/` (or your custom domain with Cloudflare SSL `https://...`) in any browser.
+2. Check the live server status badge (**ONLINE**, **STARTING UP**, or **OFFLINE**).
+3. Download the clean game client using the **`game.torrent`** button (recommended to prevent version mismatches).
+4. Download **`common.zip`** and **`client.zip`** from the web hub.
+5. Extract both `.zip` archives directly into your local Zomboid folder with file replacement / overwrite:
    - **Windows**: `%USERPROFILE%\Zomboid\` (e.g. `C:\Users\<Name>\Zomboid\`)
    - **Linux / macOS**: `~/Zomboid/`
-5. Launch Project Zomboid and join the server IP!
+6. When the status is **ONLINE**, copy the **Server IP** and **Port** using the 1-click copy buttons and connect in-game!
 
 ---
 
 ## 💾 Backups, Restores & Lifecycle
+
+### Starting the Dedicated Server (Deploy to Akash)
+Push a file named `start` to `pz-saves`. The Controller consumes it (`git rm start`), reads `deployment.yaml` from `pz-saves`, creates an Akash deployment via the Akash Console API, waits for provider lease bids and IP assignment, writes the server IP to `server_info.json`, and boots the dedicated game server.
 
 ### Manual Backups
 Push a file named `backup` to `pz-saves`. The Controller consumes it, runs a safe backup (`RCON save` → `zip` stream → updates `restore_target`), and pushes to git.
@@ -79,14 +88,14 @@ Push a file named `stop_at` with an epoch timestamp or `YYYY-MM-DD HH:MM[:SS]` (
 1. Write the backup filename into `restore_target` in `pz-saves` (e.g. `backup_20260810_120000.zip`).
 2. Write `requested` into `request_restore`.
 3. Commit and push.
-4. When the server boots, it downloads the backup and applies it cleanly.
+4. When the server boots, it downloads the backup and applies it cleanly before starting the world.
 
 ---
 
 ## 🔒 Storage Server Security
 
 The Controller HTTP service (`:8000`) is protected with `STORAGE_PASSWORD`:
-- **Public endpoints**: `/`, `/client.zip`, `/common.zip`, `/server_info.json`, `/manifest`.
+- **Public endpoints**: `/`, `/client.zip`, `/common.zip`, `/game.torrent`, `/server_info.json`, `/manifest`, `/healthz`.
 - **Protected endpoints**: `/server.zip`, `/upload`, `/backups/*`.
 - **Authentication formats supported**:
   - Header: `Authorization: Bearer <STORAGE_PASSWORD>`
