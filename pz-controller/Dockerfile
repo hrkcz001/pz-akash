@@ -13,8 +13,8 @@ RUN mkdir -p /steamcmd /build/pz-saves /packages && \
 
 ARG REPO_URL="https://github.com/hrkcz001/pz-saves.git"
 ARG REPO_BRANCH="main"
-ARG AUTO_CONFIGURE_MODS="true"
-ARG AUTO_CONFIGURE_MAPS="true"
+ARG AUTO_CONFIGURE_MODS="false"
+ARG AUTO_CONFIGURE_MAPS="false"
 
 COPY build_packages.py /usr/local/bin/build_packages.py
 RUN chmod +x /usr/local/bin/build_packages.py

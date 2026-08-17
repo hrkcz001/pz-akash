@@ -8,7 +8,7 @@ A fully automated, self-healing Project Zomboid dedicated server and mod managem
 
 The system consists of two primary services communicating via the private `pz-saves` Git repository and an authenticated/public HTTP storage interface:
 
-1. **`pz-controller` (formerly `pz-autosave`)**:
+1. **`pz-controller`**:
    - **Build-Time Mod Packaging**: Downloads Steam Workshop mods during image build using SteamCMD for `common/`, `client/`, and `server/` configs.
    - **Auto-Configures Configs**: Automatically discovers mod IDs and custom maps, injecting `Mods=` and `Map=` into server `.ini` files.
    - **Generates 3 Archives**:
