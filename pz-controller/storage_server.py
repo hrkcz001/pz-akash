@@ -4,13 +4,16 @@ storage_server.py — Secure HTTP file & storage server for PZ Controller.
 
 Serves:
   - Public web dashboard (server IP, status, mod list, client download links)
+  - Dedicated Backups page (/backups) with password access, backup listing, and upload form
+  - Filtered backup list (hiding .gitkeep and non-zip files)
   - Public downloads: /client.zip, /common.zip, /server_info.json, /healthz
-  - Protected downloads: /server.zip, /backups/* (requires password/token)
+  - Protected downloads: /server.zip, /backups/<filename> (requires password/token)
   - Protected uploads: POST /upload (for backup uploads)
 """
 
 import base64
 import cgi
+import datetime
 import hmac
 import json
 import os
@@ -38,7 +41,6 @@ def log(msg: str):
 def check_auth(headers, query_params) -> bool:
     """Validate bearer token, basic auth, custom header or query token against STORAGE_PASSWORD."""
     if not STORAGE_PASSWORD:
-        # If no password configured, protect sensitive endpoints by default
         log("WARNING: STORAGE_PASSWORD is not set! Denying protected access.")
         return False
 
@@ -65,8 +67,8 @@ def check_auth(headers, query_params) -> bool:
     if token_header and hmac.compare_digest(token_header.strip(), STORAGE_PASSWORD):
         return True
 
-    # 4. Query param (?token=... or ?key=...)
-    query_token = query_params.get("token", [None])[0] or query_params.get("key", [None])[0]
+    # 4. Query param (?token=... or ?key=... or ?password=...)
+    query_token = query_params.get("token", [None])[0] or query_params.get("key", [None])[0] or query_params.get("password", [None])[0]
     if query_token and hmac.compare_digest(query_token.strip(), STORAGE_PASSWORD):
         return True
 
@@ -95,6 +97,23 @@ def get_manifest():
     return {}
 
 
+def get_valid_backups():
+    """Return sorted list of valid .zip backup files, hiding .gitkeep and non-zips."""
+    backups = []
+    if BACKUPS_DIR.is_dir():
+        for f in BACKUPS_DIR.iterdir():
+            # Exclude .gitkeep, hidden files, and non-zip files
+            if f.is_file() and f.suffix.lower() == ".zip" and not f.name.startswith("."):
+                backups.append({
+                    "name": f.name,
+                    "size": f.stat().st_size,
+                    "size_str": f"{f.stat().st_size / (1024*1024):.2f} MB" if f.stat().st_size >= 1024*1024 else f"{f.stat().st_size / 1024:.1f} KB",
+                    "mtime": int(f.stat().st_mtime),
+                    "date_str": datetime.datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M:%S")
+                })
+    return sorted(backups, key=lambda b: b["mtime"], reverse=True)
+
+
 def render_html_dashboard(server_info: dict, manifest: dict) -> str:
     status = server_info.get("status", "unknown").lower()
     ip = server_info.get("ip", "pending")
@@ -108,8 +127,8 @@ def render_html_dashboard(server_info: dict, manifest: dict) -> str:
 
     client_info = manifest.get("client", {})
     common_info = manifest.get("common", {})
-    client_size_mb = f"{client_info.get('size', 0) / (1024*1024):.1f} MB" if client_info.get('size') else "Available"
-    common_size_mb = f"{common_info.get('size', 0) / (1024*1024):.1f} MB" if common_info.get('size') else "Available"
+    client_size_mb = f"{client_info.get('size', 0) / (1024*1024):.1f} MB" if client_info.get('size') else "Ready"
+    common_size_mb = f"{common_info.get('size', 0) / (1024*1024):.1f} MB" if common_info.get('size') else "Ready"
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -137,7 +156,7 @@ def render_html_dashboard(server_info: dict, manifest: dict) -> str:
       justify-content: center;
     }}
     .container {{
-      max-width: 720px;
+      max-width: 760px;
       width: 100%;
     }}
     .card {{
@@ -148,10 +167,28 @@ def render_html_dashboard(server_info: dict, manifest: dict) -> str:
       margin-bottom: 1.5rem;
       box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3);
     }}
+    .nav-bar {{
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 1.25rem;
+    }}
+    .nav-link {{
+      color: var(--text-muted);
+      text-decoration: none;
+      font-weight: 500;
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      transition: all 0.15s;
+    }}
+    .nav-link.active, .nav-link:hover {{
+      color: white;
+      background-color: rgba(255, 255, 255, 0.05);
+      border-color: var(--border);
+    }}
     h1 {{
       font-size: 1.75rem;
-      margin-top: 0;
-      margin-bottom: 0.5rem;
+      margin: 0;
       color: #f1f5f9;
     }}
     .status-badge {{
@@ -191,6 +228,8 @@ def render_html_dashboard(server_info: dict, manifest: dict) -> str:
       padding: 0.65rem 1.25rem;
       border-radius: 8px;
       font-weight: 500;
+      cursor: pointer;
+      border: none;
       transition: background-color 0.15s;
     }}
     .btn:hover {{
@@ -248,6 +287,11 @@ def render_html_dashboard(server_info: dict, manifest: dict) -> str:
 </head>
 <body>
   <div class="container">
+    <div class="nav-bar">
+      <a href="/" class="nav-link active">📦 Player Packages</a>
+      <a href="/backups" class="nav-link">🗄️ Server Backups</a>
+    </div>
+
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem;">
         <h1>🧟 Project Zomboid Server</h1>
@@ -260,14 +304,14 @@ def render_html_dashboard(server_info: dict, manifest: dict) -> str:
       <p style="color:var(--text-muted); margin-top:0.25rem;">Live server status and player mod packages.</p>
 
       <div class="ip-box">
-        <span><strong>Server IP:</strong> {ip}:{port}</span>
+        <span><strong>Server Address:</strong> {ip}:{port}</span>
         <button class="btn btn-secondary" onclick="navigator.clipboard.writeText('{ip}:{port}'); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy', 2000)">Copy</button>
       </div>
     </div>
 
     <div class="card">
-      <h2>📦 Player Downloads</h2>
-      <p style="color:var(--text-muted);">Download the pre-bundled mods and configs before joining the server:</p>
+      <h2>📦 Download Game Packages</h2>
+      <p style="color:var(--text-muted);">Download the pre-bundled mods and configs before connecting:</p>
 
       <div class="download-grid">
         <div class="download-card">
@@ -286,13 +330,237 @@ def render_html_dashboard(server_info: dict, manifest: dict) -> str:
         <strong>How to install:</strong>
         <ol style="padding-left: 1.25rem; margin-top: 0.5rem;">
           <li>Download both <code>common.zip</code> and <code>client.zip</code>.</li>
-          <li>Extract both files directly into your Zomboid user folder:<br>
+          <li>Extract both archives directly into your local Zomboid directory:<br>
               Windows: <code>%USERPROFILE%\\Zomboid\\</code><br>
-              Linux / Mac: <code>~/Zomboid/</code>
+              Linux / macOS: <code>~/Zomboid/</code>
           </li>
           <li>Launch Project Zomboid and connect to <code>{ip}:{port}</code>!</li>
         </ol>
       </div>
+    </div>
+  </div>
+</body>
+</html>
+"""
+
+
+def render_html_backups(server_info: dict, backups: list, authenticated: bool, token: str = "") -> str:
+    status = server_info.get("status", "unknown").lower()
+    ip = server_info.get("ip", "pending")
+    port = server_info.get("port", 16261)
+    
+    badge_color = "#eab308"
+    if status == "online":
+        badge_color = "#22c55e"
+    elif status in ("stopped", "error", "failed"):
+        badge_color = "#ef4444"
+
+    # Render backup rows
+    if backups:
+        rows = []
+        for b in backups:
+            token_param = f"?token={token}" if token else ""
+            dl_url = f"/backups/{b['name']}{token_param}"
+            rows.append(f"""
+            <tr>
+              <td style="font-family:monospace; font-weight:600;">{b['name']}</td>
+              <td style="color:var(--text-muted);">{b['date_str']}</td>
+              <td style="color:var(--text-muted);">{b['size_str']}</td>
+              <td>
+                <a href="{dl_url}" class="btn btn-secondary" style="padding:0.35rem 0.75rem; font-size:0.85rem;" download>Download</a>
+              </td>
+            </tr>
+            """)
+        backups_table = f"""
+        <table style="width:100%; border-collapse:collapse; text-align:left; margin-top:1rem;">
+          <thead>
+            <tr style="border-bottom: 1px solid var(--border); color: var(--text-muted); font-size:0.85rem;">
+              <th style="padding: 0.6rem 0.5rem;">Backup File</th>
+              <th style="padding: 0.6rem 0.5rem;">Date Created</th>
+              <th style="padding: 0.6rem 0.5rem;">Size</th>
+              <th style="padding: 0.6rem 0.5rem;">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+            {''.join(rows)}
+          </tbody>
+        </table>
+        """
+    else:
+        backups_table = """<p style="color:var(--text-muted); margin-top:1rem; font-style:italic;">No backup archives (.zip) found in /data/backups/.</p>"""
+
+    auth_section = ""
+    if not authenticated:
+        auth_section = """
+        <div class="card" style="border-color:#f59e0b; background: rgba(245, 158, 11, 0.05);">
+          <h3 style="margin-top:0; color:#f59e0b;">🔒 Password Required</h3>
+          <p style="color:var(--text-muted); font-size:0.9rem;">Server backups and uploads are protected. Enter the storage password below:</p>
+          <form method="GET" action="/backups" style="display:flex; gap:0.5rem; max-width:400px;">
+            <input type="password" name="token" placeholder="Enter STORAGE_PASSWORD" style="flex:1; padding:0.6rem 0.75rem; border-radius:6px; background:#090d16; border:1px solid var(--border); color:white;" required />
+            <button type="submit" class="btn">Unlock</button>
+          </form>
+        </div>
+        """
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Project Zomboid Server Backups</title>
+  <style>
+    :root {{
+      --bg: #0f172a;
+      --card-bg: #1e293b;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
+      --primary: #3b82f6;
+      --primary-hover: #2563eb;
+      --border: #334155;
+    }}
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 2rem 1rem;
+      display: flex;
+      justify-content: center;
+    }}
+    .container {{
+      max-width: 760px;
+      width: 100%;
+    }}
+    .card {{
+      background-color: var(--card-bg);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.75rem;
+      margin-bottom: 1.5rem;
+      box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3);
+    }}
+    .nav-bar {{
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 1.25rem;
+    }}
+    .nav-link {{
+      color: var(--text-muted);
+      text-decoration: none;
+      font-weight: 500;
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      transition: all 0.15s;
+    }}
+    .nav-link.active, .nav-link:hover {{
+      color: white;
+      background-color: rgba(255, 255, 255, 0.05);
+      border-color: var(--border);
+    }}
+    h1 {{
+      font-size: 1.75rem;
+      margin: 0;
+      color: #f1f5f9;
+    }}
+    .status-badge {{
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.35rem 0.85rem;
+      border-radius: 9999px;
+      font-weight: 600;
+      font-size: 0.875rem;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border);
+    }}
+    .status-dot {{
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background-color: {badge_color};
+    }}
+    .ip-box {{
+      background: #090d16;
+      border: 1px solid #1e293b;
+      border-radius: 8px;
+      padding: 0.75rem 1rem;
+      font-family: monospace;
+      font-size: 1.1rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin: 1rem 0;
+    }}
+    .btn {{
+      display: inline-block;
+      background-color: var(--primary);
+      color: white;
+      text-decoration: none;
+      padding: 0.65rem 1.25rem;
+      border-radius: 8px;
+      font-weight: 500;
+      cursor: pointer;
+      border: none;
+      transition: background-color 0.15s;
+    }}
+    .btn:hover {{
+      background-color: var(--primary-hover);
+    }}
+    .btn-secondary {{
+      background-color: #334155;
+    }}
+    .btn-secondary:hover {{
+      background-color: #475569;
+    }}
+    table td {{
+      padding: 0.65rem 0.5rem;
+      border-bottom: 1px solid rgba(51, 65, 85, 0.5);
+      font-size: 0.9rem;
+    }}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="nav-bar">
+      <a href="/" class="nav-link">📦 Player Packages</a>
+      <a href="/backups{f'?token={token}' if token else ''}" class="nav-link active">🗄️ Server Backups</a>
+    </div>
+
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem;">
+        <h1>🗄️ Server Backups</h1>
+        <div class="status-badge">
+          <div class="status-dot"></div>
+          <span style="text-transform: uppercase;">{status}</span>
+        </div>
+      </div>
+      
+      <p style="color:var(--text-muted); margin-top:0.25rem;">Server world backups (.zip) and upload management.</p>
+
+      <div class="ip-box">
+        <span><strong>Server Address:</strong> {ip}:{port}</span>
+        <button class="btn btn-secondary" onclick="navigator.clipboard.writeText('{ip}:{port}'); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy', 2000)">Copy</button>
+      </div>
+    </div>
+
+    {auth_section}
+
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap;">
+        <h2 style="margin:0;">Available Backups</h2>
+        <span style="color:var(--text-muted); font-size:0.85rem;">{len(backups)} archive(s)</span>
+      </div>
+      {backups_table}
+    </div>
+
+    <div class="card">
+      <h2>⬆️ Upload Backup Archive</h2>
+      <p style="color:var(--text-muted); font-size:0.9rem;">Upload an existing world save <code>.zip</code> into the Controller:</p>
+      <form action="/upload{f'?token={token}' if token else ''}" method="POST" enctype="multipart/form-data" style="margin-top:1rem;">
+        <input type="file" name="file" accept=".zip" style="color:var(--text-muted); margin-bottom:1rem; display:block;" required />
+        <button type="submit" class="btn">Upload Backup .zip</button>
+      </form>
     </div>
   </div>
 </body>
@@ -351,7 +619,7 @@ class StorageHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        # 2. Web UI Dashboard
+        # 2. Main Dashboard (Player Downloads + Server IP)
         if path in ("/", "/index.html"):
             server_info = get_server_info()
             manifest = get_manifest()
@@ -360,7 +628,32 @@ class StorageHandler(BaseHTTPRequestHandler):
             self.wfile.write(html)
             return
 
-        # 3. Live server_info.json (Public)
+        # 3. Dedicated Backups Folder / Page
+        if path in ("/backups", "/backups/"):
+            server_info = get_server_info()
+            is_authed = check_auth(self.headers, query)
+            token = query.get("token", [None])[0] or query.get("key", [None])[0] or query.get("password", [None])[0] or ""
+
+            # Check if JSON API requested
+            accept_header = self.headers.get("Accept", "")
+            if "application/json" in accept_header:
+                if not is_authed:
+                    self._send_error(401, "Unauthorized")
+                    return
+                backups = get_valid_backups()
+                body = json.dumps({"backups": backups}, indent=2).encode("utf-8")
+                self._send_response_headers(200, "application/json", len(body))
+                self.wfile.write(body)
+                return
+
+            # Render HTML Backups page
+            backups = get_valid_backups() if is_authed else []
+            html = render_html_backups(server_info, backups, is_authed, token).encode("utf-8")
+            self._send_response_headers(200, "text/html; charset=utf-8", len(html))
+            self.wfile.write(html)
+            return
+
+        # 4. Live server_info.json (Public)
         if path == "/server_info.json":
             info = get_server_info()
             body = json.dumps(info, indent=2).encode("utf-8")
@@ -368,7 +661,7 @@ class StorageHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        # 4. Packages Manifest (Public)
+        # 5. Packages Manifest (Public)
         if path in ("/manifest", "/packages_manifest.json"):
             manifest = get_manifest()
             body = json.dumps(manifest, indent=2).encode("utf-8")
@@ -376,7 +669,7 @@ class StorageHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        # 5. Public Downloads: client.zip & common.zip
+        # 6. Public Downloads: client.zip & common.zip
         if path == "/client.zip":
             self._stream_file(PACKAGES_DIR / "client.zip", "client.zip", as_attachment=True)
             return
@@ -385,7 +678,7 @@ class StorageHandler(BaseHTTPRequestHandler):
             self._stream_file(PACKAGES_DIR / "common.zip", "common.zip", as_attachment=True)
             return
 
-        # 6. PROTECTED DOWNLOAD: server.zip (Game Server Only)
+        # 7. PROTECTED DOWNLOAD: server.zip (Game Server Only)
         if path == "/server.zip":
             if not check_auth(self.headers, query):
                 self._send_error(401, "Unauthorized: Valid password/token required for server.zip")
@@ -394,36 +687,22 @@ class StorageHandler(BaseHTTPRequestHandler):
             self._stream_file(PACKAGES_DIR / "server.zip", "server.zip", as_attachment=True)
             return
 
-        # 7. PROTECTED DOWNLOAD: /backups/<filename>
+        # 8. PROTECTED DOWNLOAD: /backups/<filename>
         if path.startswith("/backups/"):
             if not check_auth(self.headers, query):
                 self._send_error(401, "Unauthorized: Valid password/token required to access backups")
                 return
             filename = os.path.basename(path[len("/backups/"):])
+            # Security: ensure file is .zip and not hidden/.gitkeep
+            if filename.startswith(".") or not filename.lower().endswith(".zip"):
+                self._send_error(404, "File not found")
+                return
             backup_file = BACKUPS_DIR / filename
-            if backup_file.is_file() and backup_file.suffix == ".zip":
+            if backup_file.is_file():
                 log(f"Authenticated backup download: {filename}")
                 self._stream_file(backup_file, filename, as_attachment=True)
             else:
                 self._send_error(404, "Backup not found")
-            return
-
-        # 8. PROTECTED: /backups (List backups)
-        if path in ("/backups", "/backups/"):
-            if not check_auth(self.headers, query):
-                self._send_error(401, "Unauthorized: Valid password/token required")
-                return
-            backups = []
-            if BACKUPS_DIR.is_dir():
-                for f in sorted(BACKUPS_DIR.glob("*.zip"), reverse=True):
-                    backups.append({
-                        "name": f.name,
-                        "size": f.stat().st_size,
-                        "mtime": int(f.stat().st_mtime)
-                    })
-            body = json.dumps({"backups": backups}, indent=2).encode("utf-8")
-            self._send_response_headers(200, "application/json", len(body))
-            self.wfile.write(body)
             return
 
         self._send_error(404, "Not Found")
@@ -453,15 +732,25 @@ class StorageHandler(BaseHTTPRequestHandler):
                 BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
 
                 for field_name, files_data in fields.items():
-                    # Handle multiple files or single file
                     for data in files_data:
-                        if isinstance(data, bytes):
-                            filename = f"upload_{int(time.time())}_{secrets.token_hex(4)}.zip"
+                        if isinstance(data, bytes) and data:
+                            filename = f"backup_upload_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(2)}.zip"
                             save_path = BACKUPS_DIR / filename
                             save_path.write_bytes(data)
                             uploaded_files.append(filename)
 
                 log(f"Authenticated upload completed: {uploaded_files}")
+                token = query.get("token", [None])[0] or query.get("key", [None])[0] or ""
+                token_param = f"?token={token}" if token else ""
+                
+                # If uploaded via browser form, redirect back to /backups
+                accept_header = self.headers.get("Accept", "")
+                if "text/html" in accept_header or not "application/json" in accept_header:
+                    self.send_response(303)
+                    self.send_header("Location", f"/backups{token_param}")
+                    self.end_headers()
+                    return
+
                 body = json.dumps({"ok": True, "files": uploaded_files}).encode("utf-8")
                 self._send_response_headers(200, "application/json", len(body))
                 self.wfile.write(body)
