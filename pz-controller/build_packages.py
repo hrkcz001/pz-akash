@@ -281,6 +281,7 @@ def create_zip_archive(source_dir: Path, mods_dict: dict, zip_out_path: Path):
     if zip_out_path.exists():
         zip_out_path.unlink()
 
+    non_mod_files_count = 0
     with zipfile.ZipFile(zip_out_path, "w", zipfile.ZIP_DEFLATED) as zf:
         # Add files from source folder
         if source_dir.is_dir():
@@ -293,6 +294,7 @@ def create_zip_archive(source_dir: Path, mods_dict: dict, zip_out_path: Path):
                     file_path = Path(root) / f
                     arcname = file_path.relative_to(source_dir).as_posix()
                     zf.write(file_path, arcname)
+                    non_mod_files_count += 1
 
         # Add mods
         for mod_folder_name, info in mods_dict.items():
@@ -305,7 +307,13 @@ def create_zip_archive(source_dir: Path, mods_dict: dict, zip_out_path: Path):
                         arcname = f"mods/{mod_folder_name}/{rel_in_mod}"
                         zf.write(file_path, arcname)
 
-    log(f"Created {zip_out_path.name} ({zip_out_path.stat().st_size / (1024*1024):.2f} MB)")
+    size = zip_out_path.stat().st_size if zip_out_path.exists() else 0
+    log(f"Created {zip_out_path.name} ({size / (1024*1024):.2f} MB) — {len(mods_dict)} mod(s), {non_mod_files_count} custom file(s)")
+    return {
+        "mods_count": len(mods_dict),
+        "files_count": non_mod_files_count,
+        "size": size
+    }
 
 
 def sha256_file(path: Path):
@@ -388,35 +396,38 @@ def main():
     server_zip = output_dir / "server.zip"
 
     log("Building common.zip...")
-    create_zip_archive(common_dir, common_mods, common_zip)
+    common_stats = create_zip_archive(common_dir, common_mods, common_zip)
 
     log("Building client.zip...")
-    create_zip_archive(client_dir, client_mods, client_zip)
+    client_stats = create_zip_archive(client_dir, client_mods, client_zip)
 
     log("Building server.zip...")
-    create_zip_archive(server_dir, server_mods, server_zip)
+    server_stats = create_zip_archive(server_dir, server_mods, server_zip)
 
     # 5. Generate package manifest
     manifest = {
         "common": {
             "file": "common.zip",
             "sha256": sha256_file(common_zip),
-            "size": common_zip.stat().st_size if common_zip.exists() else 0,
-            "mods_count": len(common_mods),
+            "size": common_stats["size"],
+            "mods_count": common_stats["mods_count"],
+            "files_count": common_stats["files_count"],
             "mod_ids": [m["mod_id"] for m in common_mods.values()]
         },
         "client": {
             "file": "client.zip",
             "sha256": sha256_file(client_zip),
-            "size": client_zip.stat().st_size if client_zip.exists() else 0,
-            "mods_count": len(client_mods),
+            "size": client_stats["size"],
+            "mods_count": client_stats["mods_count"],
+            "files_count": client_stats["files_count"],
             "mod_ids": [m["mod_id"] for m in client_mods.values()]
         },
         "server": {
             "file": "server.zip",
             "sha256": sha256_file(server_zip),
-            "size": server_zip.stat().st_size if server_zip.exists() else 0,
-            "mods_count": len(server_mods),
+            "size": server_stats["size"],
+            "mods_count": server_stats["mods_count"],
+            "files_count": server_stats["files_count"],
             "mod_ids": [m["mod_id"] for m in server_mods.values()]
         }
     }

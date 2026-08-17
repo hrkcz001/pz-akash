@@ -438,11 +438,11 @@ wait_for_lease() { # $1 dseq $2 provider $3 gseq $4 oseq $5 hostUri -> prints IP
 mark_server_ip() { # $1 = ip
   local ip="$1"
   ( cd "$SERVES_REPO" && git pull >/dev/null 2>&1 )
-  echo "{\"ip\": \"$ip\", \"port\": $SSH_PORT, \"status\": \"booting\"}" > "$SERVES_REPO/server_info.json"
+  echo "{\"ip\": \"$ip\", \"port\": $SSH_PORT, \"status\": \"stopped\"}" > "$SERVES_REPO/server_info.json"
   ( cd "$SERVES_REPO" && git add server_info.json \
-    && git commit -m "Deployed server at $ip (status booting)" || true \
+    && git commit -m "Deployed server at $ip" || true \
     && push_with_retry )
-  log "server_info.json updated: server booting at $ip:$SSH_PORT"
+  log "server_info.json updated: server deployed with IP $ip (awaiting boot)"
 }
 
 wait_server_online() {

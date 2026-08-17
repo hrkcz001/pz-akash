@@ -3,22 +3,27 @@
 storage_server.py — Secure HTTP file & storage server for PZ Controller.
 
 Features:
-  - Modern, responsive dark UI dashboard
+  - Modern, high-end responsive dark UI dashboard
+  - Prominent "Download Game Client (.torrent)" banner above package cards
   - 3 main action cards: Client Files, Common Files, and Server Files (faded with Lock)
-  - Smaller faded Backups button with Lock at the bottom
-  - In-browser password unlock modal (unlocks server files and backups seamlessly)
+  - Detailed stats: Mod count, non-mod config files count, and package size
   - Dedicated /backups view with .gitkeep filtered out
-  - Live Server IP & Status widget with 1-click copy
-  - Public endpoints: /, /client.zip, /common.zip, /server_info.json, /healthz
+  - Split Server IP and Port into 2 fancy standalone fields with 1-click copy
+  - Hidden IP/Port when server is booting or stopped (with custom status cards)
+  - Dynamic Readme plate rendered from pz-saves/README.md or pz-saves/README
+  - In-browser password unlock modal (unlocks server files and backups seamlessly)
+  - Public endpoints: /, /client.zip, /common.zip, /game.torrent, /server_info.json, /healthz
   - Protected endpoints: /server.zip, /backups, /backups/<filename>, /upload
 """
 
 import base64
-import cgi
 import datetime
+import email
+from email.parser import BytesParser
 import hmac
 import json
 import os
+import re
 import secrets
 import sys
 import threading
@@ -78,14 +83,21 @@ def check_auth(headers, query_params) -> bool:
 
 
 def get_server_info():
-    """Read server_info.json from pz-saves repo."""
+    """Read server_info.json from pz-saves repo. Default to stopped status and empty IP."""
     info_path = SERVES_REPO / "server_info.json"
     if info_path.is_file():
         try:
-            return json.loads(info_path.read_text(encoding="utf-8"))
+            data = json.loads(info_path.read_text(encoding="utf-8"))
+            st = str(data.get("status", "stopped")).lower()
+            return {
+                "ip": data.get("ip", "") if st == "online" else "",
+                "raw_ip": data.get("ip", ""),
+                "port": int(data.get("port", 16261)),
+                "status": st
+            }
         except Exception:
             pass
-    return {"ip": "pending", "port": 16261, "status": "unknown"}
+    return {"ip": "", "raw_ip": "", "port": 16261, "status": "stopped"}
 
 
 def get_manifest():
@@ -116,98 +128,363 @@ def get_valid_backups():
     return sorted(backups, key=lambda b: b["mtime"], reverse=True)
 
 
+def markdown_to_html(md_text: str) -> str:
+    """Clean markdown to semantic HTML parser."""
+    if not md_text or not md_text.strip():
+        return "<p>No installation instructions provided.</p>"
+    
+    lines = md_text.replace("\r\n", "\n").split("\n")
+    html_out = []
+    in_code_block = False
+    in_ul = False
+    in_ol = False
+    
+    def process_inline(text: str) -> str:
+        # Escape raw HTML brackets first
+        text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        # Restore basic allowed tags if needed or keep escaped
+        # Code: `code`
+        text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
+        # Bold: **text** or __text__
+        text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
+        text = re.sub(r"__([^_]+)__", r"<strong>\1</strong>", text)
+        # Italic: *text* or _text_
+        text = re.sub(r"\*([^*]+)\*", r"<em>\1</em>", text)
+        text = re.sub(r"_([^_]+)_", r"<em>\1</em>", text)
+        # Links: [text](url)
+        text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2" target="_blank" rel="noopener">\1</a>', text)
+        return text
+
+    for raw_line in lines:
+        line = raw_line.rstrip()
+        
+        # Code block toggle
+        if line.startswith("```"):
+            if in_code_block:
+                html_out.append("</code></pre>")
+                in_code_block = False
+            else:
+                if in_ul: html_out.append("</ul>"); in_ul = False
+                if in_ol: html_out.append("</ol>"); in_ol = False
+                lang = line[3:].strip()
+                html_out.append(f'<pre class="code-block {lang}"><code>')
+                in_code_block = True
+            continue
+            
+        if in_code_block:
+            escaped = (line.replace("&", "&amp;")
+                           .replace("<", "&lt;")
+                           .replace(">", "&gt;"))
+            html_out.append(escaped + "\n")
+            continue
+
+        # Blank line
+        if not line.strip():
+            if in_ul: html_out.append("</ul>"); in_ul = False
+            if in_ol: html_out.append("</ol>"); in_ol = False
+            continue
+
+        # Headings
+        if line.startswith("### "):
+            if in_ul: html_out.append("</ul>"); in_ul = False
+            if in_ol: html_out.append("</ol>"); in_ol = False
+            html_out.append(f"<h3>{process_inline(line[4:])}</h3>")
+            continue
+        if line.startswith("## "):
+            if in_ul: html_out.append("</ul>"); in_ul = False
+            if in_ol: html_out.append("</ol>"); in_ol = False
+            html_out.append(f"<h2>{process_inline(line[3:])}</h2>")
+            continue
+        if line.startswith("# "):
+            if in_ul: html_out.append("</ul>"); in_ul = False
+            if in_ol: html_out.append("</ol>"); in_ol = False
+            html_out.append(f"<h1>{process_inline(line[2:])}</h1>")
+            continue
+
+        # Blockquote / Notes
+        if line.startswith("> "):
+            if in_ul: html_out.append("</ul>"); in_ul = False
+            if in_ol: html_out.append("</ol>"); in_ol = False
+            html_out.append(f"<blockquote>{process_inline(line[2:])}</blockquote>")
+            continue
+
+        # Horizontal rule
+        if re.match(r"^(\-{3,}|\*{3,}|_{3,})$", line.strip()):
+            if in_ul: html_out.append("</ul>"); in_ul = False
+            if in_ol: html_out.append("</ol>"); in_ol = False
+            html_out.append("<hr>")
+            continue
+
+        # Unordered list
+        if line.startswith(("- ", "* ", "+ ")):
+            if in_ol: html_out.append("</ol>"); in_ol = False
+            if not in_ul:
+                html_out.append("<ul>")
+                in_ul = True
+            html_out.append(f"<li>{process_inline(line[2:])}</li>")
+            continue
+
+        # Ordered list
+        m_ol = re.match(r"^(\d+)\.\s+(.*)$", line)
+        if m_ol:
+            if in_ul: html_out.append("</ul>"); in_ul = False
+            if not in_ol:
+                html_out.append("<ol>")
+                in_ol = True
+            html_out.append(f"<li>{process_inline(m_ol.group(2))}</li>")
+            continue
+
+        # Paragraph
+        if in_ul: html_out.append("</ul>"); in_ul = False
+        if in_ol: html_out.append("</ol>"); in_ol = False
+        html_out.append(f"<p>{process_inline(line)}</p>")
+
+    if in_code_block: html_out.append("</code></pre>")
+    if in_ul: html_out.append("</ul>")
+    if in_ol: html_out.append("</ol>")
+
+    return "\n".join(html_out)
+
+
+def get_readme_html() -> str:
+    """Read README.md (or README) from pz-saves repository and render as HTML."""
+    candidates = [
+        SERVES_REPO / "README.md",
+        SERVES_REPO / "README",
+        Path("/data/README.md"),
+        Path("/data/README")
+    ]
+    for c in candidates:
+        if c.is_file():
+            try:
+                content = c.read_text(encoding="utf-8")
+                if content.strip():
+                    return markdown_to_html(content)
+            except Exception as e:
+                log(f"Error reading {c}: {e}")
+
+    # Fallback instructions
+    fallback_md = """### 📖 Installation & How to Join
+
+1. **Clean Installation Recommended**:
+   - It is strongly recommended to use a **fresh game client** from the **Torrent download** above, or completely delete any other mods from your local `Zomboid/mods` directory before joining to prevent mod ID and version conflicts.
+
+2. **Download Packages**:
+   - Download both **Common Files** (`common.zip`) and **Client Files** (`client.zip`).
+
+3. **Install with Replacement**:
+   - Extract both zip archives directly into your local Zomboid directory:
+     - **Windows**: `%USERPROFILE%\\Zomboid\\` (e.g. `C:\\Users\\YourName\\Zomboid\\`)
+     - **Linux / macOS**: `~/Zomboid/`
+   - When prompted by your extraction tool (7-Zip / WinRAR / Explorer), choose **"Replace all existing files"**.
+
+4. **Connect to Server**:
+   - Launch Project Zomboid, navigate to **Join**, and enter the **Server IP** and **Port** shown above when the server status is **ONLINE**.
+"""
+    return markdown_to_html(fallback_md)
+
+
+def format_pkg_stats(info: dict) -> str:
+    """Format package subtitle stats (mods count, files count, size)."""
+    mods = info.get("mods_count", 0)
+    files = info.get("files_count", 0)
+    size_bytes = info.get("size", 0)
+    
+    size_str = f"{size_bytes / (1024*1024):.1f} MB" if size_bytes >= 1024*1024 else (f"{size_bytes / 1024:.1f} KB" if size_bytes > 0 else "Ready")
+    
+    parts = []
+    if mods > 0:
+        parts.append(f"{mods} mod{'s' if mods != 1 else ''}")
+    if files > 0:
+        parts.append(f"{files} config file{'s' if files != 1 else ''}")
+    parts.append(size_str)
+    
+    return " • ".join(parts)
+
+
 def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") -> str:
-    status = server_info.get("status", "unknown").lower()
-    ip = server_info.get("ip", "pending")
+    status = server_info.get("status", "stopped").lower()
+    ip = server_info.get("raw_ip", "") if status == "online" else ""
     port = server_info.get("port", 16261)
     
-    badge_color = "#eab308"
-    status_text = "BOOTING"
-    if status == "online":
-        badge_color = "#10b981"
-        status_text = "SERVER ONLINE"
-    elif status in ("stopped", "error", "failed"):
-        badge_color = "#ef4444"
-        status_text = status.upper()
+    is_online = (status == "online" and bool(ip) and ip != "pending")
+    is_booting = (status == "booting")
+    
+    # Status Badge
+    if is_online:
+        badge_class = "badge-online"
+        badge_text = "ONLINE"
+        dot_html = '<span class="status-dot online"></span>'
+    elif is_booting:
+        badge_class = "badge-booting"
+        badge_text = "STARTING UP"
+        dot_html = '<span class="status-dot booting"></span>'
+    else:
+        badge_class = "badge-offline"
+        badge_text = "OFFLINE"
+        dot_html = '<span class="status-dot offline"></span>'
+
+    # Connection Address / Status Widget
+    if is_online:
+        address_widget_html = f"""
+        <div class="address-grid">
+          <div class="address-card">
+            <div class="address-label">SERVER IP ADDRESS</div>
+            <div class="address-value-row">
+              <span class="address-text" id="ip-val">{ip}</span>
+              <button type="button" class="copy-btn" onclick="copyValue('{ip}', this)">
+                <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                <span>Copy IP</span>
+              </button>
+            </div>
+          </div>
+          <div class="address-card">
+            <div class="address-label">GAME PORT</div>
+            <div class="address-value-row">
+              <span class="address-text" id="port-val">{port}</span>
+              <button type="button" class="copy-btn" onclick="copyValue('{port}', this)">
+                <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                <span>Copy Port</span>
+              </button>
+            </div>
+          </div>
+        </div>
+        """
+    elif is_booting:
+        address_widget_html = """
+        <div class="status-banner booting-banner">
+          <div class="status-banner-icon">🚀</div>
+          <div class="status-banner-text">
+            <div class="status-banner-title">Dedicated Server is Booting Up</div>
+            <div class="status-banner-desc">Initializing game instance on Akash Network. Live IP and Port will appear here automatically once the server is ready!</div>
+          </div>
+        </div>
+        """
+    else:
+        address_widget_html = """
+        <div class="status-banner offline-banner">
+          <div class="status-banner-icon">⏸️</div>
+          <div class="status-banner-text">
+            <div class="status-banner-title">Dedicated Server is Currently Offline</div>
+            <div class="status-banner-desc">The game server is stopped. You can still download mods and client configs below in preparation for the next session.</div>
+          </div>
+        </div>
+        """
 
     client_info = manifest.get("client", {})
     common_info = manifest.get("common", {})
     server_pkg_info = manifest.get("server", {})
 
-    client_size_mb = f"{client_info.get('size', 0) / (1024*1024):.1f} MB" if client_info.get('size') else "Ready"
-    common_size_mb = f"{common_info.get('size', 0) / (1024*1024):.1f} MB" if common_info.get('size') else "Ready"
-    server_size_mb = f"{server_pkg_info.get('size', 0) / (1024*1024):.1f} MB" if server_pkg_info.get('size') else "Ready"
+    client_stats_str = format_pkg_stats(client_info)
+    common_stats_str = format_pkg_stats(common_info)
+    server_stats_str = format_pkg_stats(server_pkg_info)
 
-    client_mods_count = client_info.get('mods_count', 0)
-    common_mods_count = common_info.get('mods_count', 0)
-    server_mods_count = server_pkg_info.get('mods_count', 0)
+    readme_content_html = get_readme_html()
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Project Zomboid • Controller & Hub</title>
+  <title>Project Zomboid • Server Hub</title>
   <style>
     :root {{
-      --bg: #0b0f19;
-      --card-bg: rgba(17, 24, 39, 0.85);
+      --bg: #07090e;
+      --card-bg: rgba(15, 23, 42, 0.75);
       --card-border: rgba(255, 255, 255, 0.08);
-      --text: #f3f4f6;
-      --text-muted: #9ca3af;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
       --primary: #3b82f6;
       --primary-hover: #2563eb;
-      --primary-glow: rgba(59, 130, 246, 0.35);
+      --primary-glow: rgba(59, 130, 246, 0.3);
       --accent: #10b981;
       --accent-glow: rgba(16, 185, 129, 0.3);
-      --amber: #f59e0b;
-      --amber-glow: rgba(245, 158, 11, 0.25);
+      --purple: #8b5cf6;
+      --purple-glow: rgba(139, 92, 246, 0.3);
     }}
-    * {{
-      box-sizing: border-box;
-    }}
+    * {{ box-sizing: border-box; }}
     body {{
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-      background: radial-gradient(circle at top center, #1e1b4b 0%, #0b0f19 55%, #030712 100%);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: radial-gradient(circle at 50% 0%, #1e1b4b 0%, #0b0f19 50%, #030712 100%);
       color: var(--text);
       margin: 0;
-      padding: 2.5rem 1rem;
+      padding: 2rem 1rem 4rem;
       min-height: 100vh;
       display: flex;
       justify-content: center;
-      align-items: flex-start;
     }}
     .container {{
-      max-width: 880px;
+      max-width: 820px;
       width: 100%;
     }}
+
+    /* Top Nav */
+    .nav-bar {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 2rem;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }}
+    .brand-title {{
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      font-size: 1.35rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }}
+    .brand-icon {{
+      font-size: 1.6rem;
+    }}
+    .nav-links {{
+      display: flex;
+      gap: 0.5rem;
+    }}
+    .nav-item {{
+      color: var(--text-muted);
+      text-decoration: none;
+      font-weight: 500;
+      font-size: 0.9rem;
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      transition: all 0.15s;
+    }}
+    .nav-item.active, .nav-item:hover {{
+      color: white;
+      background: rgba(255, 255, 255, 0.05);
+      border-color: var(--card-border);
+    }}
+
+    /* Header & Status */
     .header-card {{
       background: var(--card-bg);
       backdrop-filter: blur(16px);
       border: 1px solid var(--card-border);
-      border-radius: 18px;
-      padding: 2rem;
-      margin-bottom: 2rem;
-      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
+      border-radius: 16px;
+      padding: 1.75rem;
+      margin-bottom: 1.5rem;
+      box-shadow: 0 20px 25px -5px rgba(0,0,0,0.5);
     }}
-    .title-row {{
+    .header-top {{
       display: flex;
       justify-content: space-between;
       align-items: center;
       flex-wrap: wrap;
       gap: 1rem;
+      margin-bottom: 1.25rem;
     }}
-    h1 {{
-      font-size: 2rem;
-      font-weight: 800;
-      letter-spacing: -0.025em;
+    .server-title-block h1 {{
+      font-size: 1.5rem;
+      margin: 0 0 0.25rem 0;
+      letter-spacing: -0.02em;
+    }}
+    .server-title-block p {{
       margin: 0;
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-      background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
+      font-size: 0.85rem;
+      color: var(--text-muted);
     }}
     .status-badge {{
       display: inline-flex;
@@ -215,104 +492,208 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
       gap: 0.5rem;
       padding: 0.4rem 0.9rem;
       border-radius: 9999px;
-      font-weight: 700;
       font-size: 0.8rem;
+      font-weight: 700;
       letter-spacing: 0.05em;
-      background: rgba(0, 0, 0, 0.3);
-      border: 1px solid var(--card-border);
+      border: 1px solid transparent;
+    }}
+    .badge-online {{
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border-color: rgba(16, 185, 129, 0.3);
+      box-shadow: 0 0 15px rgba(16, 185, 129, 0.2);
+    }}
+    .badge-booting {{
+      background: rgba(245, 158, 11, 0.15);
+      color: #fbbf24;
+      border-color: rgba(245, 158, 11, 0.3);
+      box-shadow: 0 0 15px rgba(245, 158, 11, 0.2);
+    }}
+    .badge-offline {{
+      background: rgba(239, 68, 68, 0.15);
+      color: #f87171;
+      border-color: rgba(239, 68, 68, 0.3);
     }}
     .status-dot {{
-      width: 10px;
-      height: 10px;
+      width: 8px;
+      height: 8px;
       border-radius: 50%;
-      background-color: {badge_color};
-      box-shadow: 0 0 12px {badge_color};
     }}
-    .ip-box {{
-      background: rgba(0, 0, 0, 0.4);
-      border: 1px solid rgba(255, 255, 255, 0.06);
+    .status-dot.online {{
+      background: #10b981;
+      box-shadow: 0 0 8px #10b981;
+    }}
+    .status-dot.booting {{
+      background: #f59e0b;
+      animation: pulse 1.5s infinite;
+    }}
+    .status-dot.offline {{
+      background: #ef4444;
+    }}
+    @keyframes pulse {{
+      0%, 100% {{ opacity: 1; transform: scale(1); }}
+      50% {{ opacity: 0.4; transform: scale(0.85); }}
+    }}
+
+    /* Address Grid (Split IP & Port) */
+    .address-grid {{
+      display: grid;
+      grid-template-columns: 2fr 1.2fr;
+      gap: 1rem;
+    }}
+    @media (max-width: 600px) {{
+      .address-grid {{ grid-template-columns: 1fr; }}
+    }}
+    .address-card {{
+      background: rgba(0, 0, 0, 0.45);
+      border: 1px solid rgba(255, 255, 255, 0.08);
       border-radius: 12px;
-      padding: 1rem 1.25rem;
-      margin-top: 1.5rem;
+      padding: 0.9rem 1.25rem;
+    }}
+    .address-label {{
+      font-size: 0.7rem;
+      font-weight: 700;
+      color: var(--text-muted);
+      letter-spacing: 0.08em;
+      margin-bottom: 0.35rem;
+    }}
+    .address-value-row {{
       display: flex;
       justify-content: space-between;
       align-items: center;
-      flex-wrap: wrap;
-      gap: 1rem;
+      gap: 0.75rem;
     }}
-    .ip-details {{
-      display: flex;
-      flex-direction: column;
-      gap: 0.25rem;
-    }}
-    .ip-label {{
-      font-size: 0.75rem;
-      text-transform: uppercase;
-      letter-spacing: 0.08em;
-      color: var(--text-muted);
-      font-weight: 600;
-    }}
-    .ip-address {{
+    .address-text {{
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-      font-size: 1.35rem;
+      font-size: 1.15rem;
       font-weight: 700;
       color: #38bdf8;
       letter-spacing: 0.02em;
     }}
-    .btn {{
+    .copy-btn {{
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 6px;
+      padding: 0.35rem 0.75rem;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
       display: inline-flex;
       align-items: center;
-      justify-content: center;
-      gap: 0.5rem;
-      font-weight: 600;
-      border-radius: 10px;
-      padding: 0.75rem 1.25rem;
+      gap: 0.35rem;
+      transition: all 0.15s;
+    }}
+    .copy-btn:hover {{
+      background: rgba(255, 255, 255, 0.15);
+      border-color: rgba(255, 255, 255, 0.25);
+    }}
+    .copy-icon {{
+      width: 13px;
+      height: 13px;
+    }}
+
+    /* Status Banners */
+    .status-banner {{
+      display: flex;
+      align-items: center;
+      gap: 1.25rem;
+      padding: 1rem 1.25rem;
+      border-radius: 12px;
+    }}
+    .booting-banner {{
+      background: rgba(245, 158, 11, 0.08);
+      border: 1px solid rgba(245, 158, 11, 0.2);
+    }}
+    .offline-banner {{
+      background: rgba(239, 68, 68, 0.06);
+      border: 1px solid rgba(239, 68, 68, 0.15);
+    }}
+    .status-banner-icon {{
+      font-size: 2rem;
+    }}
+    .status-banner-title {{
+      font-weight: 700;
       font-size: 0.95rem;
+      margin-bottom: 0.2rem;
+    }}
+    .status-banner-desc {{
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      line-height: 1.4;
+    }}
+
+    /* Torrent Card Banner */
+    .torrent-card {{
+      background: linear-gradient(135deg, rgba(139, 92, 246, 0.15) 0%, rgba(59, 130, 246, 0.1) 100%);
+      border: 1px solid rgba(139, 92, 246, 0.3);
+      border-radius: 16px;
+      padding: 1.5rem 1.75rem;
+      margin-bottom: 1.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1.25rem;
+      box-shadow: 0 10px 25px -5px var(--purple-glow);
+    }}
+    .torrent-info {{
+      max-width: 500px;
+    }}
+    .torrent-badge {{
+      display: inline-block;
+      background: rgba(139, 92, 246, 0.25);
+      color: #c4b5fd;
+      font-size: 0.7rem;
+      font-weight: 700;
+      padding: 0.2rem 0.55rem;
+      border-radius: 4px;
+      letter-spacing: 0.06em;
+      margin-bottom: 0.4rem;
+    }}
+    .torrent-title {{
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: white;
+      margin-bottom: 0.25rem;
+    }}
+    .torrent-desc {{
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      line-height: 1.45;
+    }}
+    .torrent-btn {{
+      background: linear-gradient(135deg, #8b5cf6 0%, #6d28d9 100%);
+      color: white;
       text-decoration: none;
-      cursor: pointer;
-      border: 1px solid transparent;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      padding: 0.75rem 1.35rem;
+      border-radius: 10px;
+      font-weight: 600;
+      font-size: 0.9rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.5rem;
+      box-shadow: 0 4px 15px rgba(139, 92, 246, 0.4);
+      transition: all 0.15s;
     }}
-    .btn-primary {{
-      background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-      color: white;
-      box-shadow: 0 4px 14px var(--primary-glow);
-    }}
-    .btn-primary:hover {{
+    .torrent-btn:hover {{
       transform: translateY(-2px);
-      box-shadow: 0 6px 20px var(--primary-glow);
+      box-shadow: 0 6px 20px rgba(139, 92, 246, 0.55);
     }}
-    .btn-emerald {{
-      background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-      color: white;
-      box-shadow: 0 4px 14px var(--accent-glow);
-    }}
-    .btn-emerald:hover {{
-      transform: translateY(-2px);
-      box-shadow: 0 6px 20px var(--accent-glow);
-    }}
-    .btn-secondary {{
-      background: rgba(255, 255, 255, 0.06);
-      color: var(--text);
-      border-color: rgba(255, 255, 255, 0.1);
-    }}
-    .btn-secondary:hover {{
-      background: rgba(255, 255, 255, 0.12);
-    }}
+
+    /* Action Cards Grid */
     .cards-grid {{
       display: grid;
       grid-template-columns: repeat(3, 1fr);
       gap: 1.25rem;
-      margin-bottom: 2rem;
+      margin-bottom: 1.5rem;
     }}
     @media (max-width: 768px) {{
-      .cards-grid {{
-        grid-template-columns: 1fr;
-      }}
+      .cards-grid {{ grid-template-columns: 1fr; }}
     }}
     .action-card {{
       background: var(--card-bg);
-      backdrop-filter: blur(12px);
+      backdrop-filter: blur(16px);
       border: 1px solid var(--card-border);
       border-radius: 16px;
       padding: 1.5rem;
@@ -321,634 +702,636 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
       justify-content: space-between;
       position: relative;
       overflow: hidden;
-      transition: all 0.25s ease;
-      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
+      transition: transform 0.2s, box-shadow 0.2s;
     }}
     .action-card:hover {{
-      transform: translateY(-4px);
-      border-color: rgba(255, 255, 255, 0.2);
+      transform: translateY(-3px);
     }}
-    .action-card.locked {{
-      opacity: 0.55;
-      filter: saturate(0.6);
-      background: rgba(17, 24, 39, 0.5);
-      border-style: dashed;
+    .card-client {{
+      border-top: 3px solid var(--primary);
     }}
-    .action-card.locked:hover {{
-      opacity: 0.85;
-      filter: saturate(0.9);
-      transform: translateY(-2px);
+    .card-client:hover {{
+      box-shadow: 0 10px 25px -5px var(--primary-glow);
     }}
-    .card-badge {{
-      display: inline-flex;
+    .card-common {{
+      border-top: 3px solid var(--accent);
+    }}
+    .card-common:hover {{
+      box-shadow: 0 10px 25px -5px var(--accent-glow);
+    }}
+    .card-server {{
+      border-top: 3px solid #64748b;
+      opacity: 0.65;
+    }}
+    .card-server.unlocked {{
+      opacity: 1;
+      border-top-color: #f59e0b;
+      box-shadow: 0 10px 25px -5px rgba(245, 158, 11, 0.25);
+    }}
+    .card-header {{
+      display: flex;
       align-items: center;
-      gap: 0.35rem;
-      font-size: 0.75rem;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      padding: 0.25rem 0.6rem;
-      border-radius: 6px;
+      gap: 0.75rem;
       margin-bottom: 0.75rem;
-      width: fit-content;
     }}
-    .badge-blue {{
+    .card-icon-box {{
+      width: 40px;
+      height: 40px;
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.25rem;
+    }}
+    .client-icon-box {{
       background: rgba(59, 130, 246, 0.15);
-      color: #60a5fa;
-      border: 1px solid rgba(59, 130, 246, 0.3);
     }}
-    .badge-green {{
+    .common-icon-box {{
       background: rgba(16, 185, 129, 0.15);
-      color: #34d399;
-      border: 1px solid rgba(16, 185, 129, 0.3);
     }}
-    .badge-amber {{
-      background: rgba(245, 158, 11, 0.15);
-      color: #fbbf24;
-      border: 1px solid rgba(245, 158, 11, 0.3);
+    .server-icon-box {{
+      background: rgba(100, 116, 139, 0.2);
     }}
     .card-title {{
-      font-size: 1.25rem;
+      font-size: 1.1rem;
       font-weight: 700;
-      margin: 0 0 0.5rem 0;
-      display: flex;
-      align-items: center;
-      gap: 0.5rem;
-    }}
-    .card-desc {{
-      color: var(--text-muted);
-      font-size: 0.875rem;
-      line-height: 1.45;
-      margin: 0 0 1.25rem 0;
-      flex-grow: 1;
+      margin: 0;
     }}
     .card-stats {{
-      display: flex;
-      gap: 0.75rem;
       font-size: 0.8rem;
       color: var(--text-muted);
       margin-bottom: 1.25rem;
-      padding-top: 0.75rem;
-      border-top: 1px solid rgba(255, 255, 255, 0.05);
+      line-height: 1.4;
     }}
-    .bottom-bar {{
+    .card-btn {{
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      width: 100%;
+      padding: 0.7rem;
+      border-radius: 10px;
+      font-weight: 600;
+      font-size: 0.875rem;
+      text-decoration: none;
+      cursor: pointer;
+      border: none;
+      transition: all 0.15s;
+    }}
+    .btn-client {{
+      background: var(--primary);
+      color: white;
+    }}
+    .btn-client:hover {{
+      background: var(--primary-hover);
+    }}
+    .btn-common {{
+      background: var(--accent);
+      color: #022c22;
+      font-weight: 700;
+    }}
+    .btn-common:hover {{
+      background: #059669;
+      color: white;
+    }}
+    .btn-locked {{
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-muted);
+      border: 1px solid var(--card-border);
+    }}
+    .btn-locked:hover {{
+      background: rgba(255, 255, 255, 0.15);
+      color: white;
+    }}
+    .btn-unlocked {{
+      background: #f59e0b;
+      color: #451a03;
+      font-weight: 700;
+    }}
+
+    /* Backups Section Button (Bottom Faded) */
+    .backups-footer {{
       display: flex;
       justify-content: center;
-      margin-top: 1rem;
+      margin-bottom: 2rem;
     }}
-    .backups-btn {{
+    .backups-faded-btn {{
       display: inline-flex;
       align-items: center;
       gap: 0.6rem;
-      padding: 0.65rem 1.25rem;
-      border-radius: 12px;
-      font-size: 0.875rem;
-      font-weight: 600;
+      background: rgba(15, 23, 42, 0.6);
+      border: 1px solid rgba(255, 255, 255, 0.08);
       color: var(--text-muted);
-      background: rgba(17, 24, 39, 0.6);
-      border: 1px dashed rgba(255, 255, 255, 0.15);
+      padding: 0.6rem 1.25rem;
+      border-radius: 12px;
+      font-size: 0.85rem;
+      font-weight: 600;
       text-decoration: none;
-      transition: all 0.2s ease;
-      opacity: 0.75;
+      cursor: pointer;
+      transition: all 0.15s;
     }}
-    .backups-btn:hover {{
-      opacity: 1;
+    .backups-faded-btn:hover {{
+      background: rgba(255, 255, 255, 0.08);
       color: white;
-      border-color: rgba(255, 255, 255, 0.35);
-      background: rgba(30, 41, 59, 0.8);
-      transform: translateY(-2px);
+      border-color: rgba(255, 255, 255, 0.18);
     }}
-    .guide-card {{
+
+    /* Readme Plate */
+    .readme-card {{
       background: var(--card-bg);
-      backdrop-filter: blur(12px);
+      backdrop-filter: blur(16px);
       border: 1px solid var(--card-border);
       border-radius: 16px;
-      padding: 1.5rem;
-      margin-top: 2rem;
+      padding: 1.75rem;
+      margin-bottom: 1.5rem;
     }}
-    .guide-title {{
-      font-size: 1rem;
-      font-weight: 700;
-      color: #cbd5e1;
-      margin-top: 0;
+    .readme-header {{
       display: flex;
       align-items: center;
-      gap: 0.5rem;
+      gap: 0.6rem;
+      border-bottom: 1px solid var(--card-border);
+      padding-bottom: 0.85rem;
+      margin-bottom: 1.25rem;
     }}
-    ol {{
+    .readme-header h2 {{
+      font-size: 1.2rem;
       margin: 0;
-      padding-left: 1.25rem;
-      color: var(--text-muted);
-      font-size: 0.9rem;
+      font-weight: 700;
+    }}
+    .readme-body {{
+      font-size: 0.88rem;
+      color: #cbd5e1;
       line-height: 1.6;
     }}
-    code {{
-      background: rgba(0, 0, 0, 0.4);
-      padding: 0.2rem 0.4rem;
-      border-radius: 6px;
-      font-family: ui-monospace, monospace;
+    .readme-body h1 {{ font-size: 1.3rem; margin: 1.25rem 0 0.5rem 0; color: white; }}
+    .readme-body h2 {{ font-size: 1.15rem; margin: 1.1rem 0 0.4rem 0; color: white; }}
+    .readme-body h3 {{ font-size: 1rem; margin: 1rem 0 0.35rem 0; color: #38bdf8; }}
+    .readme-body p {{ margin: 0.5rem 0; }}
+    .readme-body ul, .readme-body ol {{ padding-left: 1.35rem; margin: 0.5rem 0 1rem 0; }}
+    .readme-body li {{ margin-bottom: 0.35rem; }}
+    .readme-body code {{
+      background: #020617;
       color: #38bdf8;
-      border: 1px solid rgba(255, 255, 255, 0.05);
+      padding: 0.15rem 0.4rem;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 0.85em;
     }}
-    /* Modal Styles */
-    .modal-overlay {{
+    .readme-body pre {{
+      background: #020617;
+      border: 1px solid var(--card-border);
+      padding: 0.9rem;
+      border-radius: 8px;
+      overflow-x: auto;
+      margin: 0.75rem 0;
+    }}
+    .readme-body blockquote {{
+      border-left: 3px solid var(--primary);
+      margin: 0.75rem 0;
+      padding: 0.4rem 0 0.4rem 1rem;
+      color: var(--text-muted);
+      background: rgba(59, 130, 246, 0.05);
+      border-radius: 0 8px 8px 0;
+    }}
+    .readme-body hr {{
+      border: none;
+      border-top: 1px solid var(--card-border);
+      margin: 1.5rem 0;
+    }}
+
+    /* Password Modal */
+    .modal-backdrop {{
       display: none;
       position: fixed;
       inset: 0;
       background: rgba(0, 0, 0, 0.75);
       backdrop-filter: blur(8px);
-      z-index: 100;
-      align-items: center;
+      z-index: 999;
       justify-content: center;
+      align-items: center;
       padding: 1rem;
     }}
-    .modal-card {{
-      background: #111827;
-      border: 1px solid rgba(255, 255, 255, 0.15);
+    .modal-box {{
+      background: #0f172a;
+      border: 1px solid var(--card-border);
       border-radius: 16px;
-      max-width: 440px;
-      width: 100%;
       padding: 2rem;
-      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
-      animation: modalIn 0.2s ease-out;
-    }}
-    @keyframes modalIn {{
-      from {{ opacity: 0; transform: scale(0.95); }}
-      to {{ opacity: 1; transform: scale(1); }}
-    }}
-    .input-field {{
+      max-width: 400px;
       width: 100%;
-      padding: 0.75rem 1rem;
-      border-radius: 10px;
-      background: #090d16;
-      border: 1px solid rgba(255, 255, 255, 0.15);
-      color: white;
-      font-size: 1rem;
-      margin: 1rem 0 1.5rem 0;
-      outline: none;
-      transition: border-color 0.15s;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.8);
     }}
-    .input-field:focus {{
-      border-color: #3b82f6;
+    .modal-box h3 {{
+      margin: 0 0 0.5rem 0;
+      font-size: 1.25rem;
+    }}
+    .modal-box p {{
+      color: var(--text-muted);
+      font-size: 0.85rem;
+      margin-bottom: 1.25rem;
+    }}
+    .modal-input {{
+      width: 100%;
+      background: #020617;
+      border: 1px solid var(--card-border);
+      color: white;
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      margin-bottom: 1.25rem;
+    }}
+    .modal-actions {{
+      display: flex;
+      justify-content: flex-end;
+      gap: 0.75rem;
+    }}
+    .modal-btn {{
+      padding: 0.6rem 1.15rem;
+      border-radius: 8px;
+      font-weight: 600;
+      font-size: 0.85rem;
+      cursor: pointer;
+      border: none;
+    }}
+    .modal-btn-cancel {{
+      background: transparent;
+      color: var(--text-muted);
+    }}
+    .modal-btn-submit {{
+      background: var(--primary);
+      color: white;
     }}
   </style>
 </head>
 <body>
   <div class="container">
     
-    <!-- Header with Live Server Info -->
+    <!-- Navigation Bar -->
+    <nav class="nav-bar">
+      <div class="brand-title">
+        <span class="brand-icon">☣️</span>
+        <span>Project Zomboid • Hub</span>
+      </div>
+      <div class="nav-links">
+        <a href="/" class="nav-item active">Packages</a>
+        <a href="javascript:void(0)" onclick="openBackups()" class="nav-item">Backups 🔒</a>
+      </div>
+    </nav>
+
+    <!-- Header & Status Card -->
     <div class="header-card">
-      <div class="title-row">
-        <h1>🧟 Project Zomboid</h1>
-        <div class="status-badge">
-          <div class="status-dot"></div>
-          <span>{status_text}</span>
+      <div class="header-top">
+        <div class="server-title-block">
+          <h1>Dedicated Server Instance</h1>
+          <p>Managed via Akash Network & Controller</p>
+        </div>
+        <div class="status-badge {badge_class}">
+          {dot_html}
+          <span>{badge_text}</span>
         </div>
       </div>
-      
-      <p style="color:var(--text-muted); margin:0.5rem 0 0 0; font-size:0.95rem;">
-        Game Server mod distribution and automated management hub.
-      </p>
 
-      <div class="ip-box">
-        <div class="ip-details">
-          <span class="ip-label">Dedicated Server Address</span>
-          <span class="ip-address">{ip}:{port}</span>
-        </div>
-        <button class="btn btn-secondary" onclick="copyIp('{ip}:{port}', this)">
-          📋 Copy Address
-        </button>
-      </div>
+      <!-- Address / Status Widget -->
+      {address_widget_html}
     </div>
 
-    <!-- 3 Main Action Cards -->
-    <div class="cards-grid">
-      
-      <!-- 1. Client Files -->
-      <div class="action-card">
-        <div>
-          <div class="card-badge badge-blue">🎮 Player Package</div>
-          <h3 class="card-title">Client Files</h3>
-          <p class="card-desc">Client-side mods, UI tweaks, lua scripts and player settings.</p>
-        </div>
-        <div>
-          <div class="card-stats">
-            <span>📦 {client_mods_count} mod(s)</span>
-            <span>💾 {client_size_mb}</span>
-          </div>
-          <a href="/client.zip" class="btn btn-primary" style="width:100%;" download>
-            ⬇️ Download Client
-          </a>
-        </div>
+    <!-- Clean Torrent Client Download Banner -->
+    <div class="torrent-card">
+      <div class="torrent-info">
+        <div class="torrent-badge">RECOMMENDED GAME CLIENT</div>
+        <div class="torrent-title">🎮 Clean Project Zomboid Installation</div>
+        <div class="torrent-desc">Download a clean, pre-tested game client (.torrent) to guarantee 100% mod compatibility and prevent client-side synchronization errors.</div>
       </div>
-
-      <!-- 2. Common Files -->
-      <div class="action-card">
-        <div>
-          <div class="card-badge badge-green">🌐 Shared Package</div>
-          <h3 class="card-title">Common Files</h3>
-          <p class="card-desc">Shared workshop mods, map files, and assets common to both client and server.</p>
-        </div>
-        <div>
-          <div class="card-stats">
-            <span>📦 {common_mods_count} mod(s)</span>
-            <span>💾 {common_size_mb}</span>
-          </div>
-          <a href="/common.zip" class="btn btn-emerald" style="width:100%;" download>
-            ⬇️ Download Common
-          </a>
-        </div>
-      </div>
-
-      <!-- 3. Server Files (Faded with Lock) -->
-      <div class="action-card locked" id="serverCard">
-        <div>
-          <div class="card-badge badge-amber" id="serverBadge">🔒 Protected</div>
-          <h3 class="card-title">Server Files</h3>
-          <p class="card-desc">Server-only configurations (<code>.ini</code>, <code>SandboxVars.lua</code>, spawn regions, server mods).</p>
-        </div>
-        <div>
-          <div class="card-stats">
-            <span>📦 {server_mods_count} mod(s)</span>
-            <span>💾 {server_size_mb}</span>
-          </div>
-          <button class="btn btn-secondary" id="serverBtn" style="width:100%;" onclick="handleProtectedDownload('server.zip')">
-            🔒 Unlock Server Files
-          </button>
-        </div>
-      </div>
-
-    </div>
-
-    <!-- Bottom Faded Backups Button with Lock -->
-    <div class="bottom-bar">
-      <a href="javascript:void(0)" class="backups-btn" id="backupsLink" onclick="handleBackupsNav()">
-        🔒 🗄️ Server Backups & Save Management
+      <a href="/game.torrent" class="torrent-btn" download>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+        <span>Download game.torrent</span>
       </a>
     </div>
 
-    <!-- Quick Installation Accordion -->
-    <div class="guide-card">
-      <h4 class="guide-title">📖 Player Installation Guide</h4>
-      <ol>
-        <li>Download both <strong><code>common.zip</code></strong> and <strong><code>client.zip</code></strong> above.</li>
-        <li>Extract both archives directly into your local Zomboid folder:
-          <br>• Windows: <code>%USERPROFILE%\\Zomboid\\</code> (e.g. <code>C:\\Users\\&lt;Name&gt;\\Zomboid\\</code>)
-          <br>• Linux / macOS: <code>~/Zomboid/</code>
-        </li>
-        <li>Launch Project Zomboid and direct connect to <code>{ip}:{port}</code>!</li>
-      </ol>
+    <!-- 3 Action Cards (Client, Common, Server) -->
+    <div class="cards-grid">
+      
+      <!-- Client Package -->
+      <div class="action-card card-client">
+        <div>
+          <div class="card-header">
+            <div class="card-icon-box client-icon-box">🎮</div>
+            <h3 class="card-title">Client Files</h3>
+          </div>
+          <div class="card-stats">{client_stats_str}</div>
+        </div>
+        <a href="/client.zip" class="card-btn btn-client" download>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+          <span>Download client.zip</span>
+        </a>
+      </div>
+
+      <!-- Common Package -->
+      <div class="action-card card-common">
+        <div>
+          <div class="card-header">
+            <div class="card-icon-box common-icon-box">📦</div>
+            <h3 class="card-title">Common Files</h3>
+          </div>
+          <div class="card-stats">{common_stats_str}</div>
+        </div>
+        <a href="/common.zip" class="card-btn btn-common" download>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+          <span>Download common.zip</span>
+        </a>
+      </div>
+
+      <!-- Server Package (Protected / Locked) -->
+      <div class="action-card card-server" id="server-card">
+        <div>
+          <div class="card-header">
+            <div class="card-icon-box server-icon-box" id="server-icon-box">🔒</div>
+            <h3 class="card-title">Server Files</h3>
+          </div>
+          <div class="card-stats" id="server-stats">{server_stats_str}</div>
+        </div>
+        <button type="button" class="card-btn btn-locked" id="server-btn" onclick="handleServerDownload()">
+          <span id="server-btn-icon">🔒</span>
+          <span id="server-btn-text">Unlock server.zip</span>
+        </button>
+      </div>
+
+    </div>
+
+    <!-- Faded Backups Button at Bottom -->
+    <div class="backups-footer">
+      <button type="button" class="backups-faded-btn" onclick="openBackups()">
+        <span>🗄️</span>
+        <span>Server Backups & Archives</span>
+        <span>🔒</span>
+      </button>
+    </div>
+
+    <!-- Dynamic Readme Section -->
+    <div class="readme-card">
+      <div class="readme-header">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
+        <h2>Player Instructions & Guide</h2>
+      </div>
+      <div class="readme-body">
+        {readme_content_html}
+      </div>
     </div>
 
   </div>
 
   <!-- Password Unlock Modal -->
-  <div class="modal-overlay" id="passwordModal">
-    <div class="modal-card">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
-        <h3 style="margin:0; font-size:1.3rem;">🔒 Protected Area</h3>
-        <span style="cursor:pointer; color:var(--text-muted); font-size:1.5rem;" onclick="closeModal()">&times;</span>
-      </div>
-      <p style="color:var(--text-muted); font-size:0.9rem; margin-top:0;">
-        Enter the Controller storage password to unlock server files and backup archives:
-      </p>
-      <input type="password" id="modalPassword" class="input-field" placeholder="Enter STORAGE_PASSWORD" onkeydown="if(event.key==='Enter') submitPassword()" />
-      <div style="display:flex; gap:0.75rem; justify-content:flex-end;">
-        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="submitPassword()">Unlock</button>
+  <div class="modal-backdrop" id="auth-modal">
+    <div class="modal-box">
+      <h3>🔒 Authorization Required</h3>
+      <p>Enter the admin / storage password to access protected server files & backups:</p>
+      <input type="password" class="modal-input" id="auth-password-input" placeholder="Password..." onkeydown="if(event.key==='Enter') submitPassword()" />
+      <div class="modal-actions">
+        <button type="button" class="modal-btn modal-btn-cancel" onclick="closeModal()">Cancel</button>
+        <button type="button" class="modal-btn modal-btn-submit" onclick="submitPassword()">Unlock</button>
       </div>
     </div>
   </div>
 
   <script>
+    let savedToken = sessionStorage.getItem("pz_storage_token") || "{token}";
     let pendingAction = null;
 
-    function copyIp(text, btn) {{
-      navigator.clipboard.writeText(text);
-      const original = btn.innerText;
-      btn.innerText = '✅ Copied!';
-      setTimeout(() => btn.innerText = original, 2000);
+    if (savedToken) {{
+      applyUnlockedUI(savedToken);
     }}
 
-    function getSavedToken() {{
-      return sessionStorage.getItem('pz_token') || new URLSearchParams(window.location.search).get('token') || '';
+    function copyValue(text, btn) {{
+      if (!text) return;
+      navigator.clipboard.writeText(text).then(() => {{
+        const origHtml = btn.innerHTML;
+        btn.innerHTML = '<span>Copied! ✨</span>';
+        setTimeout(() => btn.innerHTML = origHtml, 1500);
+      }});
     }}
 
-    function setSavedToken(token) {{
-      if (token) {{
-        sessionStorage.setItem('pz_token', token);
-        unlockUI(token);
-      }}
-    }}
-
-    function unlockUI(token) {{
-      const serverCard = document.getElementById('serverCard');
-      const serverBadge = document.getElementById('serverBadge');
-      const serverBtn = document.getElementById('serverBtn');
-      const backupsLink = document.getElementById('backupsLink');
-
-      if (serverCard) {{
-        serverCard.classList.remove('locked');
-        serverBadge.innerHTML = '🔓 Unlocked';
-        serverBadge.className = 'card-badge badge-green';
-        serverBtn.innerHTML = '⬇️ Download Server Files';
-        serverBtn.className = 'btn btn-primary';
-        serverBtn.onclick = () => window.location.href = '/server.zip?token=' + encodeURIComponent(token);
-      }}
-
-      if (backupsLink) {{
-        backupsLink.style.opacity = '1';
-        backupsLink.style.borderColor = 'rgba(16, 185, 129, 0.4)';
-        backupsLink.innerHTML = '🔓 🗄️ Server Backups & Save Management';
-        backupsLink.onclick = () => window.location.href = '/backups?token=' + encodeURIComponent(token);
-      }}
-    }}
-
-    function handleProtectedDownload(target) {{
-      const token = getSavedToken();
-      if (token) {{
-        window.location.href = '/' + target + '?token=' + encodeURIComponent(token);
-      }} else {{
-        pendingAction = () => window.location.href = '/' + target + '?token=' + encodeURIComponent(getSavedToken());
-        openModal();
-      }}
-    }}
-
-    function handleBackupsNav() {{
-      const token = getSavedToken();
-      if (token) {{
-        window.location.href = '/backups?token=' + encodeURIComponent(token);
-      }} else {{
-        pendingAction = () => window.location.href = '/backups?token=' + encodeURIComponent(getSavedToken());
-        openModal();
-      }}
-    }}
-
-    function openModal() {{
-      document.getElementById('passwordModal').style.display = 'flex';
-      document.getElementById('modalPassword').value = '';
-      setTimeout(() => document.getElementById('modalPassword').focus(), 100);
+    function openModal(action) {{
+      pendingAction = action;
+      document.getElementById("auth-modal").style.display = "flex";
+      const input = document.getElementById("auth-password-input");
+      input.value = "";
+      input.focus();
     }}
 
     function closeModal() {{
-      document.getElementById('passwordModal').style.display = 'none';
+      document.getElementById("auth-modal").style.display = "none";
+      pendingAction = null;
     }}
 
     function submitPassword() {{
-      const val = document.getElementById('modalPassword').value.trim();
-      if (val) {{
-        setSavedToken(val);
-        closeModal();
-        if (pendingAction) {{
-          pendingAction();
-          pendingAction = null;
-        }}
+      const val = document.getElementById("auth-password-input").value.trim();
+      if (!val) return;
+      savedToken = val;
+      sessionStorage.setItem("pz_storage_token", val);
+      applyUnlockedUI(val);
+      closeModal();
+      if (pendingAction === "server_download") {{
+        window.location.href = `/server.zip?token=${{encodeURIComponent(val)}}`;
+      }} else if (pendingAction === "backups") {{
+        window.location.href = `/backups?token=${{encodeURIComponent(val)}}`;
       }}
     }}
 
-    // Check token on load
-    window.addEventListener('DOMContentLoaded', () => {{
-      const token = getSavedToken();
-      if (token) {{
-        unlockUI(token);
+    function applyUnlockedUI(token) {{
+      const card = document.getElementById("server-card");
+      const iconBox = document.getElementById("server-icon-box");
+      const btn = document.getElementById("server-btn");
+      const btnText = document.getElementById("server-btn-text");
+      const btnIcon = document.getElementById("server-btn-icon");
+
+      if (card) card.classList.add("unlocked");
+      if (iconBox) iconBox.innerHTML = "🔓";
+      if (btn) {{
+        btn.className = "card-btn btn-unlocked";
+        btnText.innerText = "Download server.zip";
+        btnIcon.innerText = "⬇️";
       }}
-    }});
+    }}
+
+    function handleServerDownload() {{
+      if (savedToken) {{
+        window.location.href = `/server.zip?token=${{encodeURIComponent(savedToken)}}`;
+      }} else {{
+        openModal("server_download");
+      }}
+    }}
+
+    function openBackups() {{
+      if (savedToken) {{
+        window.location.href = `/backups?token=${{encodeURIComponent(savedToken)}}`;
+      }} else {{
+        openModal("backups");
+      }}
+    }}
   </script>
 </body>
 </html>
 """
 
 
-def render_html_backups(server_info: dict, backups: list, authenticated: bool, token: str = "") -> str:
-    status = server_info.get("status", "unknown").lower()
-    ip = server_info.get("ip", "pending")
+def render_html_backups(server_info: dict, backups: list, is_authed: bool, token: str = "") -> str:
+    status = server_info.get("status", "stopped").lower()
+    ip = server_info.get("raw_ip", "") if status == "online" else ""
     port = server_info.get("port", 16261)
-    
-    badge_color = "#eab308"
-    status_text = "BOOTING"
-    if status == "online":
-        badge_color = "#10b981"
-        status_text = "SERVER ONLINE"
-    elif status in ("stopped", "error", "failed"):
-        badge_color = "#ef4444"
-        status_text = status.upper()
+    is_online = (status == "online" and bool(ip) and ip != "pending")
 
-    if backups:
-        rows = []
-        for b in backups:
-            token_param = f"?token={token}" if token else ""
-            dl_url = f"/backups/{b['name']}{token_param}"
-            rows.append(f"""
-            <tr>
-              <td style="font-family:ui-monospace, monospace; font-weight:600; color:#38bdf8;">{b['name']}</td>
-              <td style="color:var(--text-muted);">{b['date_str']}</td>
-              <td style="color:var(--text-muted);">{b['size_str']}</td>
-              <td>
-                <a href="{dl_url}" class="btn btn-secondary" style="padding:0.35rem 0.85rem; font-size:0.85rem;" download>⬇️ Download</a>
-              </td>
-            </tr>
-            """)
-        backups_table = f"""
-        <table style="width:100%; border-collapse:collapse; text-align:left; margin-top:1rem;">
-          <thead>
-            <tr style="border-bottom: 1px solid var(--card-border); color: var(--text-muted); font-size:0.8rem; text-transform:uppercase; letter-spacing:0.05em;">
-              <th style="padding: 0.75rem 0.5rem;">Archive File</th>
-              <th style="padding: 0.75rem 0.5rem;">Created</th>
-              <th style="padding: 0.75rem 0.5rem;">Size</th>
-              <th style="padding: 0.75rem 0.5rem;">Action</th>
-            </tr>
-          </thead>
-          <tbody>
-            {''.join(rows)}
-          </tbody>
-        </table>
-        """
-    else:
-        backups_table = """<p style="color:var(--text-muted); margin-top:1rem; font-style:italic;">No backup archives (.zip) found in /data/backups/.</p>"""
+    rows = []
+    for b in backups:
+        rows.append(f"""
+        <tr>
+          <td style="font-weight:600; font-family:monospace; color:#38bdf8;">{b['name']}</td>
+          <td style="color:var(--text-muted); font-size:0.85rem;">{b['date_str']}</td>
+          <td style="color:var(--text-muted); font-size:0.85rem;">{b['size_str']}</td>
+          <td style="text-align:right;">
+            <a href="/backups/{b['name']}{f'?token={token}' if token else ''}" class="copy-btn" download>
+              ⬇️ Download
+            </a>
+          </td>
+        </tr>
+        """)
 
-    auth_warning = ""
-    if not authenticated:
-        auth_warning = """
-        <div class="card" style="border-color:#f59e0b; background: rgba(245, 158, 11, 0.08); margin-bottom:1.5rem;">
-          <h3 style="margin-top:0; color:#fbbf24; font-size:1.15rem;">🔒 Password Required</h3>
-          <p style="color:var(--text-muted); font-size:0.9rem; margin-bottom:1rem;">Enter the Controller password to view and download world backups:</p>
-          <form method="GET" action="/backups" style="display:flex; gap:0.5rem; max-width:420px;">
-            <input type="password" name="token" placeholder="Enter STORAGE_PASSWORD" style="flex:1; padding:0.65rem 0.85rem; border-radius:8px; background:#090d16; border:1px solid rgba(255,255,255,0.15); color:white;" required />
-            <button type="submit" class="btn btn-primary">Unlock</button>
-          </form>
-        </div>
-        """
+    table_html = f"""
+    <table style="width:100%; border-collapse:collapse; margin-top:1rem;">
+      <thead>
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.1); text-align:left; font-size:0.75rem; color:var(--text-muted); letter-spacing:0.05em;">
+          <th style="padding:0.75rem 0.5rem;">ARCHIVE NAME</th>
+          <th style="padding:0.75rem 0.5rem;">CREATION DATE</th>
+          <th style="padding:0.75rem 0.5rem;">SIZE</th>
+          <th style="padding:0.75rem 0.5rem; text-align:right;">ACTION</th>
+        </tr>
+      </thead>
+      <tbody>
+        {''.join(rows) if rows else '<tr><td colspan="4" style="text-align:center; padding:2rem; color:var(--text-muted);">No backup archives found in /data/backups/</td></tr>'}
+      </tbody>
+    </table>
+    """ if is_authed else """
+    <div style="text-align:center; padding:3rem 1rem; background:rgba(0,0,0,0.3); border-radius:12px; margin-top:1rem;">
+      <div style="font-size:2.5rem; margin-bottom:0.75rem;">🔒</div>
+      <h3 style="margin:0 0 0.5rem 0;">Password Required</h3>
+      <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:1.25rem;">Server backups and world archives are protected.</p>
+      <form action="/backups" method="GET" style="display:inline-flex; gap:0.5rem;">
+        <input type="password" name="token" placeholder="Storage Password..." style="background:#020617; border:1px solid rgba(255,255,255,0.1); color:white; padding:0.6rem 1rem; border-radius:8px; font-size:0.9rem;" required />
+        <button type="submit" class="copy-btn" style="background:#3b82f6; border:none; padding:0.6rem 1.25rem;">Unlock</button>
+      </form>
+    </div>
+    """
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Project Zomboid • Server Backups</title>
+  <title>Project Zomboid • Backups</title>
   <style>
     :root {{
-      --bg: #0b0f19;
-      --card-bg: rgba(17, 24, 39, 0.85);
+      --bg: #07090e;
+      --card-bg: rgba(15, 23, 42, 0.75);
       --card-border: rgba(255, 255, 255, 0.08);
-      --text: #f3f4f6;
-      --text-muted: #9ca3af;
+      --text: #f8fafc;
+      --text-muted: #94a3b8;
       --primary: #3b82f6;
-      --primary-hover: #2563eb;
     }}
     * {{ box-sizing: border-box; }}
     body {{
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-      background: radial-gradient(circle at top center, #1e1b4b 0%, #0b0f19 55%, #030712 100%);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: radial-gradient(circle at 50% 0%, #1e1b4b 0%, #0b0f19 50%, #030712 100%);
       color: var(--text);
       margin: 0;
-      padding: 2.5rem 1rem;
+      padding: 2rem 1rem 4rem;
       min-height: 100vh;
       display: flex;
       justify-content: center;
     }}
-    .container {{ max-width: 880px; width: 100%; }}
+    .container {{
+      max-width: 820px;
+      width: 100%;
+    }}
+    .nav-bar {{
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 2rem;
+    }}
+    .brand-title {{
+      font-size: 1.35rem;
+      font-weight: 700;
+    }}
+    .nav-item {{
+      color: var(--text-muted);
+      text-decoration: none;
+      font-weight: 500;
+      font-size: 0.9rem;
+      padding: 0.5rem 1rem;
+      border-radius: 8px;
+    }}
+    .nav-item:hover, .nav-item.active {{
+      color: white;
+      background: rgba(255, 255, 255, 0.05);
+    }}
     .card {{
       background: var(--card-bg);
       backdrop-filter: blur(16px);
       border: 1px solid var(--card-border);
-      border-radius: 18px;
+      border-radius: 16px;
       padding: 1.75rem;
       margin-bottom: 1.5rem;
-      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
     }}
-    .nav-bar {{
-      display: flex;
-      gap: 0.75rem;
-      margin-bottom: 1.5rem;
-    }}
-    .nav-link {{
-      color: var(--text-muted);
-      text-decoration: none;
-      font-weight: 600;
-      font-size: 0.9rem;
-      padding: 0.5rem 1rem;
-      border-radius: 10px;
-      border: 1px solid transparent;
-      transition: all 0.15s;
-    }}
-    .nav-link.active, .nav-link:hover {{
-      color: white;
-      background-color: rgba(255, 255, 255, 0.06);
-      border-color: var(--card-border);
-    }}
-    h1 {{
-      font-size: 1.85rem;
-      margin: 0;
-      font-weight: 800;
-      color: #f1f5f9;
-    }}
-    .status-badge {{
-      display: inline-flex;
-      align-items: center;
-      gap: 0.5rem;
-      padding: 0.4rem 0.9rem;
-      border-radius: 9999px;
-      font-weight: 700;
-      font-size: 0.8rem;
-      background: rgba(0, 0, 0, 0.3);
-      border: 1px solid var(--card-border);
-    }}
-    .status-dot {{
-      width: 10px;
-      height: 10px;
-      border-radius: 50%;
-      background-color: {badge_color};
-    }}
-    .ip-box {{
-      background: rgba(0, 0, 0, 0.4);
-      border: 1px solid rgba(255, 255, 255, 0.06);
-      border-radius: 12px;
-      padding: 0.85rem 1.25rem;
-      margin-top: 1.25rem;
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-    }}
-    .btn {{
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 0.5rem;
-      font-weight: 600;
-      border-radius: 10px;
-      padding: 0.65rem 1.25rem;
-      font-size: 0.95rem;
-      text-decoration: none;
-      cursor: pointer;
-      border: none;
-      transition: all 0.15s;
-    }}
-    .btn-primary {{
-      background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-      color: white;
-    }}
-    .btn-secondary {{
-      background: rgba(255, 255, 255, 0.06);
+    .copy-btn {{
+      background: rgba(255, 255, 255, 0.08);
       color: var(--text);
-      border: 1px solid rgba(255, 255, 255, 0.1);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 6px;
+      padding: 0.4rem 0.85rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
     }}
-    .btn-secondary:hover {{
-      background: rgba(255, 255, 255, 0.12);
-    }}
-    table td {{
-      padding: 0.75rem 0.5rem;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-      font-size: 0.9rem;
+    .copy-btn:hover {{
+      background: rgba(255, 255, 255, 0.15);
     }}
   </style>
 </head>
 <body>
   <div class="container">
-    <div class="nav-bar">
-      <a href="/{f'?token={token}' if token else ''}" class="nav-link">📦 Packages</a>
-      <a href="/backups{f'?token={token}' if token else ''}" class="nav-link active">🗄️ Backups</a>
-    </div>
+    <nav class="nav-bar">
+      <div class="brand-title">☣️ Project Zomboid • Hub</div>
+      <div>
+        <a href="/" class="nav-item">Packages</a>
+        <a href="/backups{f'?token={token}' if token else ''}" class="nav-item active">Backups 🔒</a>
+      </div>
+    </nav>
 
     <div class="card">
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem;">
-        <h1>🗄️ Server Backups</h1>
-        <div class="status-badge">
-          <div class="status-dot"></div>
-          <span>{status_text}</span>
-        </div>
-      </div>
-      
-      <p style="color:var(--text-muted); margin:0.35rem 0 0 0; font-size:0.95rem;">
-        Automated and manual server save archives (.zip).
-      </p>
-
-      <div class="ip-box">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem; margin-bottom:1rem;">
         <div>
-          <span style="font-size:0.75rem; text-transform:uppercase; color:var(--text-muted); display:block;">Server Address</span>
-          <span style="font-family:ui-monospace, monospace; font-size:1.2rem; font-weight:700; color:#38bdf8;">{ip}:{port}</span>
+          <h1 style="font-size:1.4rem; margin:0 0 0.25rem 0;">🗄️ World Save Backups</h1>
+          <p style="color:var(--text-muted); font-size:0.85rem; margin:0;">Automated and manual snapshots stored on the Controller</p>
         </div>
-        <button class="btn btn-secondary" onclick="navigator.clipboard.writeText('{ip}:{port}'); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy', 2000)">Copy</button>
+        <span style="background:rgba(255,255,255,0.05); padding:0.35rem 0.75rem; border-radius:8px; font-size:0.8rem; color:var(--text-muted);">
+          {len(backups)} archive(s)
+        </span>
       </div>
+      {table_html}
     </div>
 
-    {auth_warning}
-
+    {f'''
     <div class="card">
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap;">
-        <h2 style="margin:0; font-size:1.3rem;">Available Backups</h2>
-        <span style="color:var(--text-muted); font-size:0.85rem;">{len(backups)} archive(s)</span>
-      </div>
-      {backups_table}
-    </div>
-
-    <div class="card">
-      <h2 style="margin:0 0 0.5rem 0; font-size:1.3rem;">⬆️ Upload Backup Archive</h2>
-      <p style="color:var(--text-muted); font-size:0.9rem; margin-top:0;">Upload a save <code>.zip</code> into the Controller for restore:</p>
-      <form action="/upload{f'?token={token}' if token else ''}" method="POST" enctype="multipart/form-data" style="margin-top:1rem;">
+      <h2 style="font-size:1.15rem; margin:0 0 0.5rem 0;">⬆️ Upload Backup Archive</h2>
+      <p style="color:var(--text-muted); font-size:0.85rem;">Upload an existing world save <code>.zip</code> into the Controller:</p>
+      <form action="/upload{f"?token={token}" if token else ""}" method="POST" enctype="multipart/form-data" style="margin-top:1rem;">
         <input type="file" name="file" accept=".zip" style="color:var(--text-muted); margin-bottom:1rem; display:block;" required />
-        <button type="submit" class="btn btn-primary">Upload Archive</button>
+        <button type="submit" class="copy-btn" style="background:#3b82f6; border:none; padding:0.6rem 1.25rem;">Upload Backup .zip</button>
       </form>
     </div>
+    ''' if is_authed else ''}
   </div>
 </body>
 </html>
@@ -1016,7 +1399,21 @@ class StorageHandler(BaseHTTPRequestHandler):
             self.wfile.write(html)
             return
 
-        # 3. Dedicated Backups Folder / Page
+        # 3. Game Torrent Download (Public)
+        if path in ("/game.torrent", "/torrent"):
+            candidates = [
+                SERVES_REPO / "game.torrent",
+                PACKAGES_DIR / "game.torrent",
+                Path("/data/game.torrent")
+            ]
+            for c in candidates:
+                if c.is_file():
+                    self._stream_file(c, "game.torrent", as_attachment=True)
+                    return
+            self._send_error(404, "game.torrent file not found in repository root")
+            return
+
+        # 4. Dedicated Backups Folder / Page
         if path in ("/backups", "/backups/"):
             server_info = get_server_info()
             is_authed = check_auth(self.headers, query)
@@ -1041,7 +1438,7 @@ class StorageHandler(BaseHTTPRequestHandler):
             self.wfile.write(html)
             return
 
-        # 4. Live server_info.json (Public)
+        # 5. Live server_info.json (Public)
         if path == "/server_info.json":
             info = get_server_info()
             body = json.dumps(info, indent=2).encode("utf-8")
@@ -1049,7 +1446,7 @@ class StorageHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        # 5. Packages Manifest (Public)
+        # 6. Packages Manifest (Public)
         if path in ("/manifest", "/packages_manifest.json"):
             manifest = get_manifest()
             body = json.dumps(manifest, indent=2).encode("utf-8")
@@ -1057,7 +1454,7 @@ class StorageHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        # 6. Public Downloads: client.zip & common.zip
+        # 7. Public Downloads: client.zip & common.zip
         if path == "/client.zip":
             self._stream_file(PACKAGES_DIR / "client.zip", "client.zip", as_attachment=True)
             return
@@ -1066,7 +1463,7 @@ class StorageHandler(BaseHTTPRequestHandler):
             self._stream_file(PACKAGES_DIR / "common.zip", "common.zip", as_attachment=True)
             return
 
-        # 7. PROTECTED DOWNLOAD: server.zip (Game Server Only)
+        # 8. PROTECTED DOWNLOAD: server.zip (Game Server Only)
         if path == "/server.zip":
             if not check_auth(self.headers, query):
                 self._send_error(401, "Unauthorized: Valid password/token required for server.zip")
@@ -1075,7 +1472,7 @@ class StorageHandler(BaseHTTPRequestHandler):
             self._stream_file(PACKAGES_DIR / "server.zip", "server.zip", as_attachment=True)
             return
 
-        # 8. PROTECTED DOWNLOAD: /backups/<filename>
+        # 9. PROTECTED DOWNLOAD: /backups/<filename>
         if path.startswith("/backups/"):
             if not check_auth(self.headers, query):
                 self._send_error(401, "Unauthorized: Valid password/token required to access backups")
@@ -1106,26 +1503,33 @@ class StorageHandler(BaseHTTPRequestHandler):
                 self._send_error(401, "Unauthorized: Valid password/token required for upload")
                 return
 
-            ctype, pdict = cgi.parse_header(self.headers.get("Content-Type", ""))
-            if ctype != "multipart/form-data":
+            ctype = self.headers.get("Content-Type", "")
+            if not ctype.startswith("multipart/form-data"):
                 self._send_error(400, "Content-Type must be multipart/form-data")
                 return
 
             try:
-                pdict["boundary"] = bytes(pdict["boundary"], "utf-8")
-                pdict["CONTENT-LENGTH"] = int(self.headers.get("Content-Length", 0))
-                fields = cgi.parse_multipart(self.rfile, pdict)
+                content_length = int(self.headers.get("Content-Length", 0))
+                body_bytes = self.rfile.read(content_length)
+                raw_message = f"Content-Type: {ctype}\r\n\r\n".encode("utf-8") + body_bytes
+                msg = BytesParser().parsebytes(raw_message)
 
                 uploaded_files = []
                 BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
 
-                for field_name, files_data in fields.items():
-                    for data in files_data:
+                for part in msg.walk():
+                    raw_filename = part.get_filename()
+                    if raw_filename:
+                        data = part.get_payload(decode=True)
                         if isinstance(data, bytes) and data:
-                            filename = f"backup_upload_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(2)}.zip"
-                            save_path = BACKUPS_DIR / filename
+                            clean_name = os.path.basename(raw_filename).strip("'\"")
+                            if not clean_name.lower().endswith(".zip"):
+                                clean_name = f"{clean_name}.zip"
+                            if not clean_name or clean_name.startswith("."):
+                                clean_name = f"backup_upload_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}_{secrets.token_hex(2)}.zip"
+                            save_path = BACKUPS_DIR / clean_name
                             save_path.write_bytes(data)
-                            uploaded_files.append(filename)
+                            uploaded_files.append(clean_name)
 
                 log(f"Authenticated upload completed: {uploaded_files}")
                 token = query.get("token", [None])[0] or query.get("key", [None])[0] or ""
