@@ -247,12 +247,10 @@ def markdown_to_html(md_text: str) -> str:
 
 
 def get_readme_html() -> str:
-    """Read README.md (or README) from pz-saves repository and render as HTML."""
+    """Read README.md from pz-saves repository and render as HTML."""
     candidates = [
         SERVES_REPO / "README.md",
-        SERVES_REPO / "README",
-        Path("/data/README.md"),
-        Path("/data/README")
+        Path("/data/README.md")
     ]
     for c in candidates:
         if c.is_file():
@@ -264,7 +262,7 @@ def get_readme_html() -> str:
                 log(f"Error reading {c}: {e}")
 
     # Fallback instructions
-    fallback_md = """### 📖 Installation & How to Join
+    fallback_md = """### 📖 Installation & How to Join Vsrania
 
 1. **Clean Installation Recommended**:
    - It is strongly recommended to use a **fresh game client** from the **Torrent download** above, or completely delete any other mods from your local `Zomboid/mods` directory before joining to prevent mod ID and version conflicts.
@@ -355,7 +353,7 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
         <div class="status-banner booting-banner">
           <div class="status-banner-icon">🚀</div>
           <div class="status-banner-text">
-            <div class="status-banner-title">Dedicated Server is Booting Up</div>
+            <div class="status-banner-title">Vsrania Server is Booting Up</div>
             <div class="status-banner-desc">Initializing game instance on Akash Network. Live IP and Port will appear here automatically once the server is ready!</div>
           </div>
         </div>
@@ -365,7 +363,7 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
         <div class="status-banner offline-banner">
           <div class="status-banner-icon">⏸️</div>
           <div class="status-banner-text">
-            <div class="status-banner-title">Dedicated Server is Currently Offline</div>
+            <div class="status-banner-title">Vsrania Server is Currently Offline</div>
             <div class="status-banner-desc">The game server is stopped. You can still download mods and client configs below in preparation for the next session.</div>
           </div>
         </div>
@@ -386,7 +384,7 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Project Zomboid • Server Hub</title>
+  <title>Vsrania • Server Hub</title>
   <style>
     :root {{
       --bg: #07090e;
@@ -969,7 +967,7 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
     <nav class="nav-bar">
       <div class="brand-title">
         <span class="brand-icon">☣️</span>
-        <span>Project Zomboid • Hub</span>
+        <span>Vsrania • Hub</span>
       </div>
       <div class="nav-links">
         <a href="/" class="nav-item active">Packages</a>
@@ -981,7 +979,7 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
     <div class="header-card">
       <div class="header-top">
         <div class="server-title-block">
-          <h1>Dedicated Server Instance</h1>
+          <h1>Vsrania Dedicated Server</h1>
           <p>Managed via Akash Network & Controller</p>
         </div>
         <div class="status-badge {badge_class}">
@@ -998,7 +996,7 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
     <div class="torrent-card">
       <div class="torrent-info">
         <div class="torrent-badge">RECOMMENDED GAME CLIENT</div>
-        <div class="torrent-title">🎮 Clean Project Zomboid Installation</div>
+        <div class="torrent-title">🎮 Clean Vsrania Game Client</div>
         <div class="torrent-desc">Download a clean, pre-tested game client (.torrent) to guarantee 100% mod compatibility and prevent client-side synchronization errors.</div>
       </div>
       <a href="/game.torrent" class="torrent-btn" download>
@@ -1225,7 +1223,7 @@ def render_html_backups(server_info: dict, backups: list, is_authed: bool, token
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Project Zomboid • Backups</title>
+  <title>Vsrania • Backups</title>
   <style>
     :root {{
       --bg: #07090e;
@@ -1302,7 +1300,7 @@ def render_html_backups(server_info: dict, backups: list, is_authed: bool, token
 <body>
   <div class="container">
     <nav class="nav-bar">
-      <div class="brand-title">☣️ Project Zomboid • Hub</div>
+      <div class="brand-title">☣️ Vsrania • Hub</div>
       <div>
         <a href="/" class="nav-item">Packages</a>
         <a href="/backups{f'?token={token}' if token else ''}" class="nav-item active">Backups 🔒</a>
