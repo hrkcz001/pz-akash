@@ -17,8 +17,21 @@ ARG REPO_BRANCH="main"
 COPY build_packages.py /usr/local/bin/build_packages.py
 RUN chmod +x /usr/local/bin/build_packages.py
 
-# Clone pz-saves (if public/available) or create template structure, then build packages
-RUN git clone --depth 1 --branch "${REPO_BRANCH}" "${REPO_URL}" /build/pz-saves 2>/dev/null || mkdir -p /build/pz-saves/common /build/pz-saves/client /build/pz-saves/server
+# If pz-saves is provided in the build context (via GitHub Actions checkout or local copy), copy it.
+# Otherwise, attempt git clone or fallback to template folders.
+COPY . /tmp/context/
+RUN if [ -d /tmp/context/pz-saves ] && [ -d /tmp/context/pz-saves/common ]; then \
+        echo "[builder] Using pz-saves from build context." && \
+        cp -r /tmp/context/pz-saves/. /build/pz-saves/; \
+    elif [ -d /tmp/context/common ]; then \
+        echo "[builder] Using root common/client/server folders from build context." && \
+        cp -r /tmp/context/. /build/pz-saves/; \
+    else \
+        echo "[builder] Cloning pz-saves from ${REPO_URL}..." && \
+        git clone --depth 1 --branch "${REPO_BRANCH}" "${REPO_URL}" /build/pz-saves 2>/dev/null || mkdir -p /build/pz-saves/common /build/pz-saves/client /build/pz-saves/server; \
+    fi && \
+    rm -rf /tmp/context
+
 RUN python3 /usr/local/bin/build_packages.py --repo-path /build/pz-saves --output-dir /packages --steamcmd /steamcmd/steamcmd.sh
 
 # Stage 2: Controller Runtime
