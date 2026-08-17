@@ -34,6 +34,8 @@ from urllib.parse import parse_qs, urlparse
 
 HTTP_PORT = int(os.environ.get("HTTP_PORT", "8000"))
 STORAGE_PASSWORD = os.environ.get("STORAGE_PASSWORD") or os.environ.get("CONTROLLER_SECRET") or os.environ.get("ADMIN_PASSWORD", "")
+SERVER_FILES_PASSWORD = os.environ.get("SERVER_FILES_PASSWORD") or os.environ.get("SERVERFILES_PASSWORD") or STORAGE_PASSWORD
+BACKUPS_PASSWORD = os.environ.get("BACKUPS_PASSWORD") or os.environ.get("BACKUP_PASSWORD") or os.environ.get("BACKUPS_SECRET") or STORAGE_PASSWORD
 PACKAGES_DIR = Path(os.environ.get("PACKAGES_DIR", "/data/packages"))
 BACKUPS_DIR = Path(os.environ.get("BACKUPS_DIR", "/data/backups"))
 SERVES_REPO = Path(os.environ.get("SERVES_REPO", "/root/pz-saves"))
@@ -45,18 +47,14 @@ def log(msg: str):
     print(f"[storage_server] {msg}", flush=True)
 
 
-def check_auth(headers, query_params) -> bool:
-    """Validate bearer token, basic auth, custom header or query token against STORAGE_PASSWORD."""
-    if not STORAGE_PASSWORD:
-        log("WARNING: STORAGE_PASSWORD is not set! Denying protected access.")
-        return False
-
+def extract_credentials(headers, query_params) -> list:
+    """Extract candidate tokens/passwords from Bearer auth, Basic auth, custom headers, and query parameters."""
+    tokens = []
     # 1. Bearer token in Authorization header
     auth_header = headers.get("Authorization", "")
     if auth_header.startswith("Bearer "):
-        token = auth_header[len("Bearer "):].strip()
-        if hmac.compare_digest(token, STORAGE_PASSWORD):
-            return True
+        t = auth_header[len("Bearer "):].strip()
+        if t: tokens.append(t)
 
     # 2. Basic Auth in Authorization header
     if auth_header.startswith("Basic "):
@@ -64,21 +62,52 @@ def check_auth(headers, query_params) -> bool:
             raw = base64.b64decode(auth_header[len("Basic "):].strip()).decode("utf-8")
             if ":" in raw:
                 _, password = raw.split(":", 1)
-                if hmac.compare_digest(password, STORAGE_PASSWORD):
-                    return True
+                if password: tokens.append(password)
         except Exception:
             pass
 
-    # 3. X-Auth-Token or X-Storage-Secret header
-    token_header = headers.get("X-Auth-Token") or headers.get("X-Storage-Secret") or headers.get("X-Controller-Secret")
-    if token_header and hmac.compare_digest(token_header.strip(), STORAGE_PASSWORD):
-        return True
+    # 3. Custom headers
+    for h in ("X-Auth-Token", "X-Storage-Secret", "X-Controller-Secret", "X-Server-Files-Password", "X-Backups-Password"):
+        val = headers.get(h)
+        if val and val.strip():
+            tokens.append(val.strip())
 
-    # 4. Query param (?token=... or ?key=... or ?password=...)
-    query_token = query_params.get("token", [None])[0] or query_params.get("key", [None])[0] or query_params.get("password", [None])[0]
-    if query_token and hmac.compare_digest(query_token.strip(), STORAGE_PASSWORD):
-        return True
+    # 4. Query parameters
+    for q in ("token", "key", "password", "server_token", "backup_token", "server_password", "backup_password"):
+        vals = query_params.get(q, [])
+        if vals and vals[0] and vals[0].strip():
+            tokens.append(vals[0].strip())
 
+    return tokens
+
+
+def check_server_files_auth(headers, query_params) -> bool:
+    """Validate credentials against SERVER_FILES_PASSWORD (or master STORAGE_PASSWORD)."""
+    allowed = [p for p in (SERVER_FILES_PASSWORD, STORAGE_PASSWORD) if p]
+    if not allowed:
+        log("WARNING: Neither SERVER_FILES_PASSWORD nor STORAGE_PASSWORD is set! Denying access.")
+        return False
+
+    creds = extract_credentials(headers, query_params)
+    for c in creds:
+        for expected in allowed:
+            if hmac.compare_digest(c, expected):
+                return True
+    return False
+
+
+def check_backups_auth(headers, query_params) -> bool:
+    """Validate credentials against BACKUPS_PASSWORD (or master STORAGE_PASSWORD)."""
+    allowed = [p for p in (BACKUPS_PASSWORD, STORAGE_PASSWORD) if p]
+    if not allowed:
+        log("WARNING: Neither BACKUPS_PASSWORD nor STORAGE_PASSWORD is set! Denying access.")
+        return False
+
+    creds = extract_credentials(headers, query_params)
+    for c in creds:
+        for expected in allowed:
+            if hmac.compare_digest(c, expected):
+                return True
     return False
 
 
@@ -287,7 +316,7 @@ def format_pkg_stats(info: dict) -> str:
     return " • ".join(parts)
 
 
-def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") -> str:
+def render_html_dashboard(server_info: dict, manifest: dict, server_token: str = "", backup_token: str = "") -> str:
     status = server_info.get("status", "stopped").lower()
     ip = server_info.get("raw_ip", "") if status == "online" else ""
     port = server_info.get("port", 16261)
@@ -1076,8 +1105,8 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
   <!-- Password Unlock Modal -->
   <div class="modal-backdrop" id="auth-modal">
     <div class="modal-box">
-      <h3>🔒 Authorization Required</h3>
-      <p>Enter the admin / storage password to access protected server files & backups:</p>
+      <h3 id="auth-modal-title">🔒 Authorization Required</h3>
+      <p id="auth-modal-desc">Enter password to continue:</p>
       <input type="password" class="modal-input" id="auth-password-input" placeholder="Password..." onkeydown="if(event.key==='Enter') submitPassword()" />
       <div class="modal-actions">
         <button type="button" class="modal-btn modal-btn-cancel" onclick="closeModal()">Cancel</button>
@@ -1087,11 +1116,12 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
   </div>
 
   <script>
-    let savedToken = sessionStorage.getItem("pz_storage_token") || "{token}";
+    let savedServerToken = sessionStorage.getItem("pz_server_files_token") || "{server_token}";
+    let savedBackupToken = sessionStorage.getItem("pz_backups_token") || "{backup_token}";
     let pendingAction = null;
 
-    if (savedToken) {{
-      applyUnlockedUI(savedToken);
+    if (savedServerToken) {{
+      applyUnlockedServerUI();
     }}
 
     function copyValue(text, btn) {{
@@ -1105,8 +1135,22 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
 
     function openModal(action) {{
       pendingAction = action;
-      document.getElementById("auth-modal").style.display = "flex";
+      const modal = document.getElementById("auth-modal");
+      const title = document.getElementById("auth-modal-title");
+      const desc = document.getElementById("auth-modal-desc");
       const input = document.getElementById("auth-password-input");
+
+      if (action === "server_download") {{
+        title.innerText = "🔒 Unlock Server Files";
+        desc.innerText = "Enter password to download server.zip (server configs & mods):";
+        input.placeholder = "Server files password...";
+      }} else if (action === "backups") {{
+        title.innerText = "🔒 Unlock Backups";
+        desc.innerText = "Enter password to access world save archives:";
+        input.placeholder = "Backups password...";
+      }}
+
+      modal.style.display = "flex";
       input.value = "";
       input.focus();
     }}
@@ -1119,18 +1163,22 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
     function submitPassword() {{
       const val = document.getElementById("auth-password-input").value.trim();
       if (!val) return;
-      savedToken = val;
-      sessionStorage.setItem("pz_storage_token", val);
-      applyUnlockedUI(val);
-      closeModal();
+
       if (pendingAction === "server_download") {{
+        savedServerToken = val;
+        sessionStorage.setItem("pz_server_files_token", val);
+        applyUnlockedServerUI();
+        closeModal();
         window.location.href = `/server.zip?token=${{encodeURIComponent(val)}}`;
       }} else if (pendingAction === "backups") {{
+        savedBackupToken = val;
+        sessionStorage.setItem("pz_backups_token", val);
+        closeModal();
         window.location.href = `/backups?token=${{encodeURIComponent(val)}}`;
       }}
     }}
 
-    function applyUnlockedUI(token) {{
+    function applyUnlockedServerUI() {{
       const card = document.getElementById("server-card");
       const iconBox = document.getElementById("server-icon-box");
       const btn = document.getElementById("server-btn");
@@ -1147,16 +1195,16 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
     }}
 
     function handleServerDownload() {{
-      if (savedToken) {{
-        window.location.href = `/server.zip?token=${{encodeURIComponent(savedToken)}}`;
+      if (savedServerToken) {{
+        window.location.href = `/server.zip?token=${{encodeURIComponent(savedServerToken)}}`;
       }} else {{
         openModal("server_download");
       }}
     }}
 
     function openBackups() {{
-      if (savedToken) {{
-        window.location.href = `/backups?token=${{encodeURIComponent(savedToken)}}`;
+      if (savedBackupToken) {{
+        window.location.href = `/backups?token=${{encodeURIComponent(savedBackupToken)}}`;
       }} else {{
         openModal("backups");
       }}
@@ -1205,10 +1253,10 @@ def render_html_backups(server_info: dict, backups: list, is_authed: bool, token
     """ if is_authed else """
     <div style="text-align:center; padding:3rem 1rem; background:rgba(0,0,0,0.3); border-radius:12px; margin-top:1rem;">
       <div style="font-size:2.5rem; margin-bottom:0.75rem;">🔒</div>
-      <h3 style="margin:0 0 0.5rem 0;">Password Required</h3>
+      <h3 style="margin:0 0 0.5rem 0;">Backups Password Required</h3>
       <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:1.25rem;">Server backups and world archives are protected.</p>
-      <form action="/backups" method="GET" style="display:inline-flex; gap:0.5rem;">
-        <input type="password" name="token" placeholder="Storage Password..." style="background:#020617; border:1px solid rgba(255,255,255,0.1); color:white; padding:0.6rem 1rem; border-radius:8px; font-size:0.9rem;" required />
+      <form action="/backups" method="GET" style="display:inline-flex; gap:0.5rem;" onsubmit="saveBackupToken(this)">
+        <input type="password" name="token" id="backup-pwd-input" placeholder="Backups Password..." style="background:#020617; border:1px solid rgba(255,255,255,0.1); color:white; padding:0.6rem 1rem; border-radius:8px; font-size:0.9rem;" required />
         <button type="submit" class="copy-btn" style="background:#3b82f6; border:none; padding:0.6rem 1.25rem;">Unlock</button>
       </form>
     </div>
@@ -1327,6 +1375,23 @@ def render_html_backups(server_info: dict, backups: list, is_authed: bool, token
     </div>
     ''' if is_authed else ''}
   </div>
+  <script>
+    const currentToken = "{token}";
+    if (currentToken) {{
+      sessionStorage.setItem("pz_backups_token", currentToken);
+    }} else {{
+      const stored = sessionStorage.getItem("pz_backups_token");
+      if (stored && !window.location.search.includes("token=")) {{
+        window.location.href = `/backups?token=${{encodeURIComponent(stored)}}`;
+      }}
+    }}
+    function saveBackupToken(form) {{
+      const input = form.querySelector("input[name='token']");
+      if (input && input.value) {{
+        sessionStorage.setItem("pz_backups_token", input.value);
+      }}
+    }}
+  </script>
 </body>
 </html>
 """
@@ -1387,8 +1452,16 @@ class StorageHandler(BaseHTTPRequestHandler):
         if path in ("/", "/index.html"):
             server_info = get_server_info()
             manifest = get_manifest()
-            token = query.get("token", [None])[0] or query.get("key", [None])[0] or query.get("password", [None])[0] or ""
-            html = render_html_dashboard(server_info, manifest, token).encode("utf-8")
+            
+            server_token = query.get("server_token", [None])[0] or ""
+            if not server_token and check_server_files_auth(self.headers, query):
+                server_token = query.get("token", [None])[0] or query.get("key", [None])[0] or query.get("password", [None])[0] or ""
+                
+            backup_token = query.get("backup_token", [None])[0] or ""
+            if not backup_token and check_backups_auth(self.headers, query):
+                backup_token = query.get("token", [None])[0] or query.get("key", [None])[0] or query.get("password", [None])[0] or ""
+
+            html = render_html_dashboard(server_info, manifest, server_token, backup_token).encode("utf-8")
             self._send_response_headers(200, "text/html; charset=utf-8", len(html))
             self.wfile.write(html)
             return
@@ -1410,14 +1483,14 @@ class StorageHandler(BaseHTTPRequestHandler):
         # 4. Dedicated Backups Folder / Page
         if path in ("/backups", "/backups/"):
             server_info = get_server_info()
-            is_authed = check_auth(self.headers, query)
-            token = query.get("token", [None])[0] or query.get("key", [None])[0] or query.get("password", [None])[0] or ""
+            is_authed = check_backups_auth(self.headers, query)
+            token = query.get("token", [None])[0] or query.get("key", [None])[0] or query.get("password", [None])[0] or query.get("backup_token", [None])[0] or ""
 
             # Check if JSON API requested
             accept_header = self.headers.get("Accept", "")
             if "application/json" in accept_header:
                 if not is_authed:
-                    self._send_error(401, "Unauthorized")
+                    self._send_error(401, "Unauthorized: Valid backups password required")
                     return
                 backups = get_valid_backups()
                 body = json.dumps({"backups": backups}, indent=2).encode("utf-8")
@@ -1457,10 +1530,10 @@ class StorageHandler(BaseHTTPRequestHandler):
             self._stream_file(PACKAGES_DIR / "common.zip", "common.zip", as_attachment=True)
             return
 
-        # 8. PROTECTED DOWNLOAD: server.zip (Game Server Only)
+        # 8. PROTECTED DOWNLOAD: server.zip (Server Files Only)
         if path == "/server.zip":
-            if not check_auth(self.headers, query):
-                self._send_error(401, "Unauthorized: Valid password/token required for server.zip")
+            if not check_server_files_auth(self.headers, query):
+                self._send_error(401, "Unauthorized: Valid server files password required for server.zip")
                 return
             log("Authenticated download of server.zip accepted.")
             self._stream_file(PACKAGES_DIR / "server.zip", "server.zip", as_attachment=True)
@@ -1468,8 +1541,8 @@ class StorageHandler(BaseHTTPRequestHandler):
 
         # 9. PROTECTED DOWNLOAD: /backups/<filename>
         if path.startswith("/backups/"):
-            if not check_auth(self.headers, query):
-                self._send_error(401, "Unauthorized: Valid password/token required to access backups")
+            if not check_backups_auth(self.headers, query):
+                self._send_error(401, "Unauthorized: Valid backups password required to access backups")
                 return
             filename = os.path.basename(path[len("/backups/"):])
             # Security: ensure file is .zip and not hidden/.gitkeep
@@ -1493,8 +1566,8 @@ class StorageHandler(BaseHTTPRequestHandler):
 
         # 1. PROTECTED UPLOAD: POST /upload
         if path in ("/upload", "/upload/"):
-            if not check_auth(self.headers, query):
-                self._send_error(401, "Unauthorized: Valid password/token required for upload")
+            if not check_backups_auth(self.headers, query):
+                self._send_error(401, "Unauthorized: Valid backups password required for upload")
                 return
 
             ctype = self.headers.get("Content-Type", "")
@@ -1526,7 +1599,7 @@ class StorageHandler(BaseHTTPRequestHandler):
                             uploaded_files.append(clean_name)
 
                 log(f"Authenticated upload completed: {uploaded_files}")
-                token = query.get("token", [None])[0] or query.get("key", [None])[0] or ""
+                token = query.get("token", [None])[0] or query.get("key", [None])[0] or query.get("backup_token", [None])[0] or ""
                 token_param = f"?token={token}" if token else ""
                 
                 # If uploaded via browser form, redirect back to /backups
@@ -1554,7 +1627,8 @@ def run_server():
 
     server = ThreadingHTTPServer(("0.0.0.0", HTTP_PORT), StorageHandler)
     log(f"PZ Controller Storage Server listening on port {HTTP_PORT}")
-    log(f"Password protection: {'ACTIVE' if STORAGE_PASSWORD else 'NO PASSWORD SET (WARNING)'}")
+    log(f"Server files protection: {'ACTIVE' if SERVER_FILES_PASSWORD else 'NO PASSWORD SET (WARNING)'}")
+    log(f"Backups protection: {'ACTIVE' if BACKUPS_PASSWORD else 'NO PASSWORD SET (WARNING)'}")
     server.serve_forever()
 
 

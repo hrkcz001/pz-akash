@@ -19,7 +19,7 @@ The system consists of two primary services communicating via the private `pz-sa
      - Web UI showing live server IP & Port (with 1-click copy buttons), live status badges, clean game client `.torrent` download, and package statistics (mod count, config file count, archive size).
      - Dynamically renders player guide from `README.md` in `pz-saves`.
      - Public endpoints: `/`, `/client.zip`, `/common.zip`, `/game.torrent`, `/server_info.json`, `/manifest`, `/healthz`.
-     - Protected endpoints (requires `STORAGE_PASSWORD`): `/server.zip`, `/upload`, `/backups/*`.
+     - Protected endpoints: `/server.zip` (requires `SERVER_FILES_PASSWORD` or `STORAGE_PASSWORD`), `/upload` & `/backups/*` (requires `BACKUPS_PASSWORD` or `STORAGE_PASSWORD`).
    - **Akash Orchestrator & Auto-Backups**: Triggers server deployments on `start`, safe RCON backups on schedule or `backup`, and graceful halts on `halt` or `stop_at`.
 
 2. **`pz-server` (Dedicated Game Server)**:
@@ -92,13 +92,18 @@ Push a file named `stop_at` with an epoch timestamp or `YYYY-MM-DD HH:MM[:SS]` (
 
 ---
 
-## 🔒 Storage Server Security
+## 🔒 Storage Server Security & Password Management
 
-The Controller HTTP service (`:8000`) is protected with `STORAGE_PASSWORD`:
-- **Public endpoints**: `/`, `/client.zip`, `/common.zip`, `/game.torrent`, `/server_info.json`, `/manifest`, `/healthz`.
-- **Protected endpoints**: `/server.zip`, `/upload`, `/backups/*`.
-- **Authentication formats supported**:
-  - Header: `Authorization: Bearer <STORAGE_PASSWORD>`
-  - Header: `Authorization: Basic <base64(user:password)>`
-  - Header: `X-Auth-Token: <STORAGE_PASSWORD>`
-  - Query parameter: `?token=<STORAGE_PASSWORD>`
+The Controller HTTP service (`:8000`) supports granular password protection:
+
+| Environment Variable | Description & Scope | Default Fallback |
+| :--- | :--- | :--- |
+| **`SERVER_FILES_PASSWORD`** | Protects `/server.zip` and the **Server Files** card unlock in the web dashboard. | `STORAGE_PASSWORD` |
+| **`BACKUPS_PASSWORD`** | Protects `/backups` list, `/backups/<file>` downloads, `/upload`, and the **Backups** view. | `STORAGE_PASSWORD` |
+| **`STORAGE_PASSWORD`** | Master administrator password that serves as a global fallback for all protected endpoints. | `ADMIN_PASSWORD` |
+
+### Supported Authentication Formats:
+- **Authorization Header**: `Authorization: Bearer <PASSWORD>` or `Authorization: Basic <base64(user:password)>`
+- **Custom Headers**: `X-Auth-Token: <PASSWORD>`, `X-Server-Files-Password: <PASSWORD>`, `X-Backups-Password: <PASSWORD>`
+- **Query Parameters**: `?token=<PASSWORD>`, `?server_token=<PASSWORD>`, `?backup_token=<PASSWORD>`
+- **Interactive UI**: Password unlock modals right from the web dashboard and `/backups` page with session persistence.

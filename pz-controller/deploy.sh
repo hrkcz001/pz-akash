@@ -169,7 +169,7 @@ build_sdl() { # $1 = max uakt/block
     "${GIT_USER_NAME:-}" "${GIT_USER_EMAIL:-}" "$SSH_PORT" \
     "${SERVER_NAME:-}" "${ADMIN_PASSWORD:-}" "${SERVER_MEMORY_MAX:-}" \
     "${SERVER_MEMORY_MIN:-}" "${RESTORE_POLL_INTERVAL_SEC:-}" \
-    "${WAIT_ON_CRASH_SEC:-}" "${STORAGE_PASSWORD:-${ADMIN_PASSWORD:-}}" \
+    "${WAIT_ON_CRASH_SEC:-}" "${SERVER_FILES_PASSWORD:-${STORAGE_PASSWORD:-${ADMIN_PASSWORD:-}}}" \
     "${CONTROLLER_URL:-}" <<'PYEOF'
 import re, sys
 tpl, out, max_uakt = sys.argv[1], sys.argv[2], str(sys.argv[3])

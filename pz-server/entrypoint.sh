@@ -6,6 +6,7 @@ RESTORE_POLL_INTERVAL_SEC=${RESTORE_POLL_INTERVAL_SEC:-10}
 SERVER_NAME=${SERVER_NAME:-vsrania}
 ADMIN_PASSWORD=${ADMIN_PASSWORD:-"Qwerty01234**"}
 STORAGE_PASSWORD=${STORAGE_PASSWORD:-$ADMIN_PASSWORD}
+SERVER_FILES_PASSWORD=${SERVER_FILES_PASSWORD:-$STORAGE_PASSWORD}
 CONTROLLER_URL=${CONTROLLER_URL:-}
 SERVER_MEMORY_MAX=${SERVER_MEMORY_MAX:-8192m}
 SERVER_MEMORY_MIN=${SERVER_MEMORY_MIN:-8192m}
@@ -210,7 +211,7 @@ if [ -n "$RESOLVED_CONTROLLER_URL" ]; then
     # Fetch server.zip (authenticated)
     echo "  Downloading server.zip (authenticated)..."
     for attempt in {1..3}; do
-        if curl -sSL -f --max-time 180 -H "Authorization: Bearer $STORAGE_PASSWORD" "$RESOLVED_CONTROLLER_URL/server.zip" -o /tmp/server.zip 2>/dev/null; then
+        if curl -sSL -f --max-time 180 -H "Authorization: Bearer $SERVER_FILES_PASSWORD" "$RESOLVED_CONTROLLER_URL/server.zip" -o /tmp/server.zip 2>/dev/null; then
             if gosu steam unzip -t -q /tmp/server.zip >/dev/null 2>&1; then
                 echo "  Extracting server.zip into /home/steam/Zomboid/..."
                 gosu steam unzip -o -q /tmp/server.zip -d /home/steam/Zomboid/
@@ -219,7 +220,7 @@ if [ -n "$RESOLVED_CONTROLLER_URL" ]; then
                 break
             fi
         fi
-        echo "  [warn] server.zip download attempt $attempt failed (check STORAGE_PASSWORD or network), retrying in 3s..."
+        echo "  [warn] server.zip download attempt $attempt failed (check SERVER_FILES_PASSWORD or network), retrying in 3s..."
         sleep 3
     done
     rm -f /tmp/server.zip
