@@ -169,8 +169,7 @@ build_sdl() { # $1 = max uakt/block
     "${GIT_USER_NAME:-}" "${GIT_USER_EMAIL:-}" "$SSH_PORT" \
     "${SERVER_NAME:-}" "${ADMIN_PASSWORD:-}" "${SERVER_MEMORY_MAX:-}" \
     "${SERVER_MEMORY_MIN:-}" "${RESTORE_POLL_INTERVAL_SEC:-}" \
-    "${WAIT_ON_CRASH_SEC:-}" "${AUTO_CONFIGURE_MAPS:-}" \
-    "${AUTO_CONFIGURE_MODS:-}" "${STORAGE_PASSWORD:-${ADMIN_PASSWORD:-}}" \
+    "${WAIT_ON_CRASH_SEC:-}" "${STORAGE_PASSWORD:-${ADMIN_PASSWORD:-}}" \
     "${CONTROLLER_URL:-}" <<'PYEOF'
 import re, sys
 tpl, out, max_uakt = sys.argv[1], sys.argv[2], str(sys.argv[3])
@@ -178,10 +177,9 @@ tokens = ["__SERVER_IMAGE__", "__SSH_PRIVATE_KEY_BASE64__", "__REPO_URL__",
           "__GIT_USER_NAME__", "__GIT_USER_EMAIL__", "__SSH_PORT__",
           "__SERVER_NAME__", "__ADMIN_PASSWORD__", "__SERVER_MEMORY_MAX__",
           "__SERVER_MEMORY_MIN__", "__RESTORE_POLL_INTERVAL_SEC__",
-          "__WAIT_ON_CRASH_SEC__", "__AUTO_CONFIGURE_MAPS__",
-          "__AUTO_CONFIGURE_MODS__", "__STORAGE_PASSWORD__",
+          "__WAIT_ON_CRASH_SEC__", "__STORAGE_PASSWORD__",
           "__CONTROLLER_URL__", "__MAX_PRICE_UAKT__"]
-vals = sys.argv[4:21]
+vals = sys.argv[4:19]
 s = open(tpl).read()
 for t, v in zip(tokens, vals):
     s = s.replace(t, str(v))

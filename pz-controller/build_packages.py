@@ -191,7 +191,7 @@ def load_mods_json(folder: Path):
     return []
 
 
-def configure_server_ini(ini_path: Path, all_mod_ids: list, all_maps: list):
+def configure_server_ini(ini_path: Path, all_mod_ids: list, all_maps: list, auto_mods: bool = True, auto_maps: bool = True):
     """Update Mods= and Map= in a server .ini file."""
     if not ini_path.is_file():
         return
@@ -216,52 +216,58 @@ def configure_server_ini(ini_path: Path, all_mod_ids: list, all_maps: list):
             if raw_maps:
                 existing_maps = [m.strip() for m in raw_maps.split(";") if m.strip()]
 
-    # Reconcile Mods: keep valid existing, append new
-    final_mods = []
-    seen_mods = set()
-    installed_set = set(all_mod_ids)
+    if auto_mods:
+        # Reconcile Mods: keep valid existing, append new
+        final_mods = []
+        seen_mods = set()
+        installed_set = set(all_mod_ids)
 
-    for m in existing_mods:
-        if m in installed_set and m not in seen_mods:
-            final_mods.append(m)
-            seen_mods.add(m)
-    for m in all_mod_ids:
-        if m not in seen_mods:
-            final_mods.append(m)
-            seen_mods.add(m)
+        for m in existing_mods:
+            if m in installed_set and m not in seen_mods:
+                final_mods.append(m)
+                seen_mods.add(m)
+        for m in all_mod_ids:
+            if m not in seen_mods:
+                final_mods.append(m)
+                seen_mods.add(m)
 
-    # Reconcile Maps: mod maps first, vanilla Muldraugh, KY last
-    final_maps = []
-    seen_maps = set()
-    installed_map_set = set(all_maps)
-
-    for m in existing_maps:
-        if m == "Muldraugh, KY":
-            continue
-        if m in installed_map_set and m not in seen_maps:
-            final_maps.append(m)
-            seen_maps.add(m)
-    for m in all_maps:
-        if m not in seen_maps and m != "Muldraugh, KY":
-            final_maps.append(m)
-            seen_maps.add(m)
-    final_maps.append("Muldraugh, KY")
-
-    new_mods_line = f"Mods={';'.join(final_mods)}"
-    new_map_line = f"Map={';'.join(final_maps)}"
-
-    if mods_line_idx >= 0:
-        lines[mods_line_idx] = new_mods_line
+        new_mods_line = f"Mods={';'.join(final_mods)}"
+        if mods_line_idx >= 0:
+            lines[mods_line_idx] = new_mods_line
+        else:
+            lines.append(new_mods_line)
+        log(f"Auto-configured Mods in {ini_path.name}: {len(final_mods)} mod(s).")
     else:
-        lines.append(new_mods_line)
+        log(f"Skipping Mods auto-configuration for {ini_path.name} (AUTO_CONFIGURE_MODS=false).")
 
-    if map_line_idx >= 0:
-        lines[map_line_idx] = new_map_line
+    if auto_maps:
+        # Reconcile Maps: mod maps first, vanilla Muldraugh, KY last
+        final_maps = []
+        seen_maps = set()
+        installed_map_set = set(all_maps)
+
+        for m in existing_maps:
+            if m == "Muldraugh, KY":
+                continue
+            if m in installed_map_set and m not in seen_maps:
+                final_maps.append(m)
+                seen_maps.add(m)
+        for m in all_maps:
+            if m not in seen_maps and m != "Muldraugh, KY":
+                final_maps.append(m)
+                seen_maps.add(m)
+        final_maps.append("Muldraugh, KY")
+
+        new_map_line = f"Map={';'.join(final_maps)}"
+        if map_line_idx >= 0:
+            lines[map_line_idx] = new_map_line
+        else:
+            lines.append(new_map_line)
+        log(f"Auto-configured Maps in {ini_path.name}: {len(final_maps)} map(s).")
     else:
-        lines.append(new_map_line)
+        log(f"Skipping Maps auto-configuration for {ini_path.name} (AUTO_CONFIGURE_MAPS=false).")
 
     ini_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    log(f"Auto-configured {ini_path.name}: {len(final_mods)} mods, {len(final_maps)} maps.")
 
 
 def create_zip_archive(source_dir: Path, mods_dict: dict, zip_out_path: Path):
@@ -318,8 +324,12 @@ def main():
     parser.add_argument("--output-dir", default="/data/packages", help="Output directory for zip packages")
     parser.add_argument("--steamcmd", default="/steamcmd/steamcmd.sh", help="Path to steamcmd.sh")
     parser.add_argument("--temp-dir", default="/tmp/steam_downloads", help="Temporary directory for workshop items")
-    parser.add_argument("--server-name", default="vsrania", help="Server name for .ini files")
+    parser.add_argument("--auto-configure-mods", default=os.environ.get("AUTO_CONFIGURE_MODS", "true"), help="Auto-configure Mods= in .ini")
+    parser.add_argument("--auto-configure-maps", default=os.environ.get("AUTO_CONFIGURE_MAPS", "true"), help="Auto-configure Map= in .ini")
     args = parser.parse_args()
+
+    auto_mods = str(args.auto_configure_mods).lower() in ("true", "1", "yes")
+    auto_maps = str(args.auto_configure_maps).lower() in ("true", "1", "yes")
 
     repo_path = Path(args.repo_path)
     output_dir = Path(args.output_dir)
@@ -370,7 +380,7 @@ def main():
     # Auto-configure server .ini files in server_dir (e.g. server/Server/*.ini or server/*.ini)
     if server_dir.is_dir():
         for ini_file in server_dir.glob("**/*.ini"):
-            configure_server_ini(ini_file, all_server_mod_ids, all_server_maps)
+            configure_server_ini(ini_file, all_server_mod_ids, all_server_maps, auto_mods=auto_mods, auto_maps=auto_maps)
 
     # 4. Generate the 3 zip archives
     common_zip = output_dir / "common.zip"
