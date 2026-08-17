@@ -1,1 +1,5 @@
 */deployment.yaml
+__pycache__/
+*.pyc
+*-logs-*.txt
+*.log
