@@ -53,6 +53,7 @@ COPY trigger.sh /usr/local/bin/trigger.sh
 COPY webhook.py /usr/local/bin/webhook.py
 COPY webhook_url.sh /usr/local/bin/webhook_url.sh
 COPY controller_url.sh /usr/local/bin/controller_url.sh
+COPY update_cloudflare.py /usr/local/bin/update_cloudflare.py
 COPY sdl.template /usr/local/bin/sdl.template
 
 # Alias autosave.sh to controller.sh for backward compatibility

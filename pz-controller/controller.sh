@@ -66,6 +66,11 @@ fi
             [ -n "$WH_URL" ] && echo "  PUBLIC CONTROLLER WEBHOOK URL: $WH_URL/webhook"
             echo "================================================================="
             
+            # Automatically update Cloudflare dynamic redirect if token is configured
+            if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
+                python3 /usr/local/bin/update_cloudflare.py "$STORAGE_URL" || true
+            fi
+
             # Publish to pz-saves so game server and tools automatically discover controller
             cd /root/pz-saves
             git pull >/dev/null 2>&1 || true
