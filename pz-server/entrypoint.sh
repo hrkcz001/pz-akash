@@ -164,25 +164,67 @@ fi
 # 5. Install mods & sync configurations (runs as steam)
 echo "=== Syncing Packages & Configs from Controller / Repo ==="
 
-# If CONTROLLER_URL is provided, download and extract packages
-if [ -n "$CONTROLLER_URL" ]; then
-    echo "  Fetching common.zip from controller ($CONTROLLER_URL)..."
-    if curl -sSL -f --max-time 120 "$CONTROLLER_URL/common.zip" -o /tmp/common.zip 2>/dev/null; then
-        echo "  Extracting common.zip into /home/steam/Zomboid/..."
-        gosu steam unzip -o -q /tmp/common.zip -d /home/steam/Zomboid/
-        rm -f /tmp/common.zip
-    else
-        echo "  [info] common.zip not downloaded or not present."
+# 1. Resolve Controller URL: env var -> controller_info.json in pz-saves
+RESOLVED_CONTROLLER_URL="${CONTROLLER_URL:-}"
+if [ -z "$RESOLVED_CONTROLLER_URL" ] || [ "$RESOLVED_CONTROLLER_URL" = "http://controller:8000" ]; then
+    if [ -f /home/steam/pz-saves/controller_info.json ]; then
+        DISCOVERED_URL=$(jq -r '.storage_url // empty' /home/steam/pz-saves/controller_info.json 2>/dev/null)
+        if [ -n "$DISCOVERED_URL" ] && [ "$DISCOVERED_URL" != "null" ]; then
+            RESOLVED_CONTROLLER_URL="$DISCOVERED_URL"
+            echo "  Auto-discovered controller URL from controller_info.json: $RESOLVED_CONTROLLER_URL"
+        fi
     fi
+fi
 
-    echo "  Fetching server.zip from controller ($CONTROLLER_URL)..."
-    if curl -sSL -f --max-time 120 -H "Authorization: Bearer $STORAGE_PASSWORD" "$CONTROLLER_URL/server.zip" -o /tmp/server.zip 2>/dev/null; then
-        echo "  Extracting server.zip into /home/steam/Zomboid/..."
-        gosu steam unzip -o -q /tmp/server.zip -d /home/steam/Zomboid/
-        rm -f /tmp/server.zip
-    else
-        echo "  [warn] server.zip download failed or returned unauthorized."
-    fi
+# 2. If controller URL is known, download common.zip & server.zip with retry and validation
+if [ -n "$RESOLVED_CONTROLLER_URL" ]; then
+    echo "  Connecting to Controller at $RESOLVED_CONTROLLER_URL ..."
+    
+    # Wait for controller /healthz to be ready (up to 30s)
+    for i in {1..6}; do
+        if curl -sf --max-time 5 "$RESOLVED_CONTROLLER_URL/healthz" >/dev/null 2>&1; then
+            echo "  Controller health check OK."
+            break
+        fi
+        echo "  Waiting for Controller health endpoint ($i/6)..."
+        sleep 5
+    done
+
+    # Fetch common.zip
+    echo "  Downloading common.zip..."
+    for attempt in {1..3}; do
+        if curl -sSL -f --max-time 180 "$RESOLVED_CONTROLLER_URL/common.zip" -o /tmp/common.zip 2>/dev/null; then
+            if gosu steam unzip -t -q /tmp/common.zip >/dev/null 2>&1; then
+                echo "  Extracting common.zip into /home/steam/Zomboid/..."
+                gosu steam unzip -o -q /tmp/common.zip -d /home/steam/Zomboid/
+                rm -f /tmp/common.zip
+                echo "  common.zip installed successfully."
+                break
+            fi
+        fi
+        echo "  [warn] common.zip download attempt $attempt failed, retrying in 3s..."
+        sleep 3
+    done
+    rm -f /tmp/common.zip
+
+    # Fetch server.zip (authenticated)
+    echo "  Downloading server.zip (authenticated)..."
+    for attempt in {1..3}; do
+        if curl -sSL -f --max-time 180 -H "Authorization: Bearer $STORAGE_PASSWORD" "$RESOLVED_CONTROLLER_URL/server.zip" -o /tmp/server.zip 2>/dev/null; then
+            if gosu steam unzip -t -q /tmp/server.zip >/dev/null 2>&1; then
+                echo "  Extracting server.zip into /home/steam/Zomboid/..."
+                gosu steam unzip -o -q /tmp/server.zip -d /home/steam/Zomboid/
+                rm -f /tmp/server.zip
+                echo "  server.zip installed successfully."
+                break
+            fi
+        fi
+        echo "  [warn] server.zip download attempt $attempt failed (check STORAGE_PASSWORD or network), retrying in 3s..."
+        sleep 3
+    done
+    rm -f /tmp/server.zip
+else
+    echo "  [info] No CONTROLLER_URL configured or discovered in controller_info.json. Relying on local repo files."
 fi
 
 # Also merge any files directly placed in pz-saves/common or pz-saves/server

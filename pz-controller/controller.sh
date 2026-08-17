@@ -51,20 +51,33 @@ if [ "$WEBHOOK_ENABLED" = "true" ]; then
     echo "=== Starting GitHub webhook listener on port $WEBHOOK_PORT ==="
     nohup python3 /usr/local/bin/webhook.py 2>&1 | tee -a /data/webhook.log &
     echo "webhook listener started (pid $!) — logs follow in the console and /data/webhook.log"
-    # Best-effort: print the public webhook URL once the lease status is ready,
-    # so it can be pasted into GitHub -> pz-saves -> Settings -> Webhooks.
-    (
-        for i in 1 2 3 4 5 6; do
-            sleep 30
-            URL=$(/usr/local/bin/webhook_url.sh 2>/dev/null || true)
-            if [ -n "$URL" ]; then
-                echo "WEBHOOK URL (use in GitHub webhook settings): $URL"
-                exit 0
-            fi
-        done
-        echo "WEBHOOK URL: not resolved yet — run /usr/local/bin/webhook_url.sh inside the container or check the Akash Console."
-    ) 2>&1 | tee -a /data/webhook.log &
 fi
+
+# Best-effort background URL resolver: resolves public endpoints for Storage (:8000)
+# and Webhook (:8080), logging them and updating controller_info.json in pz-saves.
+(
+    for i in 1 2 3 4 5 6 7 8; do
+        sleep 25
+        STORAGE_URL=$(/usr/local/bin/controller_url.sh "$HTTP_PORT" 2>/dev/null || true)
+        WH_URL=$(/usr/local/bin/controller_url.sh "$WEBHOOK_PORT" 2>/dev/null || true)
+        if [ -n "$STORAGE_URL" ]; then
+            echo "================================================================="
+            echo "  PUBLIC CONTROLLER STORAGE URL: $STORAGE_URL"
+            [ -n "$WH_URL" ] && echo "  PUBLIC CONTROLLER WEBHOOK URL: $WH_URL/webhook"
+            echo "================================================================="
+            
+            # Publish to pz-saves so game server and tools automatically discover controller
+            cd /root/pz-saves
+            git pull >/dev/null 2>&1 || true
+            echo "{\"storage_url\": \"$STORAGE_URL\", \"webhook_url\": \"${WH_URL:-}\", \"updated_at\": $(date +%s)}" > controller_info.json
+            git add controller_info.json
+            git commit -m "Update controller_info.json with live storage URL: $STORAGE_URL" || true
+            push_with_retry
+            exit 0
+        fi
+    done
+    echo "CONTROLLER URL: not resolved via Akash Console API yet — check the Akash Console lease status."
+) 2>&1 | tee -a /data/webhook.log &
 
 # webhook_watchdog — keep the GitHub webhook listener alive and flag URL drift.
 # server_watchdogs — keep storage server & webhook listener alive and flag URL drift.
