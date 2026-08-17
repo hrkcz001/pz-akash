@@ -1,78 +1,44 @@
-# Stage 1: SteamCMD Builder
+# Stage 1: SteamCMD Game Server Builder (Downloads PZ Dedicated Server binaries)
 FROM debian:bookworm-slim AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN dpkg --add-architecture i386 && \
     apt-get update && \
-    apt-get install -y ca-certificates curl tar lib32gcc-s1 lib32stdc++6 libc6:i386 libstdc++6:i386 jq
+    apt-get install -y --no-install-recommends ca-certificates curl tar lib32gcc-s1 lib32stdc++6 libc6:i386 libstdc++6:i386 && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /steamcmd /pz-server && \
     curl -sqL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" | tar zxvf - -C /steamcmd && \
     /steamcmd/steamcmd.sh +login anonymous +quit || true
 
+# Download dedicated server (App ID 380870)
 RUN /steamcmd/steamcmd.sh +@sSteamCmdForcePlatformType linux +login anonymous +force_install_dir /pz-server +app_update 380870 validate +quit
 
-COPY mods.json /steamcmd/mods.json
-RUN    if [ -s /steamcmd/mods.json ]; then \
-        if jq -e '. | type == "array" and length > 0' /steamcmd/mods.json > /dev/null 2>&1; then \
-            echo "@sSteamCmdForcePlatformType linux" > /steamcmd/download_mods.txt && \
-            echo "force_install_dir /pz-server" >> /steamcmd/download_mods.txt && \
-            echo "login anonymous" >> /steamcmd/download_mods.txt && \
-            jq -r '.[]' /steamcmd/mods.json | while read mod; do \
-                echo "workshop_download_item 108600 $mod" >> /steamcmd/download_mods.txt; \
-            done && \
-            echo "quit" >> /steamcmd/download_mods.txt && \
-            /steamcmd/steamcmd.sh +runscript /steamcmd/download_mods.txt; \
-        else \
-            echo "mods.json is empty, not an array, or invalid. Skipping mod download."; \
-        fi \
-    fi
-
-# Move downloaded mods out of the steamcmd workshop structure into a clean
-# /pz-server/mods directory, keeping the original file/dir names — the runtime
-# copies them into ~/Zomboid/mods as-is. A clean mods dir means no workshop
-# symlinks.
-RUN mkdir -p /pz-server/mods && \
-    if [ -s /steamcmd/mods.json ]; then \
-        for mod in $(jq -r '.[]' /steamcmd/mods.json); do \
-            mods_dir="/pz-server/steamapps/workshop/content/108600/$mod/mods"; \
-            if [ -d "$mods_dir" ]; then \
-                for d in "$mods_dir"/*/; do \
-                    [ -d "$d" ] || continue; \
-                    mv "$d" "/pz-server/mods/$(basename "$d")"; \
-                done; \
-            fi; \
-        done; \
-        rm -rf /pz-server/steamapps/workshop/content/108600; \
-    fi
-
-# Stage 2: Minimal Runtime
+# Stage 2: PZ Dedicated Server Runtime
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && \
     apt-get install -y --no-install-recommends ca-certificates git openssh-client openssh-server dos2unix sudo curl jq gosu zip unzip python3 && \
     apt-get clean && rm -rf /var/lib/apt/lists/*
+
 RUN mkdir -p /run/sshd
 
 RUN useradd -m -d /home/steam -s /bin/bash steam
 USER steam
 WORKDIR /home/steam
 
-# Copy only the installed game files, leaving steamcmd and 32-bit junk behind
+# Copy installed game files from builder
 COPY --from=builder --chown=steam:steam /pz-server /home/steam/pz-server
 
 USER root
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-COPY vsrania.ini /home/steam/vsrania.ini
-COPY vsrania_SandboxVars.lua /home/steam/vsrania_SandboxVars.lua
 
 RUN dos2unix /usr/local/bin/entrypoint.sh && \
-    chmod +x /usr/local/bin/entrypoint.sh && \
-    chown steam:steam /home/steam/vsrania.ini /home/steam/vsrania_SandboxVars.lua
+    chmod +x /usr/local/bin/entrypoint.sh
 
 WORKDIR /home/steam/pz-server
 
-EXPOSE 16261/udp 16261/tcp 16262/udp 16262/tcp 27015/tcp
+EXPOSE 16261/udp 16261/tcp 16262/udp 16262/tcp 27015/tcp 2222/tcp
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

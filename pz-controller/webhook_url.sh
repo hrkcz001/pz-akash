@@ -14,7 +14,7 @@
 set -uo pipefail
 
 API_BASE="${API_BASE:-https://console-api.akash.network}"
-AUTOSAVE_SERVICE_NAMES="${AUTOSAVE_SERVICE_NAMES:-autosave pz-autosave autosaver}"
+AUTOSAVE_SERVICE_NAMES="${AUTOSAVE_SERVICE_NAMES:-controller pz-controller autosave pz-autosave autosaver}"
 WEBHOOK_PORT="${WEBHOOK_PORT:-8080}"
 
 [ -n "${AKASH_API_KEY:-}" ] || { echo "AKASH_API_KEY is not set" >&2; exit 1; }

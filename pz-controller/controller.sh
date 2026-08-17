@@ -1,5 +1,5 @@
 #!/bin/bash
-echo "=== Starting Zomboid Autosave Service ==="
+echo "=== Starting Project Zomboid Controller Service ==="
 
 # Shared helpers (git state, consume-on-trigger files, safe backup)
 source /usr/local/bin/state.sh
@@ -11,15 +11,15 @@ echo "$SSH_PRIVATE_KEY_BASE64" | tr -d ' "\r\n' | base64 -d > /root/.ssh/id_rsa
 chmod 600 /root/.ssh/id_rsa
 export GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no"
 
-git config --global user.name "${GIT_USER_NAME:-autosaver}"
-git config --global user.email "${GIT_USER_EMAIL:-autosaver@localhost}"
+git config --global user.name "${GIT_USER_NAME:-pz-controller}"
+git config --global user.email "${GIT_USER_EMAIL:-pz-controller@localhost}"
 
 # Configuration variables
-HTTP_PORT=${HTTP_PORT:-8000}   # file/upload server — MUST differ from WEBHOOK_PORT
+HTTP_PORT=${HTTP_PORT:-8000}   # file/storage server — MUST differ from WEBHOOK_PORT
 BACKUP_INTERVAL_SEC=${BACKUP_INTERVAL_SEC:-3600}
 BACKUP_RETENTION_DAYS=${BACKUP_RETENTION_DAYS:-7}
 # RCON_PASSWORD/RCON_PORT are resolved by state.sh from the server SDL in
-# pz-saves — the autosaver deployment carries no server info.
+# pz-saves — the controller deployment carries no server info.
 AUTOSAVER_POLL_SEC=${AUTOSAVER_POLL_SEC:-60}
 SSH_CONNECT_TIMEOUT=${SSH_CONNECT_TIMEOUT:-10}
 # Webhook mode: WEBHOOK_ENABLED starts the listener; WEBHOOK_MODE=true makes
@@ -30,21 +30,22 @@ WEBHOOK_POLL_SEC=${WEBHOOK_POLL_SEC:-300}
 WEBHOOK_PORT=${WEBHOOK_PORT:-8080}
 WEBHOOK_PID_FILE=${WEBHOOK_PID_FILE:-/data/webhook.pid}
 WEBHOOK_HEARTBEAT_SEC=${WEBHOOK_HEARTBEAT_SEC:-600}
-
+STORAGE_SERVER_PID_FILE=${STORAGE_SERVER_PID_FILE:-/data/storage_server.pid}
 
 if [ ! -d /root/pz-saves ]; then
     git clone "$REPO_URL" /root/pz-saves || { echo "ERROR: Git clone failed"; exit 1; }
 fi
 
 if [ "$HTTP_PORT" = "$WEBHOOK_PORT" ]; then
-    echo "ERROR: HTTP_PORT ($HTTP_PORT) and WEBHOOK_PORT ($WEBHOOK_PORT) must be different — the file upload server and the webhook listener cannot share a port. Fix the env and restart."
+    echo "ERROR: HTTP_PORT ($HTTP_PORT) and WEBHOOK_PORT ($WEBHOOK_PORT) must be different — the storage server and the webhook listener cannot share a port. Fix the env and restart."
     exit 1
 fi
 
-mkdir -p /data/backups
-cd /data/backups
-echo "=== Starting HTTP File & Upload Server on port $HTTP_PORT ==="
-python3 -m uploadserver $HTTP_PORT &
+mkdir -p /data/backups /data/packages
+
+echo "=== Starting HTTP Storage & Dashboard Server on port $HTTP_PORT ==="
+python3 /usr/local/bin/storage_server.py 2>&1 | tee -a /data/storage_server.log &
+echo $! > "$STORAGE_SERVER_PID_FILE"
 
 if [ "$WEBHOOK_ENABLED" = "true" ]; then
     echo "=== Starting GitHub webhook listener on port $WEBHOOK_PORT ==="
@@ -66,24 +67,34 @@ if [ "$WEBHOOK_ENABLED" = "true" ]; then
 fi
 
 # webhook_watchdog — keep the GitHub webhook listener alive and flag URL drift.
-# The listener can die silently (slim container: no ps/traceback), and providers
-# can re-map shared-endpoint external ports, which silently breaks GitHub
-# deliveries. Runs once per loop iteration (cheap /healthz probe).
-webhook_watchdog() {
+# server_watchdogs — keep storage server & webhook listener alive and flag URL drift.
+server_watchdogs() {
+    # 1. Storage server watchdog
+    if ! curl -sf --max-time 5 "http://127.0.0.1:$HTTP_PORT/healthz" >/dev/null 2>&1; then
+        echo "[controller] WARNING: storage server not answering on :$HTTP_PORT — restarting."
+        if [ -f "$STORAGE_SERVER_PID_FILE" ]; then
+            kill "$(cat "$STORAGE_SERVER_PID_FILE")" 2>/dev/null || true
+            rm -f "$STORAGE_SERVER_PID_FILE"
+        fi
+        nohup python3 /usr/local/bin/storage_server.py 2>&1 | tee -a /data/storage_server.log &
+        echo $! > "$STORAGE_SERVER_PID_FILE"
+        echo "[controller] storage server restarted (pid $!)."
+    fi
+
     [ "$WEBHOOK_ENABLED" = "true" ] || return 0
 
-    # 1. Liveness: restart the listener when /healthz stops answering.
+    # 2. Webhook listener watchdog
     if ! curl -sf --max-time 5 "http://127.0.0.1:$WEBHOOK_PORT/healthz" >/dev/null 2>&1; then
-        echo "[autosave] WARNING: webhook listener not answering on :$WEBHOOK_PORT — restarting."
+        echo "[controller] WARNING: webhook listener not answering on :$WEBHOOK_PORT — restarting."
         if [ -f "$WEBHOOK_PID_FILE" ]; then
             kill "$(cat "$WEBHOOK_PID_FILE")" 2>/dev/null || true
             rm -f "$WEBHOOK_PID_FILE"
         fi
         nohup python3 /usr/local/bin/webhook.py 2>&1 | tee -a /data/webhook.log &
-        echo "[autosave] webhook listener restarted (pid $!)."
+        echo "[controller] webhook listener restarted (pid $!)."
     fi
 
-    # 2. URL drift: shared-endpoint external ports can be re-mapped by the
+    # 3. URL drift: shared-endpoint external ports can be re-mapped by the
     #    provider; GitHub deliveries then fail until the webhook URL is
     #    updated. Re-resolve the URL and warn on change (at most every 10 min).
     [ -n "${AKASH_API_KEY:-}" ] || return 0
@@ -95,7 +106,7 @@ webhook_watchdog() {
     url=$(/usr/local/bin/webhook_url.sh 2>/dev/null || true)
     [ -n "$url" ] || return 0
     if [ -f /data/webhook_url ] && [ "$(cat /data/webhook_url)" != "$url" ]; then
-        echo "[autosave] WARNING: webhook URL changed to $url — update it in GitHub -> pz-saves -> Settings -> Webhooks, or deliveries keep failing."
+        echo "[controller] WARNING: webhook URL changed to $url — update it in GitHub -> pz-saves -> Settings -> Webhooks, or deliveries keep failing."
     fi
     echo "$url" > /data/webhook_url
 }
@@ -107,7 +118,7 @@ git add .
 git commit -m "Initialize state files" || true
 push_with_retry
 
-echo "=== Entering Autosaver Loop ==="
+echo "=== Entering Controller Loop ==="
 while true; do
     cd /root/pz-saves
 
@@ -119,13 +130,13 @@ while true; do
     # Scheduled stop + escrow top-up (no-ops unless stop_at / active deployment)
     /usr/local/bin/schedule.sh 2>&1 | tee -a /data/schedule.log
 
-    # Keep the webhook listener alive + flag URL drift (see function above)
-    webhook_watchdog
+    # Keep storage server & webhook listener alive + flag URL drift
+    server_watchdogs
 
     IS_PAUSED=false
     if [ -f pause_autosave ] && grep -iq "true" pause_autosave; then
         IS_PAUSED=true
-        echo "Autosaver is paused (automatic backups suspended)."
+        echo "Controller autosave is paused (automatic backups suspended)."
     fi
     
     if [ -f server_info.json ]; then

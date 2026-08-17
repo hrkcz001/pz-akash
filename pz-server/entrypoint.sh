@@ -5,6 +5,8 @@ SSH_PORT=${SSH_PORT:-2222}
 RESTORE_POLL_INTERVAL_SEC=${RESTORE_POLL_INTERVAL_SEC:-10}
 SERVER_NAME=${SERVER_NAME:-vsrania}
 ADMIN_PASSWORD=${ADMIN_PASSWORD:-"Qwerty01234**"}
+STORAGE_PASSWORD=${STORAGE_PASSWORD:-$ADMIN_PASSWORD}
+CONTROLLER_URL=${CONTROLLER_URL:-}
 SERVER_MEMORY_MAX=${SERVER_MEMORY_MAX:-8192m}
 SERVER_MEMORY_MIN=${SERVER_MEMORY_MIN:-8192m}
 WAIT_ON_CRASH_SEC=${WAIT_ON_CRASH_SEC:-1800}
@@ -161,40 +163,62 @@ push_with_retry
     fi
 fi
 
-# 5. Install mods (runs as steam)
-# Mods are staged into the image at build time (/home/steam/pz-server/mods)
-# with their ORIGINAL names (see Dockerfile). Copy them into the game's mods
-# dir as REAL directories (hardlinks) — no symlinks: the game's checksum code
-# could not resolve symlinked mods. The game looks up mods in ~/Zomboid/mods
-# (capital Z) regardless of -cachedir.
-echo "=== Installing Mods (real copies from image) ==="
-IMAGE_MODS="/home/steam/pz-server/mods"
-MOD_COPY_COUNT=0
-if [ -d "$IMAGE_MODS" ]; then
-    while IFS= read -r mod_dir; do
-        [ -d "$mod_dir" ] || continue
-        name=$(basename "$mod_dir")
-        dest="/home/steam/Zomboid/mods/$name"
-        if [ ! -e "$dest" ]; then
-            mkdir -p "$dest"
-            cp -al "$mod_dir/." "$dest/" 2>/dev/null || cp -a "$mod_dir/." "$dest/"
-            MOD_COPY_COUNT=$((MOD_COPY_COUNT + 1))
-            echo "  [installed] $name"
-        else
-            echo "  [skip] $name already installed"
-        fi
-    done < <(find "$IMAGE_MODS" -mindepth 1 -maxdepth 1 -type d 2>/dev/null)
-    echo "Mods installed: $MOD_COPY_COUNT mod folder(s)."
-else
-    echo "WARNING: No mods directory found in image at $IMAGE_MODS — no mods will be loaded."
+# 5. Install mods & sync configurations (runs as steam)
+echo "=== Syncing Packages & Configs from Controller / Repo ==="
+
+# If CONTROLLER_URL is provided, download and extract packages
+if [ -n "$CONTROLLER_URL" ]; then
+    echo "  Fetching common.zip from controller ($CONTROLLER_URL)..."
+    if curl -sSL -f --max-time 120 "$CONTROLLER_URL/common.zip" -o /tmp/common.zip 2>/dev/null; then
+        echo "  Extracting common.zip into /home/steam/Zomboid/..."
+        gosu steam unzip -o -q /tmp/common.zip -d /home/steam/Zomboid/
+        rm -f /tmp/common.zip
+    else
+        echo "  [info] common.zip not downloaded or not present."
+    fi
+
+    echo "  Fetching server.zip from controller ($CONTROLLER_URL)..."
+    if curl -sSL -f --max-time 120 -H "Authorization: Bearer $STORAGE_PASSWORD" "$CONTROLLER_URL/server.zip" -o /tmp/server.zip 2>/dev/null; then
+        echo "  Extracting server.zip into /home/steam/Zomboid/..."
+        gosu steam unzip -o -q /tmp/server.zip -d /home/steam/Zomboid/
+        rm -f /tmp/server.zip
+    else
+        echo "  [warn] server.zip download failed or returned unauthorized."
+    fi
 fi
-# No chown needed: the mods dir was created by `gosu steam mkdir -p` and the
-# hardlinks/copies inherit steam ownership from the image's mods directory.
 
+# Also merge any files directly placed in pz-saves/common or pz-saves/server
+if [ -d /home/steam/pz-saves/common ]; then
+    echo "  Merging pz-saves/common into /home/steam/Zomboid/..."
+    gosu steam cp -r /home/steam/pz-saves/common/. /home/steam/Zomboid/ 2>/dev/null || true
+fi
+if [ -d /home/steam/pz-saves/server ]; then
+    echo "  Merging pz-saves/server into /home/steam/Zomboid/..."
+    gosu steam cp -r /home/steam/pz-saves/server/. /home/steam/Zomboid/ 2>/dev/null || true
+fi
 
-echo "=== Copying Configs ==="
-gosu steam cp /home/steam/vsrania.ini /home/steam/Zomboid/Server/${SERVER_NAME}.ini
-gosu steam cp /home/steam/vsrania_SandboxVars.lua /home/steam/Zomboid/Server/${SERVER_NAME}_SandboxVars.lua
+# Ensure server .ini exists
+INI_FILE="/home/steam/Zomboid/Server/${SERVER_NAME}.ini"
+if [ ! -f "$INI_FILE" ]; then
+    FALLBACK_INI=$(find /home/steam/Zomboid/Server -name "*.ini" 2>/dev/null | head -n 1)
+    if [ -n "$FALLBACK_INI" ] && [ "$FALLBACK_INI" != "$INI_FILE" ]; then
+        echo "  Copying $FALLBACK_INI -> $INI_FILE"
+        gosu steam cp "$FALLBACK_INI" "$INI_FILE"
+    elif [ -f /home/steam/vsrania.ini ]; then
+        gosu steam cp /home/steam/vsrania.ini "$INI_FILE"
+    fi
+fi
+
+SANDBOX_FILE="/home/steam/Zomboid/Server/${SERVER_NAME}_SandboxVars.lua"
+if [ ! -f "$SANDBOX_FILE" ]; then
+    FALLBACK_LUA=$(find /home/steam/Zomboid/Server -name "*SandboxVars.lua" 2>/dev/null | head -n 1)
+    if [ -n "$FALLBACK_LUA" ] && [ "$FALLBACK_LUA" != "$SANDBOX_FILE" ]; then
+        echo "  Copying $FALLBACK_LUA -> $SANDBOX_FILE"
+        gosu steam cp "$FALLBACK_LUA" "$SANDBOX_FILE"
+    elif [ -f /home/steam/vsrania_SandboxVars.lua ]; then
+        gosu steam cp /home/steam/vsrania_SandboxVars.lua "$SANDBOX_FILE"
+    fi
+fi
 
 if [ "$AUTO_CONFIGURE_MODS" = "true" ]; then
     echo "=== Auto-configuring Mods in ${SERVER_NAME}.ini ==="

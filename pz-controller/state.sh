@@ -1,6 +1,6 @@
 #!/bin/bash
 # =============================================================================
-# state.sh — shared helpers for the autosaver container. Sourced by autosave.sh
+# state.sh — shared helpers for the controller container. Sourced by controller.sh
 # (the main loop), trigger.sh (webhook entry) and schedule.sh (stop scheduling).
 #
 # Trigger files in the pz-saves repo are CONSUMED (removed + pushed), exactly
@@ -23,8 +23,8 @@ SSH_CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-10}"
 BACKUP_LOCK="$STATE_DIR/backup.lock"
 
 # RCON credentials come from the server SDL in the pz-saves repo (single
-# source of truth) unless explicitly overridden in the autosaver env — the
-# autosaver deployment itself carries no server info.
+# source of truth) unless explicitly overridden in the controller env — the
+# controller deployment itself carries no server info.
 resolve_rcon() {
   if [ -z "$RCON_PASSWORD" ]; then
     if [ -f "$SERVES_REPO/deployment.yaml" ]; then
@@ -69,7 +69,7 @@ server_info_val() { # $1 = key, $2 = default
 # --- shared Akash lifecycle helpers (used by both the halt trigger below and
 # schedule.sh's stop_at path). schedule.sh shadows log/api with its own
 # equivalents — identical behavior, just a different log prefix.
-log() { echo "[autosaver] $(date -u +%FT%TZ) $*"; }
+log() { echo "[controller] $(date -u +%FT%TZ) $*"; }
 
 API_BASE="${API_BASE:-https://console-api.akash.network}"
 ACTIVE_DSEQ_FILE="${ACTIVE_DSEQ_FILE:-$STATE_DIR/active_dseq}"
