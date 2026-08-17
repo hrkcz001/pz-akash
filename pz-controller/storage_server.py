@@ -140,33 +140,28 @@ def markdown_to_html(md_text: str) -> str:
     in_ol = False
     
     def process_inline(text: str) -> str:
-        # Escape raw HTML brackets first
         text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-        # Restore basic allowed tags if needed or keep escaped
-        # Code: `code`
         text = re.sub(r"`([^`]+)`", r"<code>\1</code>", text)
-        # Bold: **text** or __text__
         text = re.sub(r"\*\*([^*]+)\*\*", r"<strong>\1</strong>", text)
         text = re.sub(r"__([^_]+)__", r"<strong>\1</strong>", text)
-        # Italic: *text* or _text_
         text = re.sub(r"\*([^*]+)\*", r"<em>\1</em>", text)
         text = re.sub(r"_([^_]+)_", r"<em>\1</em>", text)
-        # Links: [text](url)
         text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2" target="_blank" rel="noopener">\1</a>', text)
         return text
 
     for raw_line in lines:
         line = raw_line.rstrip()
+        stripped = line.strip()
         
-        # Code block toggle
-        if line.startswith("```"):
+        # Code block toggle (handles indented and non-indented ```)
+        if stripped.startswith("```"):
             if in_code_block:
                 html_out.append("</code></pre>")
                 in_code_block = False
             else:
                 if in_ul: html_out.append("</ul>"); in_ul = False
                 if in_ol: html_out.append("</ol>"); in_ol = False
-                lang = line[3:].strip()
+                lang = stripped[3:].strip()
                 html_out.append(f'<pre class="code-block {lang}"><code>')
                 in_code_block = True
             continue
@@ -175,57 +170,57 @@ def markdown_to_html(md_text: str) -> str:
             escaped = (line.replace("&", "&amp;")
                            .replace("<", "&lt;")
                            .replace(">", "&gt;"))
-            html_out.append(escaped + "\n")
+            html_out.append(escaped)
             continue
 
         # Blank line
-        if not line.strip():
+        if not stripped:
             if in_ul: html_out.append("</ul>"); in_ul = False
             if in_ol: html_out.append("</ol>"); in_ol = False
             continue
 
         # Headings
-        if line.startswith("### "):
+        if stripped.startswith("### "):
             if in_ul: html_out.append("</ul>"); in_ul = False
             if in_ol: html_out.append("</ol>"); in_ol = False
-            html_out.append(f"<h3>{process_inline(line[4:])}</h3>")
+            html_out.append(f"<h3>{process_inline(stripped[4:])}</h3>")
             continue
-        if line.startswith("## "):
+        if stripped.startswith("## "):
             if in_ul: html_out.append("</ul>"); in_ul = False
             if in_ol: html_out.append("</ol>"); in_ol = False
-            html_out.append(f"<h2>{process_inline(line[3:])}</h2>")
+            html_out.append(f"<h2>{process_inline(stripped[3:])}</h2>")
             continue
-        if line.startswith("# "):
+        if stripped.startswith("# "):
             if in_ul: html_out.append("</ul>"); in_ul = False
             if in_ol: html_out.append("</ol>"); in_ol = False
-            html_out.append(f"<h1>{process_inline(line[2:])}</h1>")
+            html_out.append(f"<h1>{process_inline(stripped[2:])}</h1>")
             continue
 
         # Blockquote / Notes
-        if line.startswith("> "):
+        if stripped.startswith("> "):
             if in_ul: html_out.append("</ul>"); in_ul = False
             if in_ol: html_out.append("</ol>"); in_ol = False
-            html_out.append(f"<blockquote>{process_inline(line[2:])}</blockquote>")
+            html_out.append(f"<blockquote>{process_inline(stripped[2:])}</blockquote>")
             continue
 
         # Horizontal rule
-        if re.match(r"^(\-{3,}|\*{3,}|_{3,})$", line.strip()):
+        if re.match(r"^(\-{3,}|\*{3,}|_{3,})$", stripped):
             if in_ul: html_out.append("</ul>"); in_ul = False
             if in_ol: html_out.append("</ol>"); in_ol = False
             html_out.append("<hr>")
             continue
 
         # Unordered list
-        if line.startswith(("- ", "* ", "+ ")):
+        if stripped.startswith(("- ", "* ", "+ ")):
             if in_ol: html_out.append("</ol>"); in_ol = False
             if not in_ul:
                 html_out.append("<ul>")
                 in_ul = True
-            html_out.append(f"<li>{process_inline(line[2:])}</li>")
+            html_out.append(f"<li>{process_inline(stripped[2:])}</li>")
             continue
 
         # Ordered list
-        m_ol = re.match(r"^(\d+)\.\s+(.*)$", line)
+        m_ol = re.match(r"^(\d+)\.\s+(.*)$", stripped)
         if m_ol:
             if in_ul: html_out.append("</ul>"); in_ul = False
             if not in_ol:
@@ -237,7 +232,7 @@ def markdown_to_html(md_text: str) -> str:
         # Paragraph
         if in_ul: html_out.append("</ul>"); in_ul = False
         if in_ol: html_out.append("</ol>"); in_ol = False
-        html_out.append(f"<p>{process_inline(line)}</p>")
+        html_out.append(f"<p>{process_inline(stripped)}</p>")
 
     if in_code_block: html_out.append("</code></pre>")
     if in_ul: html_out.append("</ul>")
@@ -262,22 +257,14 @@ def get_readme_html() -> str:
                 log(f"Error reading {c}: {e}")
 
     # Fallback instructions
-    fallback_md = """### 📖 Installation & How to Join Vsrania
+    fallback_md = """# ☣️ Quick Join Guide
 
-1. **Clean Installation Recommended**:
-   - It is strongly recommended to use a **fresh game client** from the **Torrent download** above, or completely delete any other mods from your local `Zomboid/mods` directory before joining to prevent mod ID and version conflicts.
-
-2. **Download Packages**:
-   - Download both **Common Files** (`common.zip`) and **Client Files** (`client.zip`).
-
-3. **Install with Replacement**:
-   - Extract both zip archives directly into your local Zomboid directory:
-     - **Windows**: `%USERPROFILE%\\Zomboid\\` (e.g. `C:\\Users\\YourName\\Zomboid\\`)
-     - **Linux / macOS**: `~/Zomboid/`
-   - When prompted by your extraction tool (7-Zip / WinRAR / Explorer), choose **"Replace all existing files"**.
-
-4. **Connect to Server**:
-   - Launch Project Zomboid, navigate to **Join**, and enter the **Server IP** and **Port** shown above when the server status is **ONLINE**.
+1. **Clean Client**: Download via **`game.torrent`** above (or delete existing mods in `Zomboid/mods`).
+2. **Download Mods**: Get both **`common.zip`** and **`client.zip`** above.
+3. **Extract & Overwrite**: Unzip both into your `Zomboid` folder:
+   * **Windows**: `%USERPROFILE%\\Zomboid\\`
+   * **Linux / Deck**: `~/Zomboid/`
+4. **Connect**: Launch PZ → **Join** → Enter **IP**, Port `16261`, and Server Password `1488`.
 """
     return markdown_to_html(fallback_md)
 
@@ -294,7 +281,7 @@ def format_pkg_stats(info: dict) -> str:
     if mods > 0:
         parts.append(f"{mods} mod{'s' if mods != 1 else ''}")
     if files > 0:
-        parts.append(f"{files} config file{'s' if files != 1 else ''}")
+        parts.append(f"{files} file{'s' if files != 1 else ''}")
     parts.append(size_str)
     
     return " • ".join(parts)
@@ -322,27 +309,37 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
         badge_text = "OFFLINE"
         dot_html = '<span class="status-dot offline"></span>'
 
-    # Connection Address / Status Widget
+    # Connection Address / Status Widget (IP, Port, Server Password)
     if is_online:
         address_widget_html = f"""
         <div class="address-grid">
           <div class="address-card">
-            <div class="address-label">SERVER IP ADDRESS</div>
+            <div class="address-label">SERVER IP</div>
             <div class="address-value-row">
               <span class="address-text" id="ip-val">{ip}</span>
               <button type="button" class="copy-btn" onclick="copyValue('{ip}', this)">
                 <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                <span>Copy IP</span>
+                <span>Copy</span>
               </button>
             </div>
           </div>
           <div class="address-card">
-            <div class="address-label">GAME PORT</div>
+            <div class="address-label">PORT</div>
             <div class="address-value-row">
               <span class="address-text" id="port-val">{port}</span>
               <button type="button" class="copy-btn" onclick="copyValue('{port}', this)">
+                <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2v-4"></path></svg>
+                <span>Copy</span>
+              </button>
+            </div>
+          </div>
+          <div class="address-card">
+            <div class="address-label">SERVER PASSWORD</div>
+            <div class="address-value-row">
+              <span class="address-text" id="pwd-val" style="color:#fbbf24;">1488</span>
+              <button type="button" class="copy-btn" onclick="copyValue('1488', this)">
                 <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                <span>Copy Port</span>
+                <span>Copy</span>
               </button>
             </div>
           </div>
@@ -353,8 +350,8 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
         <div class="status-banner booting-banner">
           <div class="status-banner-icon">🚀</div>
           <div class="status-banner-text">
-            <div class="status-banner-title">Vsrania Server is Booting Up</div>
-            <div class="status-banner-desc">Initializing game instance on Akash Network. Live IP and Port will appear here automatically once the server is ready!</div>
+            <div class="status-banner-title">Vsrania is Starting Up</div>
+            <div class="status-banner-desc">Initializing instance on Akash. IP and Port will appear here automatically when ready.</div>
           </div>
         </div>
         """
@@ -363,8 +360,8 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
         <div class="status-banner offline-banner">
           <div class="status-banner-icon">⏸️</div>
           <div class="status-banner-text">
-            <div class="status-banner-title">Vsrania Server is Currently Offline</div>
-            <div class="status-banner-desc">The game server is stopped. You can still download mods and client configs below in preparation for the next session.</div>
+            <div class="status-banner-title">Vsrania is Offline</div>
+            <div class="status-banner-desc">Server is stopped. You can download mods below in preparation for the session.</div>
           </div>
         </div>
         """
@@ -533,13 +530,13 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
       50% {{ opacity: 0.4; transform: scale(0.85); }}
     }}
 
-    /* Address Grid (Split IP & Port) */
+    /* Address Grid (IP, Port, Password) */
     .address-grid {{
       display: grid;
-      grid-template-columns: 2fr 1.2fr;
-      gap: 1rem;
+      grid-template-columns: 1.8fr 1fr 1.3fr;
+      gap: 0.75rem;
     }}
-    @media (max-width: 600px) {{
+    @media (max-width: 650px) {{
       .address-grid {{ grid-template-columns: 1fr; }}
     }}
     .address-card {{
@@ -995,13 +992,12 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
     <!-- Clean Torrent Client Download Banner -->
     <div class="torrent-card">
       <div class="torrent-info">
-        <div class="torrent-badge">RECOMMENDED GAME CLIENT</div>
-        <div class="torrent-title">🎮 Clean Vsrania Game Client</div>
-        <div class="torrent-desc">Download a clean, pre-tested game client (.torrent) to guarantee 100% mod compatibility and prevent client-side synchronization errors.</div>
+        <div class="torrent-title">🎮 Clean Game Client (.torrent)</div>
+        <div class="torrent-desc">Pre-tested client matching server version. Recommended to avoid mod errors.</div>
       </div>
       <a href="/game.torrent" class="torrent-btn" download>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
-        <span>Download game.torrent</span>
+        <span>Download .torrent</span>
       </a>
     </div>
 
@@ -1059,7 +1055,7 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
     <div class="backups-footer">
       <button type="button" class="backups-faded-btn" onclick="openBackups()">
         <span>🗄️</span>
-        <span>Server Backups & Archives</span>
+        <span>Backups</span>
         <span>🔒</span>
       </button>
     </div>
@@ -1068,7 +1064,7 @@ def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") ->
     <div class="readme-card">
       <div class="readme-header">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
-        <h2>Player Instructions & Guide</h2>
+        <h2>Quick Guide</h2>
       </div>
       <div class="readme-body">
         {readme_content_html}
