@@ -2,13 +2,15 @@
 """
 storage_server.py — Secure HTTP file & storage server for PZ Controller.
 
-Serves:
-  - Public web dashboard (server IP, status, mod list, client download links)
-  - Dedicated Backups page (/backups) with password access, backup listing, and upload form
-  - Filtered backup list (hiding .gitkeep and non-zip files)
-  - Public downloads: /client.zip, /common.zip, /server_info.json, /healthz
-  - Protected downloads: /server.zip, /backups/<filename> (requires password/token)
-  - Protected uploads: POST /upload (for backup uploads)
+Features:
+  - Modern, responsive dark UI dashboard
+  - 3 main action cards: Client Files, Common Files, and Server Files (faded with Lock)
+  - Smaller faded Backups button with Lock at the bottom
+  - In-browser password unlock modal (unlocks server files and backups seamlessly)
+  - Dedicated /backups view with .gitkeep filtered out
+  - Live Server IP & Status widget with 1-click copy
+  - Public endpoints: /, /client.zip, /common.zip, /server_info.json, /healthz
+  - Protected endpoints: /server.zip, /backups, /backups/<filename>, /upload
 """
 
 import base64
@@ -114,231 +116,604 @@ def get_valid_backups():
     return sorted(backups, key=lambda b: b["mtime"], reverse=True)
 
 
-def render_html_dashboard(server_info: dict, manifest: dict) -> str:
+def render_html_dashboard(server_info: dict, manifest: dict, token: str = "") -> str:
     status = server_info.get("status", "unknown").lower()
     ip = server_info.get("ip", "pending")
     port = server_info.get("port", 16261)
     
-    badge_color = "#eab308"  # yellow
+    badge_color = "#eab308"
+    status_text = "BOOTING"
     if status == "online":
-        badge_color = "#22c55e"  # green
+        badge_color = "#10b981"
+        status_text = "SERVER ONLINE"
     elif status in ("stopped", "error", "failed"):
-        badge_color = "#ef4444"  # red
+        badge_color = "#ef4444"
+        status_text = status.upper()
 
     client_info = manifest.get("client", {})
     common_info = manifest.get("common", {})
+    server_pkg_info = manifest.get("server", {})
+
     client_size_mb = f"{client_info.get('size', 0) / (1024*1024):.1f} MB" if client_info.get('size') else "Ready"
     common_size_mb = f"{common_info.get('size', 0) / (1024*1024):.1f} MB" if common_info.get('size') else "Ready"
+    server_size_mb = f"{server_pkg_info.get('size', 0) / (1024*1024):.1f} MB" if server_pkg_info.get('size') else "Ready"
+
+    client_mods_count = client_info.get('mods_count', 0)
+    common_mods_count = common_info.get('mods_count', 0)
+    server_mods_count = server_pkg_info.get('mods_count', 0)
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Project Zomboid Server & Mod Hub</title>
+  <title>Project Zomboid • Controller & Hub</title>
   <style>
     :root {{
-      --bg: #0f172a;
-      --card-bg: #1e293b;
-      --text: #f8fafc;
-      --text-muted: #94a3b8;
+      --bg: #0b0f19;
+      --card-bg: rgba(17, 24, 39, 0.85);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
       --primary: #3b82f6;
       --primary-hover: #2563eb;
-      --border: #334155;
+      --primary-glow: rgba(59, 130, 246, 0.35);
+      --accent: #10b981;
+      --accent-glow: rgba(16, 185, 129, 0.3);
+      --amber: #f59e0b;
+      --amber-glow: rgba(245, 158, 11, 0.25);
+    }}
+    * {{
+      box-sizing: border-box;
     }}
     body {{
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background-color: var(--bg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+      background: radial-gradient(circle at top center, #1e1b4b 0%, #0b0f19 55%, #030712 100%);
       color: var(--text);
       margin: 0;
-      padding: 2rem 1rem;
+      padding: 2.5rem 1rem;
+      min-height: 100vh;
       display: flex;
       justify-content: center;
+      align-items: flex-start;
     }}
     .container {{
-      max-width: 760px;
+      max-width: 880px;
       width: 100%;
     }}
-    .card {{
-      background-color: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 1.75rem;
-      margin-bottom: 1.5rem;
-      box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3);
+    .header-card {{
+      background: var(--card-bg);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--card-border);
+      border-radius: 18px;
+      padding: 2rem;
+      margin-bottom: 2rem;
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5), 0 8px 10px -6px rgba(0, 0, 0, 0.5);
     }}
-    .nav-bar {{
+    .title-row {{
       display: flex;
-      gap: 0.75rem;
-      margin-bottom: 1.25rem;
-    }}
-    .nav-link {{
-      color: var(--text-muted);
-      text-decoration: none;
-      font-weight: 500;
-      padding: 0.5rem 1rem;
-      border-radius: 8px;
-      border: 1px solid transparent;
-      transition: all 0.15s;
-    }}
-    .nav-link.active, .nav-link:hover {{
-      color: white;
-      background-color: rgba(255, 255, 255, 0.05);
-      border-color: var(--border);
+      justify-content: space-between;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 1rem;
     }}
     h1 {{
-      font-size: 1.75rem;
+      font-size: 2rem;
+      font-weight: 800;
+      letter-spacing: -0.025em;
       margin: 0;
-      color: #f1f5f9;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      background: linear-gradient(135deg, #ffffff 0%, #cbd5e1 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
     }}
     .status-badge {{
       display: inline-flex;
       align-items: center;
       gap: 0.5rem;
-      padding: 0.35rem 0.85rem;
+      padding: 0.4rem 0.9rem;
       border-radius: 9999px;
-      font-weight: 600;
-      font-size: 0.875rem;
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid var(--border);
+      font-weight: 700;
+      font-size: 0.8rem;
+      letter-spacing: 0.05em;
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid var(--card-border);
     }}
     .status-dot {{
       width: 10px;
       height: 10px;
       border-radius: 50%;
       background-color: {badge_color};
+      box-shadow: 0 0 12px {badge_color};
     }}
     .ip-box {{
-      background: #090d16;
-      border: 1px solid #1e293b;
-      border-radius: 8px;
-      padding: 0.75rem 1rem;
-      font-family: monospace;
-      font-size: 1.1rem;
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 12px;
+      padding: 1rem 1.25rem;
+      margin-top: 1.5rem;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin: 1rem 0;
+      flex-wrap: wrap;
+      gap: 1rem;
+    }}
+    .ip-details {{
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }}
+    .ip-label {{
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      font-weight: 600;
+    }}
+    .ip-address {{
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 1.35rem;
+      font-weight: 700;
+      color: #38bdf8;
+      letter-spacing: 0.02em;
     }}
     .btn {{
-      display: inline-block;
-      background-color: var(--primary);
-      color: white;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      font-weight: 600;
+      border-radius: 10px;
+      padding: 0.75rem 1.25rem;
+      font-size: 0.95rem;
       text-decoration: none;
-      padding: 0.65rem 1.25rem;
-      border-radius: 8px;
-      font-weight: 500;
       cursor: pointer;
-      border: none;
-      transition: background-color 0.15s;
+      border: 1px solid transparent;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     }}
-    .btn:hover {{
-      background-color: var(--primary-hover);
+    .btn-primary {{
+      background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+      color: white;
+      box-shadow: 0 4px 14px var(--primary-glow);
+    }}
+    .btn-primary:hover {{
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px var(--primary-glow);
+    }}
+    .btn-emerald {{
+      background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+      color: white;
+      box-shadow: 0 4px 14px var(--accent-glow);
+    }}
+    .btn-emerald:hover {{
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px var(--accent-glow);
     }}
     .btn-secondary {{
-      background-color: #334155;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text);
+      border-color: rgba(255, 255, 255, 0.1);
     }}
     .btn-secondary:hover {{
-      background-color: #475569;
+      background: rgba(255, 255, 255, 0.12);
     }}
-    .download-grid {{
+    .cards-grid {{
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 1rem;
-      margin-top: 1rem;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1.25rem;
+      margin-bottom: 2rem;
     }}
-    @media (max-width: 600px) {{
-      .download-grid {{
+    @media (max-width: 768px) {{
+      .cards-grid {{
         grid-template-columns: 1fr;
       }}
     }}
-    .download-card {{
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 1rem;
-      background: rgba(15, 23, 42, 0.6);
-      text-align: center;
+    .action-card {{
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 1.5rem;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      position: relative;
+      overflow: hidden;
+      transition: all 0.25s ease;
+      box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.3);
     }}
-    .download-card h3 {{
+    .action-card:hover {{
+      transform: translateY(-4px);
+      border-color: rgba(255, 255, 255, 0.2);
+    }}
+    .action-card.locked {{
+      opacity: 0.55;
+      filter: saturate(0.6);
+      background: rgba(17, 24, 39, 0.5);
+      border-style: dashed;
+    }}
+    .action-card.locked:hover {{
+      opacity: 0.85;
+      filter: saturate(0.9);
+      transform: translateY(-2px);
+    }}
+    .card-badge {{
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      font-size: 0.75rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding: 0.25rem 0.6rem;
+      border-radius: 6px;
+      margin-bottom: 0.75rem;
+      width: fit-content;
+    }}
+    .badge-blue {{
+      background: rgba(59, 130, 246, 0.15);
+      color: #60a5fa;
+      border: 1px solid rgba(59, 130, 246, 0.3);
+    }}
+    .badge-green {{
+      background: rgba(16, 185, 129, 0.15);
+      color: #34d399;
+      border: 1px solid rgba(16, 185, 129, 0.3);
+    }}
+    .badge-amber {{
+      background: rgba(245, 158, 11, 0.15);
+      color: #fbbf24;
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }}
+    .card-title {{
+      font-size: 1.25rem;
+      font-weight: 700;
       margin: 0 0 0.5rem 0;
-      font-size: 1.1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
     }}
-    .download-card p {{
+    .card-desc {{
       color: var(--text-muted);
-      font-size: 0.85rem;
-      margin-bottom: 1rem;
+      font-size: 0.875rem;
+      line-height: 1.45;
+      margin: 0 0 1.25rem 0;
+      flex-grow: 1;
     }}
-    .instructions {{
+    .card-stats {{
+      display: flex;
+      gap: 0.75rem;
+      font-size: 0.8rem;
+      color: var(--text-muted);
+      margin-bottom: 1.25rem;
+      padding-top: 0.75rem;
+      border-top: 1px solid rgba(255, 255, 255, 0.05);
+    }}
+    .bottom-bar {{
+      display: flex;
+      justify-content: center;
+      margin-top: 1rem;
+    }}
+    .backups-btn {{
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      padding: 0.65rem 1.25rem;
+      border-radius: 12px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      background: rgba(17, 24, 39, 0.6);
+      border: 1px dashed rgba(255, 255, 255, 0.15);
+      text-decoration: none;
+      transition: all 0.2s ease;
+      opacity: 0.75;
+    }}
+    .backups-btn:hover {{
+      opacity: 1;
+      color: white;
+      border-color: rgba(255, 255, 255, 0.35);
+      background: rgba(30, 41, 59, 0.8);
+      transform: translateY(-2px);
+    }}
+    .guide-card {{
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      border: 1px solid var(--card-border);
+      border-radius: 16px;
+      padding: 1.5rem;
+      margin-top: 2rem;
+    }}
+    .guide-title {{
+      font-size: 1rem;
+      font-weight: 700;
+      color: #cbd5e1;
+      margin-top: 0;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }}
+    ol {{
+      margin: 0;
+      padding-left: 1.25rem;
+      color: var(--text-muted);
       font-size: 0.9rem;
-      color: var(--text-muted);
-      line-height: 1.5;
-      margin-top: 1.5rem;
-      border-top: 1px solid var(--border);
-      padding-top: 1rem;
+      line-height: 1.6;
     }}
     code {{
-      background: #090d16;
+      background: rgba(0, 0, 0, 0.4);
       padding: 0.2rem 0.4rem;
-      border-radius: 4px;
-      font-family: monospace;
+      border-radius: 6px;
+      font-family: ui-monospace, monospace;
       color: #38bdf8;
+      border: 1px solid rgba(255, 255, 255, 0.05);
+    }}
+    /* Modal Styles */
+    .modal-overlay {{
+      display: none;
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.75);
+      backdrop-filter: blur(8px);
+      z-index: 100;
+      align-items: center;
+      justify-content: center;
+      padding: 1rem;
+    }}
+    .modal-card {{
+      background: #111827;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 16px;
+      max-width: 440px;
+      width: 100%;
+      padding: 2rem;
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.7);
+      animation: modalIn 0.2s ease-out;
+    }}
+    @keyframes modalIn {{
+      from {{ opacity: 0; transform: scale(0.95); }}
+      to {{ opacity: 1; transform: scale(1); }}
+    }}
+    .input-field {{
+      width: 100%;
+      padding: 0.75rem 1rem;
+      border-radius: 10px;
+      background: #090d16;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      color: white;
+      font-size: 1rem;
+      margin: 1rem 0 1.5rem 0;
+      outline: none;
+      transition: border-color 0.15s;
+    }}
+    .input-field:focus {{
+      border-color: #3b82f6;
     }}
   </style>
 </head>
 <body>
   <div class="container">
-    <div class="nav-bar">
-      <a href="/" class="nav-link active">📦 Player Packages</a>
-      <a href="/backups" class="nav-link">🗄️ Server Backups</a>
-    </div>
-
-    <div class="card">
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:1rem;">
-        <h1>🧟 Project Zomboid Server</h1>
+    
+    <!-- Header with Live Server Info -->
+    <div class="header-card">
+      <div class="title-row">
+        <h1>🧟 Project Zomboid</h1>
         <div class="status-badge">
           <div class="status-dot"></div>
-          <span style="text-transform: uppercase;">{status}</span>
+          <span>{status_text}</span>
         </div>
       </div>
       
-      <p style="color:var(--text-muted); margin-top:0.25rem;">Live server status and player mod packages.</p>
+      <p style="color:var(--text-muted); margin:0.5rem 0 0 0; font-size:0.95rem;">
+        Game Server mod distribution and automated management hub.
+      </p>
 
       <div class="ip-box">
-        <span><strong>Server Address:</strong> {ip}:{port}</span>
-        <button class="btn btn-secondary" onclick="navigator.clipboard.writeText('{ip}:{port}'); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy', 2000)">Copy</button>
+        <div class="ip-details">
+          <span class="ip-label">Dedicated Server Address</span>
+          <span class="ip-address">{ip}:{port}</span>
+        </div>
+        <button class="btn btn-secondary" onclick="copyIp('{ip}:{port}', this)">
+          📋 Copy Address
+        </button>
       </div>
     </div>
 
-    <div class="card">
-      <h2>📦 Download Game Packages</h2>
-      <p style="color:var(--text-muted);">Download the pre-bundled mods and configs before connecting:</p>
-
-      <div class="download-grid">
-        <div class="download-card">
-          <h3>Common Package</h3>
-          <p>Shared server & client mods ({common_size_mb})</p>
-          <a href="/common.zip" class="btn" download>Download common.zip</a>
+    <!-- 3 Main Action Cards -->
+    <div class="cards-grid">
+      
+      <!-- 1. Client Files -->
+      <div class="action-card">
+        <div>
+          <div class="card-badge badge-blue">🎮 Player Package</div>
+          <h3 class="card-title">Client Files</h3>
+          <p class="card-desc">Client-side mods, UI tweaks, lua scripts and player settings.</p>
         </div>
-        <div class="download-card">
-          <h3>Client Package</h3>
-          <p>Client mods & configurations ({client_size_mb})</p>
-          <a href="/client.zip" class="btn" download>Download client.zip</a>
+        <div>
+          <div class="card-stats">
+            <span>📦 {client_mods_count} mod(s)</span>
+            <span>💾 {client_size_mb}</span>
+          </div>
+          <a href="/client.zip" class="btn btn-primary" style="width:100%;" download>
+            ⬇️ Download Client
+          </a>
         </div>
       </div>
 
-      <div class="instructions">
-        <strong>How to install:</strong>
-        <ol style="padding-left: 1.25rem; margin-top: 0.5rem;">
-          <li>Download both <code>common.zip</code> and <code>client.zip</code>.</li>
-          <li>Extract both archives directly into your local Zomboid directory:<br>
-              Windows: <code>%USERPROFILE%\\Zomboid\\</code><br>
-              Linux / macOS: <code>~/Zomboid/</code>
-          </li>
-          <li>Launch Project Zomboid and connect to <code>{ip}:{port}</code>!</li>
-        </ol>
+      <!-- 2. Common Files -->
+      <div class="action-card">
+        <div>
+          <div class="card-badge badge-green">🌐 Shared Package</div>
+          <h3 class="card-title">Common Files</h3>
+          <p class="card-desc">Shared workshop mods, map files, and assets common to both client and server.</p>
+        </div>
+        <div>
+          <div class="card-stats">
+            <span>📦 {common_mods_count} mod(s)</span>
+            <span>💾 {common_size_mb}</span>
+          </div>
+          <a href="/common.zip" class="btn btn-emerald" style="width:100%;" download>
+            ⬇️ Download Common
+          </a>
+        </div>
+      </div>
+
+      <!-- 3. Server Files (Faded with Lock) -->
+      <div class="action-card locked" id="serverCard">
+        <div>
+          <div class="card-badge badge-amber" id="serverBadge">🔒 Protected</div>
+          <h3 class="card-title">Server Files</h3>
+          <p class="card-desc">Server-only configurations (<code>.ini</code>, <code>SandboxVars.lua</code>, spawn regions, server mods).</p>
+        </div>
+        <div>
+          <div class="card-stats">
+            <span>📦 {server_mods_count} mod(s)</span>
+            <span>💾 {server_size_mb}</span>
+          </div>
+          <button class="btn btn-secondary" id="serverBtn" style="width:100%;" onclick="handleProtectedDownload('server.zip')">
+            🔒 Unlock Server Files
+          </button>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Bottom Faded Backups Button with Lock -->
+    <div class="bottom-bar">
+      <a href="javascript:void(0)" class="backups-btn" id="backupsLink" onclick="handleBackupsNav()">
+        🔒 🗄️ Server Backups & Save Management
+      </a>
+    </div>
+
+    <!-- Quick Installation Accordion -->
+    <div class="guide-card">
+      <h4 class="guide-title">📖 Player Installation Guide</h4>
+      <ol>
+        <li>Download both <strong><code>common.zip</code></strong> and <strong><code>client.zip</code></strong> above.</li>
+        <li>Extract both archives directly into your local Zomboid folder:
+          <br>• Windows: <code>%USERPROFILE%\\Zomboid\\</code> (e.g. <code>C:\\Users\\&lt;Name&gt;\\Zomboid\\</code>)
+          <br>• Linux / macOS: <code>~/Zomboid/</code>
+        </li>
+        <li>Launch Project Zomboid and direct connect to <code>{ip}:{port}</code>!</li>
+      </ol>
+    </div>
+
+  </div>
+
+  <!-- Password Unlock Modal -->
+  <div class="modal-overlay" id="passwordModal">
+    <div class="modal-card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1rem;">
+        <h3 style="margin:0; font-size:1.3rem;">🔒 Protected Area</h3>
+        <span style="cursor:pointer; color:var(--text-muted); font-size:1.5rem;" onclick="closeModal()">&times;</span>
+      </div>
+      <p style="color:var(--text-muted); font-size:0.9rem; margin-top:0;">
+        Enter the Controller storage password to unlock server files and backup archives:
+      </p>
+      <input type="password" id="modalPassword" class="input-field" placeholder="Enter STORAGE_PASSWORD" onkeydown="if(event.key==='Enter') submitPassword()" />
+      <div style="display:flex; gap:0.75rem; justify-content:flex-end;">
+        <button class="btn btn-secondary" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="submitPassword()">Unlock</button>
       </div>
     </div>
   </div>
+
+  <script>
+    let pendingAction = null;
+
+    function copyIp(text, btn) {{
+      navigator.clipboard.writeText(text);
+      const original = btn.innerText;
+      btn.innerText = '✅ Copied!';
+      setTimeout(() => btn.innerText = original, 2000);
+    }}
+
+    function getSavedToken() {{
+      return sessionStorage.getItem('pz_token') || new URLSearchParams(window.location.search).get('token') || '';
+    }}
+
+    function setSavedToken(token) {{
+      if (token) {{
+        sessionStorage.setItem('pz_token', token);
+        unlockUI(token);
+      }}
+    }}
+
+    function unlockUI(token) {{
+      const serverCard = document.getElementById('serverCard');
+      const serverBadge = document.getElementById('serverBadge');
+      const serverBtn = document.getElementById('serverBtn');
+      const backupsLink = document.getElementById('backupsLink');
+
+      if (serverCard) {{
+        serverCard.classList.remove('locked');
+        serverBadge.innerHTML = '🔓 Unlocked';
+        serverBadge.className = 'card-badge badge-green';
+        serverBtn.innerHTML = '⬇️ Download Server Files';
+        serverBtn.className = 'btn btn-primary';
+        serverBtn.onclick = () => window.location.href = '/server.zip?token=' + encodeURIComponent(token);
+      }}
+
+      if (backupsLink) {{
+        backupsLink.style.opacity = '1';
+        backupsLink.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+        backupsLink.innerHTML = '🔓 🗄️ Server Backups & Save Management';
+        backupsLink.onclick = () => window.location.href = '/backups?token=' + encodeURIComponent(token);
+      }}
+    }}
+
+    function handleProtectedDownload(target) {{
+      const token = getSavedToken();
+      if (token) {{
+        window.location.href = '/' + target + '?token=' + encodeURIComponent(token);
+      }} else {{
+        pendingAction = () => window.location.href = '/' + target + '?token=' + encodeURIComponent(getSavedToken());
+        openModal();
+      }}
+    }}
+
+    function handleBackupsNav() {{
+      const token = getSavedToken();
+      if (token) {{
+        window.location.href = '/backups?token=' + encodeURIComponent(token);
+      }} else {{
+        pendingAction = () => window.location.href = '/backups?token=' + encodeURIComponent(getSavedToken());
+        openModal();
+      }}
+    }}
+
+    function openModal() {{
+      document.getElementById('passwordModal').style.display = 'flex';
+      document.getElementById('modalPassword').value = '';
+      setTimeout(() => document.getElementById('modalPassword').focus(), 100);
+    }}
+
+    function closeModal() {{
+      document.getElementById('passwordModal').style.display = 'none';
+    }}
+
+    function submitPassword() {{
+      const val = document.getElementById('modalPassword').value.trim();
+      if (val) {{
+        setSavedToken(val);
+        closeModal();
+        if (pendingAction) {{
+          pendingAction();
+          pendingAction = null;
+        }}
+      }}
+    }}
+
+    // Check token on load
+    window.addEventListener('DOMContentLoaded', () => {{
+      const token = getSavedToken();
+      if (token) {{
+        unlockUI(token);
+      }}
+    }});
+  </script>
 </body>
 </html>
 """
@@ -350,12 +725,14 @@ def render_html_backups(server_info: dict, backups: list, authenticated: bool, t
     port = server_info.get("port", 16261)
     
     badge_color = "#eab308"
+    status_text = "BOOTING"
     if status == "online":
-        badge_color = "#22c55e"
+        badge_color = "#10b981"
+        status_text = "SERVER ONLINE"
     elif status in ("stopped", "error", "failed"):
         badge_color = "#ef4444"
+        status_text = status.upper()
 
-    # Render backup rows
     if backups:
         rows = []
         for b in backups:
@@ -363,22 +740,22 @@ def render_html_backups(server_info: dict, backups: list, authenticated: bool, t
             dl_url = f"/backups/{b['name']}{token_param}"
             rows.append(f"""
             <tr>
-              <td style="font-family:monospace; font-weight:600;">{b['name']}</td>
+              <td style="font-family:ui-monospace, monospace; font-weight:600; color:#38bdf8;">{b['name']}</td>
               <td style="color:var(--text-muted);">{b['date_str']}</td>
               <td style="color:var(--text-muted);">{b['size_str']}</td>
               <td>
-                <a href="{dl_url}" class="btn btn-secondary" style="padding:0.35rem 0.75rem; font-size:0.85rem;" download>Download</a>
+                <a href="{dl_url}" class="btn btn-secondary" style="padding:0.35rem 0.85rem; font-size:0.85rem;" download>⬇️ Download</a>
               </td>
             </tr>
             """)
         backups_table = f"""
         <table style="width:100%; border-collapse:collapse; text-align:left; margin-top:1rem;">
           <thead>
-            <tr style="border-bottom: 1px solid var(--border); color: var(--text-muted); font-size:0.85rem;">
-              <th style="padding: 0.6rem 0.5rem;">Backup File</th>
-              <th style="padding: 0.6rem 0.5rem;">Date Created</th>
-              <th style="padding: 0.6rem 0.5rem;">Size</th>
-              <th style="padding: 0.6rem 0.5rem;">Action</th>
+            <tr style="border-bottom: 1px solid var(--card-border); color: var(--text-muted); font-size:0.8rem; text-transform:uppercase; letter-spacing:0.05em;">
+              <th style="padding: 0.75rem 0.5rem;">Archive File</th>
+              <th style="padding: 0.75rem 0.5rem;">Created</th>
+              <th style="padding: 0.75rem 0.5rem;">Size</th>
+              <th style="padding: 0.75rem 0.5rem;">Action</th>
             </tr>
           </thead>
           <tbody>
@@ -389,15 +766,15 @@ def render_html_backups(server_info: dict, backups: list, authenticated: bool, t
     else:
         backups_table = """<p style="color:var(--text-muted); margin-top:1rem; font-style:italic;">No backup archives (.zip) found in /data/backups/.</p>"""
 
-    auth_section = ""
+    auth_warning = ""
     if not authenticated:
-        auth_section = """
-        <div class="card" style="border-color:#f59e0b; background: rgba(245, 158, 11, 0.05);">
-          <h3 style="margin-top:0; color:#f59e0b;">🔒 Password Required</h3>
-          <p style="color:var(--text-muted); font-size:0.9rem;">Server backups and uploads are protected. Enter the storage password below:</p>
-          <form method="GET" action="/backups" style="display:flex; gap:0.5rem; max-width:400px;">
-            <input type="password" name="token" placeholder="Enter STORAGE_PASSWORD" style="flex:1; padding:0.6rem 0.75rem; border-radius:6px; background:#090d16; border:1px solid var(--border); color:white;" required />
-            <button type="submit" class="btn">Unlock</button>
+        auth_warning = """
+        <div class="card" style="border-color:#f59e0b; background: rgba(245, 158, 11, 0.08); margin-bottom:1.5rem;">
+          <h3 style="margin-top:0; color:#fbbf24; font-size:1.15rem;">🔒 Password Required</h3>
+          <p style="color:var(--text-muted); font-size:0.9rem; margin-bottom:1rem;">Enter the Controller password to view and download world backups:</p>
+          <form method="GET" action="/backups" style="display:flex; gap:0.5rem; max-width:420px;">
+            <input type="password" name="token" placeholder="Enter STORAGE_PASSWORD" style="flex:1; padding:0.65rem 0.85rem; border-radius:8px; background:#090d16; border:1px solid rgba(255,255,255,0.15); color:white;" required />
+            <button type="submit" class="btn btn-primary">Unlock</button>
           </form>
         </div>
         """
@@ -407,72 +784,74 @@ def render_html_backups(server_info: dict, backups: list, authenticated: bool, t
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Project Zomboid Server Backups</title>
+  <title>Project Zomboid • Server Backups</title>
   <style>
     :root {{
-      --bg: #0f172a;
-      --card-bg: #1e293b;
-      --text: #f8fafc;
-      --text-muted: #94a3b8;
+      --bg: #0b0f19;
+      --card-bg: rgba(17, 24, 39, 0.85);
+      --card-border: rgba(255, 255, 255, 0.08);
+      --text: #f3f4f6;
+      --text-muted: #9ca3af;
       --primary: #3b82f6;
       --primary-hover: #2563eb;
-      --border: #334155;
     }}
+    * {{ box-sizing: border-box; }}
     body {{
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background-color: var(--bg);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: radial-gradient(circle at top center, #1e1b4b 0%, #0b0f19 55%, #030712 100%);
       color: var(--text);
       margin: 0;
-      padding: 2rem 1rem;
+      padding: 2.5rem 1rem;
+      min-height: 100vh;
       display: flex;
       justify-content: center;
     }}
-    .container {{
-      max-width: 760px;
-      width: 100%;
-    }}
+    .container {{ max-width: 880px; width: 100%; }}
     .card {{
-      background-color: var(--card-bg);
-      border: 1px solid var(--border);
-      border-radius: 12px;
+      background: var(--card-bg);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--card-border);
+      border-radius: 18px;
       padding: 1.75rem;
       margin-bottom: 1.5rem;
-      box-shadow: 0 10px 15px -3px rgba(0,0,0,0.3);
+      box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.5);
     }}
     .nav-bar {{
       display: flex;
       gap: 0.75rem;
-      margin-bottom: 1.25rem;
+      margin-bottom: 1.5rem;
     }}
     .nav-link {{
       color: var(--text-muted);
       text-decoration: none;
-      font-weight: 500;
+      font-weight: 600;
+      font-size: 0.9rem;
       padding: 0.5rem 1rem;
-      border-radius: 8px;
+      border-radius: 10px;
       border: 1px solid transparent;
       transition: all 0.15s;
     }}
     .nav-link.active, .nav-link:hover {{
       color: white;
-      background-color: rgba(255, 255, 255, 0.05);
-      border-color: var(--border);
+      background-color: rgba(255, 255, 255, 0.06);
+      border-color: var(--card-border);
     }}
     h1 {{
-      font-size: 1.75rem;
+      font-size: 1.85rem;
       margin: 0;
+      font-weight: 800;
       color: #f1f5f9;
     }}
     .status-badge {{
       display: inline-flex;
       align-items: center;
       gap: 0.5rem;
-      padding: 0.35rem 0.85rem;
+      padding: 0.4rem 0.9rem;
       border-radius: 9999px;
-      font-weight: 600;
-      font-size: 0.875rem;
-      background: rgba(255, 255, 255, 0.05);
-      border: 1px solid var(--border);
+      font-weight: 700;
+      font-size: 0.8rem;
+      background: rgba(0, 0, 0, 0.3);
+      border: 1px solid var(--card-border);
     }}
     .status-dot {{
       width: 10px;
@@ -481,41 +860,44 @@ def render_html_backups(server_info: dict, backups: list, authenticated: bool, t
       background-color: {badge_color};
     }}
     .ip-box {{
-      background: #090d16;
-      border: 1px solid #1e293b;
-      border-radius: 8px;
-      padding: 0.75rem 1rem;
-      font-family: monospace;
-      font-size: 1.1rem;
+      background: rgba(0, 0, 0, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 12px;
+      padding: 0.85rem 1.25rem;
+      margin-top: 1.25rem;
       display: flex;
       justify-content: space-between;
       align-items: center;
-      margin: 1rem 0;
     }}
     .btn {{
-      display: inline-block;
-      background-color: var(--primary);
-      color: white;
-      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      font-weight: 600;
+      border-radius: 10px;
       padding: 0.65rem 1.25rem;
-      border-radius: 8px;
-      font-weight: 500;
+      font-size: 0.95rem;
+      text-decoration: none;
       cursor: pointer;
       border: none;
-      transition: background-color 0.15s;
+      transition: all 0.15s;
     }}
-    .btn:hover {{
-      background-color: var(--primary-hover);
+    .btn-primary {{
+      background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+      color: white;
     }}
     .btn-secondary {{
-      background-color: #334155;
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text);
+      border: 1px solid rgba(255, 255, 255, 0.1);
     }}
     .btn-secondary:hover {{
-      background-color: #475569;
+      background: rgba(255, 255, 255, 0.12);
     }}
     table td {{
-      padding: 0.65rem 0.5rem;
-      border-bottom: 1px solid rgba(51, 65, 85, 0.5);
+      padding: 0.75rem 0.5rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
       font-size: 0.9rem;
     }}
   </style>
@@ -523,8 +905,8 @@ def render_html_backups(server_info: dict, backups: list, authenticated: bool, t
 <body>
   <div class="container">
     <div class="nav-bar">
-      <a href="/" class="nav-link">📦 Player Packages</a>
-      <a href="/backups{f'?token={token}' if token else ''}" class="nav-link active">🗄️ Server Backups</a>
+      <a href="/{f'?token={token}' if token else ''}" class="nav-link">📦 Packages</a>
+      <a href="/backups{f'?token={token}' if token else ''}" class="nav-link active">🗄️ Backups</a>
     </div>
 
     <div class="card">
@@ -532,34 +914,39 @@ def render_html_backups(server_info: dict, backups: list, authenticated: bool, t
         <h1>🗄️ Server Backups</h1>
         <div class="status-badge">
           <div class="status-dot"></div>
-          <span style="text-transform: uppercase;">{status}</span>
+          <span>{status_text}</span>
         </div>
       </div>
       
-      <p style="color:var(--text-muted); margin-top:0.25rem;">Server world backups (.zip) and upload management.</p>
+      <p style="color:var(--text-muted); margin:0.35rem 0 0 0; font-size:0.95rem;">
+        Automated and manual server save archives (.zip).
+      </p>
 
       <div class="ip-box">
-        <span><strong>Server Address:</strong> {ip}:{port}</span>
+        <div>
+          <span style="font-size:0.75rem; text-transform:uppercase; color:var(--text-muted); display:block;">Server Address</span>
+          <span style="font-family:ui-monospace, monospace; font-size:1.2rem; font-weight:700; color:#38bdf8;">{ip}:{port}</span>
+        </div>
         <button class="btn btn-secondary" onclick="navigator.clipboard.writeText('{ip}:{port}'); this.innerText='Copied!'; setTimeout(()=>this.innerText='Copy', 2000)">Copy</button>
       </div>
     </div>
 
-    {auth_section}
+    {auth_warning}
 
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap;">
-        <h2 style="margin:0;">Available Backups</h2>
+        <h2 style="margin:0; font-size:1.3rem;">Available Backups</h2>
         <span style="color:var(--text-muted); font-size:0.85rem;">{len(backups)} archive(s)</span>
       </div>
       {backups_table}
     </div>
 
     <div class="card">
-      <h2>⬆️ Upload Backup Archive</h2>
-      <p style="color:var(--text-muted); font-size:0.9rem;">Upload an existing world save <code>.zip</code> into the Controller:</p>
+      <h2 style="margin:0 0 0.5rem 0; font-size:1.3rem;">⬆️ Upload Backup Archive</h2>
+      <p style="color:var(--text-muted); font-size:0.9rem; margin-top:0;">Upload a save <code>.zip</code> into the Controller for restore:</p>
       <form action="/upload{f'?token={token}' if token else ''}" method="POST" enctype="multipart/form-data" style="margin-top:1rem;">
         <input type="file" name="file" accept=".zip" style="color:var(--text-muted); margin-bottom:1rem; display:block;" required />
-        <button type="submit" class="btn">Upload Backup .zip</button>
+        <button type="submit" class="btn btn-primary">Upload Archive</button>
       </form>
     </div>
   </div>
@@ -619,11 +1006,12 @@ class StorageHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        # 2. Main Dashboard (Player Downloads + Server IP)
+        # 2. Main Dashboard (Player Downloads + Server IP + 3 Cards)
         if path in ("/", "/index.html"):
             server_info = get_server_info()
             manifest = get_manifest()
-            html = render_html_dashboard(server_info, manifest).encode("utf-8")
+            token = query.get("token", [None])[0] or query.get("key", [None])[0] or query.get("password", [None])[0] or ""
+            html = render_html_dashboard(server_info, manifest, token).encode("utf-8")
             self._send_response_headers(200, "text/html; charset=utf-8", len(html))
             self.wfile.write(html)
             return
