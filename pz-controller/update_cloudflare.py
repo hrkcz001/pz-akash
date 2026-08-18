@@ -154,6 +154,16 @@ def set_ssl_flexible(zone_id: str, token: str):
         log(f"Note on SSL settings: {e}")
 
 
+def configure_security_settings(zone_id: str, token: str):
+    """Ensure Cloudflare Browser Integrity Check is disabled and Security Level is low so API/Webhooks are never blocked."""
+    try:
+        cf_request(f"/zones/{zone_id}/settings/browser_check", token, method="PATCH", payload={"value": "off"})
+        cf_request(f"/zones/{zone_id}/settings/security_level", token, method="PATCH", payload={"value": "essentially_off"})
+        log("Cloudflare security settings verified: browser integrity check OFF, security level relaxed.")
+    except Exception as e:
+        log(f"Note on security settings: {e}")
+
+
 def update_cloudflare_proxy(target_url: str):
     token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
     if not token:
@@ -180,6 +190,9 @@ def update_cloudflare_proxy(target_url: str):
 
         # 2. Ensure SSL is set to Flexible for HTTP origin
         set_ssl_flexible(zone_id, token)
+
+        # 3. Ensure Cloudflare does not block Webhook / API clients
+        configure_security_settings(zone_id, token)
 
         # 3. Create / update Proxied DNS record (A if IPv4, CNAME if hostname)
         is_ipv4 = bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", host))
