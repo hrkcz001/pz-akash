@@ -656,6 +656,9 @@ PYEOF
   fi
   log "Lease created with $provider (dseq=$dseq)."
 
+  # Immediately publish status=booting with the actual lease price before image is pulled
+  mark_server_ip "pending" "$price_per_hour" "$usd_day" || true
+
   local ip lease_rc
   ip=$(wait_for_lease "$dseq" "$provider" "$gseq" "$oseq" "$hostUri")
   lease_rc=$?

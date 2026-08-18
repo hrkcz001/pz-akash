@@ -565,20 +565,20 @@ def render_html_dashboard(server_info: dict, manifest: dict, server_token: str =
       display: inline-flex;
       align-items: center;
       gap: 0.35rem;
-      padding: 0.38rem 0.85rem;
+      padding: 0.35rem 0.85rem;
       border-radius: 9999px;
       font-size: 0.78rem;
       font-weight: 700;
       font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
       letter-spacing: 0.03em;
-      border: 1.5px dotted rgba(56, 189, 248, 0.45);
+      border: 1.5px dashed rgba(56, 189, 248, 0.45);
       background: rgba(14, 165, 233, 0.08);
       color: #38bdf8;
       box-shadow: 0 0 12px rgba(14, 165, 233, 0.1);
       transition: all 0.2s ease;
     }}
     .price-badge:hover {{
-      border-color: rgba(56, 189, 248, 0.75);
+      border-color: rgba(56, 189, 248, 0.8);
       background: rgba(14, 165, 233, 0.15);
     }}
     .status-badge {{

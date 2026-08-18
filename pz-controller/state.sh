@@ -177,6 +177,26 @@ reset_server_info_stopped() {
   fi
 }
 
+mark_server_booting() {
+  local p_hr="${1:-}"
+  local p_day="${2:-}"
+  (
+    cd "$SERVES_REPO" || return 1
+    git_pull_state >/dev/null 2>&1 || true
+    if [ -f server_info.json ]; then
+      [ -z "$p_hr" ] && p_hr=$(jq -r '.price_per_hour // empty' server_info.json 2>/dev/null || echo "")
+      [ -z "$p_day" ] && p_day=$(jq -r '.price_per_day // empty' server_info.json 2>/dev/null || echo "")
+    fi
+    p_hr="${p_hr:-0.011}"
+    p_day="${p_day:-0.26}"
+    echo "{\"ip\": \"pending\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"booting\", \"price_per_hour\": $p_hr, \"price_per_day\": $p_day}" > "$SERVES_REPO/server_info.json"
+    git add server_info.json \
+      && git commit -m "Server deployment initiated - status set to booting" || true \
+      && _push_with_retry_internal
+  )
+  log "server_info.json updated: status=booting (STARTING UP)"
+}
+
 # --- shared Akash lifecycle helpers (used by both the halt trigger below and
 # schedule.sh's stop_at path). schedule.sh shadows log/api with its own
 # equivalents — identical behavior, just a different log prefix.
@@ -449,6 +469,7 @@ process_triggers() {
     else
       echo "[trigger] deploy trigger detected (start) — setting desired_state=running and launching deploy"
       set_desired_state "running"
+      mark_server_booting
       consume_file start
       trigger_deploy "start trigger"
     fi

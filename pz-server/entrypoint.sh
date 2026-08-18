@@ -113,10 +113,18 @@ ln -sfn /home/steam/Zomboid /home/steam/zomboid
 echo "  Linked /home/steam/zomboid -> /home/steam/Zomboid"
 
 echo "=== Checking for Existing Backup to Restore ==="
-if [ -f /home/steam/pz-saves/restore_target ]; then
+RESTORE_REQUESTED=false
+if [ -f /home/steam/pz-saves/request_restore ]; then
+    REQ_VAL=$(cat /home/steam/pz-saves/request_restore 2>/dev/null | tr -d '\r\n' | tr '[:upper:]' '[:lower:]')
+    if [ "$REQ_VAL" = "requested" ] || [ "$REQ_VAL" = "ready" ]; then
+        RESTORE_REQUESTED=true
+    fi
+fi
+
+if [ "$RESTORE_REQUESTED" = "true" ] && [ -f /home/steam/pz-saves/restore_target ]; then
     TARGET=$(cat /home/steam/pz-saves/restore_target | tr -d '\n' | tr -d '\r')
     if [ -n "$TARGET" ]; then
-        echo "Found existing backup target: $TARGET. Changing state to 'ready' to notify autosaver..."
+        echo "Backup restore requested for: $TARGET. Notifying autosaver..."
         gosu steam bash -c "
 cd /home/steam/pz-saves
 push_with_retry() {
@@ -139,28 +147,72 @@ git add request_restore
 git commit -m \"Server ready for restore\" || true
 push_with_retry
 "
-        echo "WAITING FOR AUTOSAVER TO RESTORE: $TARGET"
+        echo "WAITING FOR AUTOSAVER TO RESTORE: $TARGET (timeout 60s)..."
+        RESTORE_WAIT_COUNT=0
+        MAX_RESTORE_WAIT=6  # 6 * 10s = 60s max wait
+
         while [ -f /home/steam/pz-saves/request_restore ]; do
             CURRENT_STATE=$(cat /home/steam/pz-saves/request_restore | tr -d '\n' | tr '[:upper:]' '[:lower:]' | tr -d '\r')
             if [ "$CURRENT_STATE" = "failed" ]; then
-                echo "CRITICAL ERROR: Autosaver reported that the backup file was not found!"
-                echo "Aborting startup to prevent overwriting your save data with a fresh world."
+                echo "[warn] Controller reported that backup file '$TARGET' was not found in storage."
+                echo "Clearing restore request and proceeding with startup..."
                 gosu steam bash -c "
 cd /home/steam/pz-saves
 export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
-CURRENT_IP=\$(jq -r '.ip // \"pending\"' server_info.json)
-CURRENT_PORT=\$(jq -r '.port // 0' server_info.json)
-echo \"{\\\"ip\\\": \\\"\$CURRENT_IP\\\", \\\"port\\\": \$CURRENT_PORT, \\\"status\\\": \\\"error\\\"}\" > server_info.json
-git add server_info.json
-git commit -m \"Server startup aborted due to missing backup\" || true
+push_with_retry() {
+    for i in {1..5}; do
+        git push origin HEAD:main >/dev/null 2>&1 && return 0
+        git rebase --abort >/dev/null 2>&1 || true
+        git merge --abort >/dev/null 2>&1 || true
+        git fetch origin main >/dev/null 2>&1 || true
+        if ! git pull --rebase origin main >/dev/null 2>&1; then
+            git rebase --abort >/dev/null 2>&1 || true
+            git checkout -B main origin/main >/dev/null 2>&1 || true
+        fi
+        sleep \$((RANDOM % 3 + 1))
+    done
+    return 1
+}
+git rm -f request_restore >/dev/null 2>&1 || rm -f request_restore
+echo \"\" > restore_target
+git add restore_target
+git commit -m \"Cleared missing backup restore request\" || true
 push_with_retry
 "
-                exit 1
+                break
             fi
+
+            RESTORE_WAIT_COUNT=$((RESTORE_WAIT_COUNT + 1))
+            if [ "$RESTORE_WAIT_COUNT" -ge "$MAX_RESTORE_WAIT" ]; then
+                echo "[warn] Restore timed out after 60s. Clearing restore request and proceeding with startup..."
+                gosu steam bash -c "
+cd /home/steam/pz-saves
+export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
+push_with_retry() {
+    for i in {1..5}; do
+        git push origin HEAD:main >/dev/null 2>&1 && return 0
+        git rebase --abort >/dev/null 2>&1 || true
+        git merge --abort >/dev/null 2>&1 || true
+        git fetch origin main >/dev/null 2>&1 || true
+        if ! git pull --rebase origin main >/dev/null 2>&1; then
+            git rebase --abort >/dev/null 2>&1 || true
+            git checkout -B main origin/main >/dev/null 2>&1 || true
+        fi
+        sleep \$((RANDOM % 3 + 1))
+    done
+    return 1
+}
+git rm -f request_restore >/dev/null 2>&1 || rm -f request_restore
+git commit -m \"Cleared timed-out restore request\" || true
+push_with_retry
+"
+                break
+            fi
+
             sleep $RESTORE_POLL_INTERVAL_SEC
             gosu steam bash -c "cd /home/steam/pz-saves && export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\" && git pull > /dev/null 2>&1"
         done
-        echo "Restore complete! Proceeding with startup."
+        echo "Restore phase finished. Proceeding with startup."
     fi
 fi
 

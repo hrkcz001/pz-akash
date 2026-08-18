@@ -233,32 +233,32 @@ while true; do
             # Check if restore is requested and server is ready
             if [ -f request_restore ] && grep -iq "ready" request_restore; then
                 if [ -f restore_target ]; then
-                    TARGET=$(cat restore_target)
-                    echo "Server is ready. Restoring: $TARGET to $SERVER_IP:$SERVER_PORT"
-                    if [ -f "/data/backups/$TARGET" ]; then
-                        echo "Uploading and extracting backup..."
-                        # Server is ready, so SCP should connect immediately.
-                        for i in {1..5}; do
-                            scp -P $SERVER_PORT -o StrictHostKeyChecking=no -o ConnectTimeout=$SSH_CONNECT_TIMEOUT /data/backups/$TARGET steam@$SERVER_IP:/tmp/ && break || sleep 5
-                        done
-                        
-                        ssh -p $SERVER_PORT -o StrictHostKeyChecking=no steam@$SERVER_IP "mkdir -p /home/steam/Zomboid/Saves && cd /home/steam/Zomboid/Saves && rm -rf * && unzip -o /tmp/$TARGET && rm /tmp/$TARGET"
-                        
-                        echo "Restore completed."
-                        echo "Clearing request_restore completely"
-                        rm -f request_restore
-                        git rm request_restore 2>/dev/null || true
-                        
-                        git commit -m "Restore of $TARGET completed and request_restore cleared" || true
-                    else
-                        echo "ERROR: Backup $TARGET not found in /data/backups/"
-                        
-                        echo "failed" > request_restore
-                        git add request_restore
-                        
-                        git commit -m "Restore failed: $TARGET not found" || true
+                    TARGET=$(cat restore_target | tr -d '\r\n')
+                    if [ -n "$TARGET" ]; then
+                        echo "Server is ready. Restoring: $TARGET to $SERVER_IP:$SERVER_PORT"
+                        if [ -f "/data/backups/$TARGET" ]; then
+                            echo "Uploading and extracting backup..."
+                            for i in {1..5}; do
+                                scp -P $SERVER_PORT -o StrictHostKeyChecking=no -o ConnectTimeout=$SSH_CONNECT_TIMEOUT /data/backups/$TARGET steam@$SERVER_IP:/tmp/ && break || sleep 5
+                            done
+                            
+                            ssh -p $SERVER_PORT -o StrictHostKeyChecking=no steam@$SERVER_IP "mkdir -p /home/steam/Zomboid/Saves && cd /home/steam/Zomboid/Saves && rm -rf * && unzip -o /tmp/$TARGET && rm /tmp/$TARGET"
+                            
+                            echo "Restore completed."
+                            echo "Clearing request_restore completely"
+                            rm -f request_restore
+                            git rm request_restore 2>/dev/null || true
+                            git commit -m "Restore of $TARGET completed and request_restore cleared" || true
+                        else
+                            echo "WARNING: Backup $TARGET not found in /data/backups/ — clearing restore request to unblock server startup."
+                            rm -f request_restore
+                            git rm request_restore 2>/dev/null || true
+                            echo "" > restore_target
+                            git add restore_target
+                            git commit -m "Cleared request_restore: $TARGET not found in storage" || true
+                        fi
+                        push_with_retry
                     fi
-                    push_with_retry
                 fi
             fi
             
