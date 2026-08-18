@@ -107,20 +107,22 @@ def clear_origin_rules(zone_id: str, token: str):
         pass
 
 
-def configure_origin_rule(zone_id: str, token: str, domain: str, origin_port: int):
-    """Configure Cloudflare Origin Rules to route incoming HTTPS traffic on :443 to the custom origin port."""
+def configure_origin_rule(zone_id: str, token: str, domain: str, origin_host: str, origin_port: int = 80):
+    """Configure Cloudflare Origin Rules to route incoming HTTPS traffic on :443 with the expected origin Host header."""
     expression = f'(http.host eq "{domain}" or http.host eq "www.{domain}")'
+    action_params = {
+        "host_header": origin_host
+    }
+    if origin_port not in (80, 443):
+        action_params["origin"] = {"port": origin_port}
+
     payload = {
         "rules": [
             {
-                "description": f"PZ Controller Origin Port Route ({domain} -> :{origin_port})",
+                "description": f"PZ Controller Origin Route ({domain} -> {origin_host}:{origin_port})",
                 "expression": expression,
                 "action": "route",
-                "action_parameters": {
-                    "origin": {
-                        "port": origin_port
-                    }
-                },
+                "action_parameters": action_params,
                 "enabled": True
             }
         ]
@@ -133,7 +135,7 @@ def configure_origin_rule(zone_id: str, token: str, domain: str, origin_port: in
         payload=payload
     )
     if res.get("success"):
-        log(f"Configured Cloudflare Origin Rule: https://{domain} -> origin port {origin_port}")
+        log(f"Configured Cloudflare Origin Rule: https://{domain} -> Host: {origin_host} (port {origin_port})")
         return True
     else:
         log(f"Note on Origin Rules: {res.get('errors')}")
@@ -188,11 +190,8 @@ def update_cloudflare_proxy(target_url: str):
         upsert_dns_record(zone_id, token, domain, rec_type, host)
         upsert_dns_record(zone_id, token, f"www.{domain}", rec_type, host)
 
-        # 4. Configure or clear Origin Port Rule
-        if port not in (80, 443):
-            configure_origin_rule(zone_id, token, domain, port)
-        else:
-            clear_origin_rules(zone_id, token)
+        # 4. Configure Origin Rule (rewriting Host header to origin host so Akash Ingress matches)
+        configure_origin_rule(zone_id, token, domain, host, port)
 
         log(f"SUCCESS: https://{domain} is now proxied to {host}:{port} with valid Cloudflare SSL!")
         return True
