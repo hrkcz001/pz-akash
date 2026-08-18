@@ -332,6 +332,106 @@ run_backup() {
   return 0
 }
 
+DESIRED_STATE_FILE="${DESIRED_STATE_FILE:-$STATE_DIR/desired_state}"
+
+# parse_stop_at -> epoch seconds, or empty if no/invalid stop_at
+parse_stop_at() {
+  [ -f "$SERVES_REPO/stop_at" ] || return 0
+  python3 - "$(cat "$SERVES_REPO/stop_at" 2>/dev/null | tr -d '\r\n')" <<'PYEOF'
+import datetime, sys
+s = sys.argv[1].strip()
+if not s:
+    sys.exit(0)
+if s.isdigit():
+    print(int(s)); sys.exit(0)
+for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M"):
+    try:
+        print(int(datetime.datetime.strptime(s, fmt).replace(tzinfo=datetime.timezone.utc).timestamp()))
+        sys.exit(0)
+    except ValueError:
+        pass
+sys.exit(1)
+PYEOF
+}
+
+set_desired_state() { # $1 = "running" | "stopped"
+  local st="$1"
+  echo "$st" > "$DESIRED_STATE_FILE"
+  (
+    cd "$SERVES_REPO" || return 0
+    echo "$st" > desired_state
+    git add desired_state
+    git commit -m "Update desired_state=$st" || true
+    _push_with_retry_internal
+  )
+}
+
+get_desired_state() {
+  # If stop_at date is reached, desired state is unconditionally stopped
+  local stop_epoch now
+  stop_epoch=$(parse_stop_at 2>/dev/null || echo "")
+  if [ -n "$stop_epoch" ]; then
+    now=$(date +%s)
+    if [ "$now" -ge "$stop_epoch" ]; then
+      echo "stopped"
+      return 0
+    fi
+  fi
+
+  # If halt trigger file exists in repo, desired state is stopped
+  if [ -f "$SERVES_REPO/halt" ]; then
+    echo "stopped"
+    return 0
+  fi
+
+  if [ -f "$DESIRED_STATE_FILE" ]; then
+    cat "$DESIRED_STATE_FILE" | tr -d '\r\n'
+    return 0
+  fi
+  if [ -f "$SERVES_REPO/desired_state" ]; then
+    cat "$SERVES_REPO/desired_state" | tr -d '\r\n'
+    return 0
+  fi
+  if [ -f "$ACTIVE_DSEQ_FILE" ]; then
+    echo "running"
+    return 0
+  fi
+  echo "stopped"
+}
+
+trigger_deploy() { # $1 = reason
+  local reason="${1:-deploy requested}"
+  if [ -z "${AKASH_API_KEY:-}" ]; then
+    echo "[deploy] WARNING: AKASH_API_KEY is not set — cannot deploy."
+    return 1
+  fi
+
+  # Check if previous deploy process is actively running
+  if [ -f "$LOCK_FILE" ]; then
+    local old_pid
+    old_pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+    if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+      echo "[deploy] deploy.sh is already running (pid $old_pid) — skipping duplicate launch."
+      return 0
+    fi
+  fi
+
+  # Cooldown check to prevent runaway loops (at least 20s between starts)
+  local last_dep now diff
+  last_dep=$(cat "$STATE_DIR/last_redeploy_time" 2>/dev/null || echo "0")
+  now=$(date +%s)
+  diff=$((now - last_dep))
+  if [ "$diff" -lt 20 ]; then
+    echo "[deploy] Redeploy cooldown active (${diff}s < 20s) — skipping duplicate trigger."
+    return 0
+  fi
+  echo "$now" > "$STATE_DIR/last_redeploy_time"
+
+  echo "[deploy] Launching deploy.sh in background (reason: $reason)..."
+  nohup /usr/local/bin/deploy.sh 2>&1 | tee -a "$STATE_DIR/deploy.log" &
+  echo "[deploy] deploy.sh started in background (pid $!)"
+}
+
 # process_triggers — consume and act on start/backup/halt files (call after
 # git_pull_state). Deploy runs in the background; backups run synchronously.
 process_triggers() {
@@ -347,34 +447,10 @@ process_triggers() {
       echo "[trigger] start and halt detected simultaneously — cancelling start trigger in favor of halt."
       consume_file start
     else
-      echo "[trigger] deploy trigger detected (start) — launching deploy"
+      echo "[trigger] deploy trigger detected (start) — setting desired_state=running and launching deploy"
+      set_desired_state "running"
       consume_file start
-      if [ -z "${AKASH_API_KEY:-}" ]; then
-        echo "[trigger] WARNING: AKASH_API_KEY is not set — cannot deploy."
-      else
-        # If previous deploy process is orphaned or dead on Akash, clean it up
-        if [ -f "$LOCK_FILE" ]; then
-          local old_pid
-          old_pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
-          if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
-            local is_act=false
-            if [ -f "$ACTIVE_DSEQ_FILE" ]; then
-              local dseq dep_st
-              dseq=$(cat "$ACTIVE_DSEQ_FILE")
-              dep_st=$(api GET "/v1/deployments/$dseq" | jq -r '.data.deployment.state // .data.state // ""' 2>/dev/null)
-              [ "$dep_st" = "active" ] && is_act=true
-            fi
-            if [ "$is_act" = "false" ]; then
-              echo "[trigger] Terminating stale deploy process $old_pid for inactive deployment..."
-              kill_running_deploy
-            fi
-          fi
-        fi
-
-        # Stream deploy output to BOTH container stdout and deploy log file
-        nohup /usr/local/bin/deploy.sh 2>&1 | tee -a "$STATE_DIR/deploy.log" &
-        echo "[trigger] deploy.sh started in background (pid $!) — logs follow in the console and $STATE_DIR/deploy.log"
-      fi
+      trigger_deploy "start trigger"
     fi
   fi
 
@@ -400,6 +476,7 @@ process_triggers() {
   # Priority 3: halt (guarantees server is stopped and closed)
   if [ "$has_halt" = "true" ]; then
     echo "[trigger] halt trigger detected (halt) — executing graceful stop and teardown"
+    set_desired_state "stopped"
 
     # Immediately terminate any in-flight deploy.sh process so it releases lock and stops polling
     kill_running_deploy

@@ -10,7 +10,7 @@ SERVER_FILES_PASSWORD=${SERVER_FILES_PASSWORD:-$STORAGE_PASSWORD}
 CONTROLLER_URL=${CONTROLLER_URL:-}
 SERVER_MEMORY_MAX=${SERVER_MEMORY_MAX:-8192m}
 SERVER_MEMORY_MIN=${SERVER_MEMORY_MIN:-8192m}
-WAIT_ON_CRASH_SEC=${WAIT_ON_CRASH_SEC:-1800}
+MAX_CRASH_RESTARTS=${MAX_CRASH_RESTARTS:-3}
 
 # 1. Setup SSH Server
 echo "=== Setting up SSH Server ==="
@@ -155,8 +155,6 @@ git add server_info.json
 git commit -m \"Server startup aborted due to missing backup\" || true
 push_with_retry
 "
-                echo "Sleeping for 1800 seconds (30 minutes) to preserve logs and prevent restart loops..."
-                sleep 1800
                 exit 1
             fi
             sleep $RESTORE_POLL_INTERVAL_SEC
@@ -300,14 +298,13 @@ push_with_retry
 
 graceful_shutdown() {
     echo "=== Termination signal received! Shutting down PZ server gracefully... ==="
-    if kill -0 $PZ_PID 2>/dev/null; then
+    if [ -n "${PZ_PID:-}" ] && kill -0 $PZ_PID 2>/dev/null; then
         kill -TERM $PZ_PID
         echo "Waiting for server to save local files and exit..."
-        wait $PZ_PID
+        wait $PZ_PID 2>/dev/null || true
     fi
     mark_server_stopped
-    echo "Sleeping for 1800 seconds (30 minutes) to prevent immediate Akash restart loop..."
-    sleep 1800
+    echo "Server shutdown complete. Exiting."
     exit 0
 }
 
@@ -367,24 +364,7 @@ cd "$PZ_DIR"
 touch /home/steam/server.log
 chown steam:steam /home/steam/server.log
 
-# Launch without -Xmx/-Xms CLI flags — those are unknown to pzexe and ignored.
-# Memory is now correctly set in ProjectZomboid64.json vmArgs above.
-gosu steam "$PZ_PATH" -nosteam -servername "$SERVER_NAME" -adminpassword "$ADMIN_PASSWORD" -cachedir=/home/steam/Zomboid > /home/steam/server.log 2>&1 &
-PZ_PID=$!
-
-tail -f /home/steam/server.log &
-TAIL_PID=$!
-
-echo "Waiting for server to be fully started..."
-while ! grep -q "\*\*\* SERVER STARTED \*\*\*" /home/steam/server.log; do
-    if ! kill -0 $PZ_PID 2>/dev/null; then
-        echo "Server process died during startup!"
-        break
-    fi
-    sleep 2
-done
-
-if kill -0 $PZ_PID 2>/dev/null; then
+mark_server_online() {
     echo "Server is fully started. Marking as online..."
     gosu steam bash -c "
 cd /home/steam/pz-saves
@@ -420,20 +400,59 @@ git add server_info.json
 git commit -m \"Server online\${CURRENT_IP:+ with IP \$CURRENT_IP}\" || true
 push_with_retry
 "
-fi
+}
 
-wait $PZ_PID
-EXIT_CODE=$?
-kill $TAIL_PID 2>/dev/null || true
-echo "=== Project Zomboid Server exited with code $EXIT_CODE ==="
+CRASH_COUNT=0
+MAX_CRASH_RESTARTS=${MAX_CRASH_RESTARTS:-3}
 
-if [ $EXIT_CODE -ne 0 ]; then
-    echo "ERROR: Server crashed unexpectedly! Marking as stopped and sleeping for $WAIT_ON_CRASH_SEC seconds to preserve logs..."
-    mark_server_stopped
-    sleep $WAIT_ON_CRASH_SEC
-else
-    echo "Server exited cleanly. Marking as stopped..."
-    mark_server_stopped
-    echo "Sleeping for 1800 seconds (30 minutes) to prevent immediate Akash restart loop..."
-    sleep 1800
-fi
+tail -f /home/steam/server.log &
+TAIL_PID=$!
+
+while true; do
+    echo "=== Launching Project Zomboid Dedicated Server Process (Attempt $((CRASH_COUNT + 1))) ==="
+    LOG_OFFSET=$(wc -l < /home/steam/server.log 2>/dev/null || echo 0)
+
+    # Launch without -Xmx/-Xms CLI flags — memory configured in ProjectZomboid64.json vmArgs above
+    gosu steam "$PZ_PATH" -nosteam -servername "$SERVER_NAME" -adminpassword "$ADMIN_PASSWORD" -cachedir=/home/steam/Zomboid >> /home/steam/server.log 2>&1 &
+    PZ_PID=$!
+    START_TIME=$(date +%s)
+
+    echo "Waiting for server to be fully started..."
+    STARTED_OK=false
+    while kill -0 $PZ_PID 2>/dev/null; do
+        if tail -n "+$((LOG_OFFSET + 1))" /home/steam/server.log 2>/dev/null | grep -q "\*\*\* SERVER STARTED \*\*\*"; then
+            STARTED_OK=true
+            break
+        fi
+        sleep 2
+    done
+
+    if [ "$STARTED_OK" = "true" ]; then
+        mark_server_online
+    fi
+
+    # Wait for the PZ server process to exit
+    wait $PZ_PID 2>/dev/null
+    EXIT_CODE=$?
+    UPTIME=$(( $(date +%s) - START_TIME ))
+    echo "=== Project Zomboid Server process exited with code $EXIT_CODE after ${UPTIME}s ==="
+
+    # If the server ran stably for more than 120s, reset crash counter
+    if [ "$UPTIME" -ge 120 ] && [ "$STARTED_OK" = "true" ]; then
+        echo "Server was running stably for ${UPTIME}s. Resetting consecutive crash counter."
+        CRASH_COUNT=0
+    fi
+
+    CRASH_COUNT=$((CRASH_COUNT + 1))
+
+    if [ "$CRASH_COUNT" -le "$MAX_CRASH_RESTARTS" ]; then
+        echo "Server process exited/crashed unexpectedly! Retrying process restart ($CRASH_COUNT/$MAX_CRASH_RESTARTS) in 5s..."
+        sleep 5
+    else
+        echo "ERROR: Server process failed/crashed $CRASH_COUNT times in succession. In-container restarts exhausted."
+        echo "Marking server as stopped so controller can perform full redeploy..."
+        kill $TAIL_PID 2>/dev/null || true
+        mark_server_stopped
+        exit 1
+    fi
+done

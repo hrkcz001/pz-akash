@@ -145,18 +145,45 @@ server_watchdogs() {
         fi
     fi
 
-    # 4. Akash deployment watchdog: detect if server deployment was closed externally
+    # 4. Akash deployment watchdog & self-healing: detect unexpected closure or server crash
+    local des_st
+    des_st=$(get_desired_state)
+
     if [ -f "$ACTIVE_DSEQ_FILE" ]; then
         local dseq dep_st
         dseq=$(cat "$ACTIVE_DSEQ_FILE" 2>/dev/null || echo "")
         if [ -n "$dseq" ]; then
             dep_st=$(api GET "/v1/deployments/$dseq" | jq -r '.data.deployment.state // .data.state // ""' 2>/dev/null)
             if [ -n "$dep_st" ] && [ "$dep_st" != "active" ]; then
-                echo "[controller] Deployment $dseq is no longer active on Akash (state: $dep_st) — cleaning up."
-                rm -f "$ACTIVE_DSEQ_FILE"
+                echo "[controller] Deployment $dseq is no longer active on Akash (state: '$dep_st')."
+                clear_active_dseq
                 kill_running_deploy
                 reset_server_info_stopped
+                if [ "$des_st" = "running" ]; then
+                    echo "[controller] Desired state is 'running' — deployment closed unexpectedly. Triggering auto-redeploy..."
+                    trigger_deploy "Akash deployment $dseq closed unexpectedly (state: $dep_st)"
+                fi
+            elif [ "$dep_st" = "active" ] && [ "$des_st" = "running" ]; then
+                # Deployment is active on Akash, but server inside might have failed/crashed
+                local s_status
+                s_status=$(server_info_val status "")
+                if [ "$s_status" = "error" ]; then
+                    echo "[controller] WARNING: Server reported status 'error' while desired_state=running!"
+                    echo "[controller] Closing faulty deployment $dseq and triggering auto-redeploy..."
+                    close_deployment "$dseq"
+                    kill_running_deploy
+                    reset_server_info_stopped
+                    trigger_deploy "server reported error status"
+                fi
             fi
+        fi
+    elif [ "$des_st" = "running" ]; then
+        # Desired state is running, but no active deployment file exists
+        local s_st
+        s_st=$(server_info_val status "stopped")
+        if [ "$s_st" != "booting" ] && [ "$s_st" != "online" ]; then
+            echo "[controller] Desired state is 'running' but no active deployment exists — triggering auto-redeploy..."
+            trigger_deploy "desired_state is running with no active deployment"
         fi
     fi
 }

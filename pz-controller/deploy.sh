@@ -220,7 +220,7 @@ build_sdl() { # $1 = max uakt/block
     "${GIT_USER_NAME:-}" "${GIT_USER_EMAIL:-}" "$SSH_PORT" \
     "${SERVER_NAME:-}" "${ADMIN_PASSWORD:-}" "${SERVER_MEMORY_MAX:-}" \
     "${SERVER_MEMORY_MIN:-}" "${RESTORE_POLL_INTERVAL_SEC:-}" \
-    "${WAIT_ON_CRASH_SEC:-}" "${SERVER_FILES_PASSWORD:-${STORAGE_PASSWORD:-${ADMIN_PASSWORD:-}}}" \
+    "${MAX_CRASH_RESTARTS:-3}" "${SERVER_FILES_PASSWORD:-${STORAGE_PASSWORD:-${ADMIN_PASSWORD:-}}}" \
     "${CONTROLLER_URL:-}" <<'PYEOF'
 import re, sys
 tpl, out, max_uakt = sys.argv[1], sys.argv[2], str(sys.argv[3])
@@ -228,12 +228,14 @@ tokens = ["__SERVER_IMAGE__", "__SSH_PRIVATE_KEY_BASE64__", "__REPO_URL__",
           "__GIT_USER_NAME__", "__GIT_USER_EMAIL__", "__SSH_PORT__",
           "__SERVER_NAME__", "__ADMIN_PASSWORD__", "__SERVER_MEMORY_MAX__",
           "__SERVER_MEMORY_MIN__", "__RESTORE_POLL_INTERVAL_SEC__",
-          "__WAIT_ON_CRASH_SEC__", "__STORAGE_PASSWORD__",
+          "__MAX_CRASH_RESTARTS__", "__STORAGE_PASSWORD__",
           "__CONTROLLER_URL__", "__MAX_PRICE_UAKT__"]
 vals = sys.argv[4:19]
 s = open(tpl).read()
 for t, v in zip(tokens, vals):
     s = s.replace(t, str(v))
+# Clean any legacy WAIT_ON_CRASH_SEC token from older templates
+s = s.replace("__WAIT_ON_CRASH_SEC__", "0")
 # Inject the controller-controlled max bid into every numeric pricing amount.
 s = re.sub(r'(?m)^(\s*amount:\s*)[0-9]+(\.[0-9]+)?\s*$', r'\g<1>' + max_uakt, s)
 open(out, "w").write(s)
@@ -738,6 +740,8 @@ main() {
   fi
   echo $$ > "$LOCK_FILE"
   trap 'rm -f "$LOCK_FILE"' EXIT
+
+  echo "running" > "$STATE_DIR/desired_state"
 
   load_skips
 

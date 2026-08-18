@@ -86,6 +86,7 @@ check_stop_time() {
   fi
 
   log "stop_at reached (now=$now >= stop=$stop_epoch) — saving and stopping the server."
+  set_desired_state "stopped"
   consume_file stop_at
   kill_running_deploy
   run_backup 1

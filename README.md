@@ -84,6 +84,11 @@ Push a file named `stop_at` with an epoch timestamp or `YYYY-MM-DD HH:MM[:SS]` (
 - At the scheduled time, the Controller backs up and halts the server, closing the Akash deployment.
 - Until then, the Controller automatically checks and tops up the lease escrow.
 
+### Self-Healing & Auto-Restart on Crash
+If the Project Zomboid dedicated server crashes or the Akash provider deployment unexpectedly closes before `halt` is sent or `stop_at` is reached:
+- The server process automatically restarts in-container (up to 3 retry attempts).
+- If local restarts are exhausted or the Akash deployment is terminated unexpectedly, the Controller automatically provisions a fresh redeployment on Akash to maintain uptime.
+
 ### Restoring a Backup
 1. Write the backup filename into `restore_target` in `pz-saves` (e.g. `backup_20260810_120000.zip`).
 2. Write `requested` into `request_restore`.
