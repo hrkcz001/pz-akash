@@ -86,7 +86,7 @@ if [ -f server_info.json ]; then
 fi
 
 # Update server_info.json with status=booting without stomping on the controller-assigned IP
-echo \"{\\\"ip\\\": \\\"\${CURRENT_IP:-}\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"booting\\\"}\" > server_info.json
+echo \"{\\\"ip\\\": \\\"\${CURRENT_IP:-}\\\", \\\"port\\\": $SSH_PORT, \\\"game_port\\\": ${GAME_PORT:-16261}, \\\"status\\\": \\\"booting\\\"}\" > server_info.json
 git add server_info.json
 git commit -m \"Server booting up\${CURRENT_IP:+ at \$CURRENT_IP}\" || true
 export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
@@ -290,7 +290,7 @@ CURRENT_PORT=0
 if [ -f server_info.json ]; then
     CURRENT_PORT=\$(jq -r '.port // 0' server_info.json 2>/dev/null || echo 0)
 fi
-echo \"{\\\"ip\\\": \\\"\\\", \\\"port\\\": \$CURRENT_PORT, \\\"status\\\": \\\"stopped\\\"}\" > server_info.json
+echo \"{\\\"ip\\\": \\\"\\\", \\\"port\\\": \$CURRENT_PORT, \\\"game_port\\\": ${GAME_PORT:-16261}, \\\"status\\\": \\\"stopped\\\"}\" > server_info.json
 echo \"requested\" > request_restore
 git add server_info.json request_restore
 git commit -m \"Server stopped, auto-restore requested\" || true
@@ -415,7 +415,7 @@ if [ \"\$CURRENT_IP\" = \"null\" ] || [ \"\$CURRENT_IP\" = \"pending\" ]; then
 fi
 
 echo \"Marking server as online at \${CURRENT_IP:-controller-assigned IP}!\"
-echo \"{\\\"ip\\\": \\\"\${CURRENT_IP:-}\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"online\\\"}\" > server_info.json
+echo \"{\\\"ip\\\": \\\"\${CURRENT_IP:-}\\\", \\\"port\\\": $SSH_PORT, \\\"game_port\\\": ${GAME_PORT:-16261}, \\\"status\\\": \\\"online\\\"}\" > server_info.json
 git add server_info.json
 git commit -m \"Server online\${CURRENT_IP:+ with IP \$CURRENT_IP}\" || true
 push_with_retry

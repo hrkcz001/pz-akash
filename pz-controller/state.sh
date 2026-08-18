@@ -169,7 +169,7 @@ reset_server_info_stopped() {
   current_st=$(server_info_val status "stopped")
   current_ip=$(server_info_val ip "")
   if [ "$current_st" != "stopped" ] || [ -n "$current_ip" ]; then
-    echo "{\"ip\": \"\", \"port\": $SSH_PORT, \"status\": \"stopped\"}" > "$SERVES_REPO/server_info.json"
+    echo "{\"ip\": \"\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"stopped\"}" > "$SERVES_REPO/server_info.json"
     ( cd "$SERVES_REPO" && git add server_info.json \
       && git commit -m "Server stopped - reset status and clear IP" || true \
       && push_with_retry )

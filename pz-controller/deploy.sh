@@ -481,7 +481,7 @@ mark_server_ip() { # $1 = ip
       cur_st=$(jq -r '.status // "booting"' server_info.json 2>/dev/null || echo "booting")
     fi
     [ "$cur_st" = "stopped" ] && cur_st="booting"
-    echo "{\"ip\": \"$ip\", \"port\": $SSH_PORT, \"status\": \"$cur_st\"}" > server_info.json
+    echo "{\"ip\": \"$ip\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"$cur_st\"}" > server_info.json
     git add server_info.json \
       && git commit -m "Deployed server at $ip" || true \
       && push_with_retry
@@ -521,7 +521,7 @@ reset_server_info() {
   (
     cd "$SERVES_REPO" || return 1
     git_pull_state >/dev/null 2>&1 || true
-    echo "{\"ip\": \"\", \"port\": $SSH_PORT, \"status\": \"stopped\"}" > server_info.json
+    echo "{\"ip\": \"\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"stopped\"}" > server_info.json
     git add server_info.json \
       && git commit -m "Deploy cycle failed - reset to stopped" || true \
       && push_with_retry
@@ -662,7 +662,7 @@ PYEOF
   (
     cd "$SERVES_REPO" || true
     git_pull_state >/dev/null 2>&1 || true
-    echo "{\"ip\": \"$ip\", \"port\": $SSH_PORT, \"status\": \"online\"}" > server_info.json
+    echo "{\"ip\": \"$ip\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"online\"}" > server_info.json
     git add server_info.json \
       && git commit -m "Server online with verified Akash lease IP $ip" || true \
       && push_with_retry

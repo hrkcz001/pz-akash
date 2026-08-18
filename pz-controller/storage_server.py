@@ -34,6 +34,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
 HTTP_PORT = int(os.environ.get("HTTP_PORT", "8000"))
+GAME_PORT = int(os.environ.get("GAME_PORT", "16261"))
 STORAGE_PASSWORD = os.environ.get("STORAGE_PASSWORD") or os.environ.get("CONTROLLER_SECRET") or os.environ.get("ADMIN_PASSWORD", "")
 SERVER_FILES_PASSWORD = os.environ.get("SERVER_FILES_PASSWORD") or os.environ.get("SERVERFILES_PASSWORD") or STORAGE_PASSWORD
 BACKUPS_PASSWORD = os.environ.get("BACKUPS_PASSWORD") or os.environ.get("BACKUP_PASSWORD") or os.environ.get("BACKUPS_SECRET") or STORAGE_PASSWORD
@@ -157,12 +158,13 @@ def get_server_info():
             return {
                 "ip": data.get("ip", "") if st == "online" else "",
                 "raw_ip": data.get("ip", ""),
-                "port": int(data.get("port", 16261)),
+                "port": int(data.get("game_port") or (data.get("port") if data.get("port") != 2222 else None) or GAME_PORT),
+                "ssh_port": int(data.get("ssh_port") or data.get("port") or 2222),
                 "status": st
             }
         except Exception:
             pass
-    return {"ip": "", "raw_ip": "", "port": 16261, "status": "stopped"}
+    return {"ip": "", "raw_ip": "", "port": GAME_PORT, "ssh_port": 2222, "status": "stopped"}
 
 
 def get_manifest():
