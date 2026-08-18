@@ -276,27 +276,27 @@ def create_zip_archive(source_dir: Path, mods_dict: dict, zip_out_path: Path):
     Inside the zip:
       - Files from source_dir are placed relative to root (excluding mods.json).
       - Mods are placed under mods/<mod_folder_name>/...
+      - Files in source_dir cleanly OVERRIDE any identically named mod files.
     """
     zip_out_path.parent.mkdir(parents=True, exist_ok=True)
     if zip_out_path.exists():
         zip_out_path.unlink()
 
-    non_mod_files_count = 0
-    with zipfile.ZipFile(zip_out_path, "w", zipfile.ZIP_DEFLATED) as zf:
-        # Add files from source folder
-        if source_dir.is_dir():
-            for root, dirs, files in os.walk(source_dir):
-                # Exclude .git and pycache
-                dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", ".github")]
-                for f in files:
-                    if f in ("mods.json", ".gitignore"):
-                        continue
-                    file_path = Path(root) / f
-                    arcname = file_path.relative_to(source_dir).as_posix()
-                    zf.write(file_path, arcname)
-                    non_mod_files_count += 1
+    # Collect custom files from source_dir first
+    custom_files = {}  # arcname -> Path
+    if source_dir.is_dir():
+        for root, dirs, files in os.walk(source_dir):
+            dirs[:] = [d for d in dirs if d not in (".git", "__pycache__", ".github")]
+            for f in files:
+                if f in ("mods.json", ".gitignore"):
+                    continue
+                file_path = Path(root) / f
+                arcname = file_path.relative_to(source_dir).as_posix()
+                custom_files[arcname] = file_path
 
-        # Add mods
+    written_arcnames = set()
+    with zipfile.ZipFile(zip_out_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        # Add mods, skipping any file overridden by source_dir
         for mod_folder_name, info in mods_dict.items():
             mod_src = info["source_path"]
             if mod_src.is_dir():
@@ -305,13 +305,22 @@ def create_zip_archive(source_dir: Path, mods_dict: dict, zip_out_path: Path):
                         file_path = Path(root) / f
                         rel_in_mod = file_path.relative_to(mod_src).as_posix()
                         arcname = f"mods/{mod_folder_name}/{rel_in_mod}"
+                        if arcname in custom_files:
+                            # Skip mod file; custom override from source_dir will be written
+                            continue
                         zf.write(file_path, arcname)
+                        written_arcnames.add(arcname)
+
+        # Write custom files (including mod file overrides)
+        for arcname, file_path in custom_files.items():
+            zf.write(file_path, arcname)
+            written_arcnames.add(arcname)
 
     size = zip_out_path.stat().st_size if zip_out_path.exists() else 0
-    log(f"Created {zip_out_path.name} ({size / (1024*1024):.2f} MB) — {len(mods_dict)} mod(s), {non_mod_files_count} custom file(s)")
+    log(f"Created {zip_out_path.name} ({size / (1024*1024):.2f} MB) — {len(mods_dict)} mod(s), {len(custom_files)} custom/override file(s)")
     return {
         "mods_count": len(mods_dict),
-        "files_count": non_mod_files_count,
+        "files_count": len(custom_files),
         "size": size
     }
 
