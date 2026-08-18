@@ -21,11 +21,33 @@ RUN mkdir -p /steamcmd /pz-server && \
     curl -sqL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" | tar zxvf - -C /steamcmd && \
     /steamcmd/steamcmd.sh +login anonymous +quit || true
 
-# Download pinned depot manifests for PZ dedicated server 42.20.2
-RUN /steamcmd/steamcmd.sh +@sSteamCmdForcePlatformType linux +login anonymous \
-        +download_depot 380870 380871 $DEPOT_380871_MANIFEST \
-        +download_depot 380870 380873 $DEPOT_380873_MANIFEST \
-        +quit && \
+# Download pinned depot manifests for PZ dedicated server.
+# SteamCMD anonymous downloads from CI/cloud IPs are prone to transient
+# failures (exit code 14). Retry up to 5 times with cache clearing.
+RUN set -e; \
+    MAX_RETRIES=5; \
+    for depot in "380871 $DEPOT_380871_MANIFEST" "380873 $DEPOT_380873_MANIFEST"; do \
+        depot_id=$(echo $depot | cut -d' ' -f1); \
+        manifest_id=$(echo $depot | cut -d' ' -f2); \
+        attempt=1; \
+        while [ $attempt -le $MAX_RETRIES ]; do \
+            echo ">>> Downloading depot $depot_id (attempt $attempt/$MAX_RETRIES)..."; \
+            if /steamcmd/steamcmd.sh +@sSteamCmdForcePlatformType linux +login anonymous \
+                +download_depot 380870 $depot_id $manifest_id \
+                +quit; then \
+                echo ">>> Depot $depot_id downloaded successfully."; \
+                break; \
+            fi; \
+            echo ">>> Depot $depot_id failed (attempt $attempt). Clearing cache and retrying in 15s..."; \
+            rm -rf /steamcmd/steamapps/content/app_380870/depot_$depot_id; \
+            sleep 15; \
+            attempt=$((attempt + 1)); \
+        done; \
+        if [ $attempt -gt $MAX_RETRIES ]; then \
+            echo ">>> ERROR: Failed to download depot $depot_id after $MAX_RETRIES attempts."; \
+            exit 1; \
+        fi; \
+    done && \
     cp -r /steamcmd/steamapps/content/app_380870/depot_380871/* /pz-server/ && \
     cp -r /steamcmd/steamapps/content/app_380870/depot_380873/* /pz-server/ && \
     echo "$PZ_VERSION" > /pz-server/PINNED_VERSION
