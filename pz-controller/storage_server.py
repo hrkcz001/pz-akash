@@ -123,13 +123,16 @@ def refresh_saves_repo():
         return
     _last_git_refresh = now
     try:
+        lock_dir = Path("/data/git_repo.lock")
+        if lock_dir.exists():
+            return
         subprocess.run(
-            ["git", "-C", str(SERVES_REPO), "rebase", "--abort"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2
+            ["git", "-C", str(SERVES_REPO), "fetch", "origin", "main"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4
         )
         subprocess.run(
-            ["git", "-C", str(SERVES_REPO), "pull", "--rebase", "origin", "main"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4
+            ["git", "-C", str(SERVES_REPO), "checkout", "-B", "main", "origin/main"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3
         )
     except Exception:
         pass

@@ -35,33 +35,80 @@ resolve_rcon() {
   fi
 }
 
-push_with_retry() {
-  for i in {1..5}; do
-    git push origin HEAD:main >/dev/null 2>&1 && return 0
-    git rebase --abort >/dev/null 2>&1 || true
-    git merge --abort >/dev/null 2>&1 || true
-    git fetch origin main >/dev/null 2>&1 || true
-    if ! git pull --rebase origin main >/dev/null 2>&1; then
-      git rebase --abort >/dev/null 2>&1 || true
-      git checkout -B main origin/main >/dev/null 2>&1 || true
+GIT_LOCK_DIR="${GIT_LOCK_DIR:-$STATE_DIR/git_repo.lock}"
+
+# Mutex wrapper to prevent concurrent git operations from colliding
+with_git_lock() {
+  local lockdir="$GIT_LOCK_DIR"
+  local timeout=45
+  local start_time
+  start_time=$(date +%s)
+  
+  while true; do
+    if mkdir "$lockdir" 2>/dev/null; then
+      break
     fi
-    sleep $((RANDOM % 3 + 1))
+    # If lock directory is older than 60s, stale cleanup
+    local age
+    age=$(( $(date +%s) - $(stat -c %Y "$lockdir" 2>/dev/null || date +%s) ))
+    if [ "$age" -gt 60 ]; then
+      rm -rf "$lockdir" 2>/dev/null || true
+    fi
+    if [ $(( $(date +%s) - start_time )) -ge "$timeout" ]; then
+      echo "[state] WARNING: git lock timed out after ${timeout}s - breaking lock." >&2
+      rm -rf "$lockdir" 2>/dev/null || true
+      mkdir "$lockdir" 2>/dev/null || true
+      break
+    fi
+    sleep 0.4
   done
-  echo "WARNING: git push failed after 5 retries"
-  return 1
+  
+  "$@"
+  local ret=$?
+  rm -rf "$lockdir" 2>/dev/null || true
+  return $ret
 }
 
-git_pull_state() {
+_push_with_retry_internal() {
   (
     cd "$SERVES_REPO" || return 1
-    if [ -d .git/rebase-apply ] || [ -d .git/rebase-merge ]; then
+    for i in {1..5}; do
+      [ -f .git/index.lock ] && rm -f .git/index.lock
+      git push origin HEAD:main >/dev/null 2>&1 && return 0
       git rebase --abort >/dev/null 2>&1 || true
-    fi
-    if [ -f .git/MERGE_HEAD ]; then
       git merge --abort >/dev/null 2>&1 || true
-    fi
-    git checkout -B main origin/main >/dev/null 2>&1 || git checkout main >/dev/null 2>&1 || true
-    git pull origin main >/dev/null 2>&1
+      git fetch origin main >/dev/null 2>&1 || true
+      if ! git pull --rebase origin main >/dev/null 2>&1; then
+        git rebase --abort >/dev/null 2>&1 || true
+        git checkout -B main origin/main >/dev/null 2>&1 || true
+      fi
+      sleep $((RANDOM % 3 + 1))
+    done
+    echo "[state] WARNING: git push failed after 5 retries" >&2
+    return 1
+  )
+}
+
+push_with_retry() {
+  with_git_lock _push_with_retry_internal
+}
+
+_git_pull_state_internal() {
+  (
+    cd "$SERVES_REPO" || return 1
+    [ -f .git/index.lock ] && rm -f .git/index.lock
+    [ -d .git/rebase-apply ] && git rebase --abort >/dev/null 2>&1 || true
+    [ -d .git/rebase-merge ] && git rebase --abort >/dev/null 2>&1 || true
+    [ -f .git/MERGE_HEAD ] && git merge --abort >/dev/null 2>&1 || true
+
+    for attempt in 1 2 3; do
+      if git fetch origin main >/dev/null 2>&1; then
+        git checkout -B main origin/main >/dev/null 2>&1 || git reset --hard origin/main >/dev/null 2>&1 || true
+        return 0
+      fi
+      sleep 1
+    done
+    return 1
   ) || {
     echo "[state] WARNING: git pull in $SERVES_REPO failed — state may be stale" >&2
     return 1
@@ -69,14 +116,24 @@ git_pull_state() {
   return 0
 }
 
-consume_file() { # $1 = filename (start|backup|halt|stop_at)
+git_pull_state() {
+  with_git_lock _git_pull_state_internal
+}
+
+_consume_file_internal() {
   local f="$1"
   (
     cd "$SERVES_REPO" || exit 1
-    git rm -f "$f" 2>/dev/null || rm -f "$SERVES_REPO/$f"
-    git commit -m "Consumed trigger: $f removed" || true
-    push_with_retry
+    [ -f "$f" ] || return 0
+    git rm -f "$f" >/dev/null 2>&1 || rm -f "$SERVES_REPO/$f"
+    git commit -m "Consumed trigger: $f removed" >/dev/null 2>&1 || true
+    _push_with_retry_internal
   )
+}
+
+consume_file() { # $1 = filename (start|backup|halt|stop_at)
+  local f="$1"
+  with_git_lock _consume_file_internal "$f"
   echo "[state] consumed trigger file: $f"
 }
 

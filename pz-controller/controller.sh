@@ -73,7 +73,7 @@ fi
 
             # Publish to pz-saves so game server and tools automatically discover controller
             cd /root/pz-saves
-            git pull >/dev/null 2>&1 || true
+            git_pull_state
             echo "{\"storage_url\": \"$STORAGE_URL\", \"webhook_url\": \"${WH_URL:-}\", \"updated_at\": $(date +%s)}" > controller_info.json
             git add controller_info.json
             git commit -m "Update controller_info.json with live storage URL: $STORAGE_URL" || true
@@ -147,6 +147,7 @@ server_watchdogs() {
 }
 
 cd /root/pz-saves
+git_pull_state
 # Ensure files exist to avoid errors
 touch backup_log restore_target server_info.json
 git add .
