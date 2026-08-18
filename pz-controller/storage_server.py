@@ -153,18 +153,26 @@ def get_server_info():
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3
                 )
                 content = info_path.read_text(encoding="utf-8")
-            data = json.loads(content)
-            st = str(data.get("status", "stopped")).lower()
+            p_hr = data.get("price_per_hour")
+            if p_hr is None and data.get("price_per_day"):
+                try:
+                    p_hr = round(float(data.get("price_per_day")) / 24.0, 4)
+                except Exception:
+                    pass
+            if p_hr is None:
+                p_hr = 0.011
+
             return {
                 "ip": data.get("ip", "") if st == "online" else "",
                 "raw_ip": data.get("ip", ""),
                 "port": int(data.get("game_port") or (data.get("port") if data.get("port") != 2222 else None) or GAME_PORT),
                 "ssh_port": int(data.get("ssh_port") or data.get("port") or 2222),
+                "price_per_hour": float(p_hr),
                 "status": st
             }
         except Exception:
             pass
-    return {"ip": "", "raw_ip": "", "port": GAME_PORT, "ssh_port": 2222, "status": "stopped"}
+    return {"ip": "", "raw_ip": "", "port": GAME_PORT, "ssh_port": 2222, "price_per_hour": 0.011, "status": "stopped"}
 
 
 def get_manifest():
@@ -362,6 +370,10 @@ def render_html_dashboard(server_info: dict, manifest: dict, server_token: str =
     is_online = (status == "online" and bool(ip) and ip != "pending")
     is_booting = (status == "booting")
     
+    price_per_hour = float(server_info.get("price_per_hour", 0.011))
+    price_fmt = f"${price_per_hour:.3f}/hr" if price_per_hour < 0.1 else f"${price_per_hour:.2f}/hr"
+    show_price = (is_online or is_booting)
+    
     # Status Badge
     if is_online:
         badge_class = "badge-online"
@@ -535,6 +547,32 @@ def render_html_dashboard(server_info: dict, manifest: dict, server_token: str =
       margin: 0;
       font-size: 0.85rem;
       color: var(--text-muted);
+    }}
+    .status-group {{
+      display: inline-flex;
+      align-items: center;
+      gap: 0.6rem;
+      flex-wrap: wrap;
+    }}
+    .price-badge {{
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.38rem 0.85rem;
+      border-radius: 9999px;
+      font-size: 0.78rem;
+      font-weight: 700;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      letter-spacing: 0.03em;
+      border: 1.5px dotted rgba(56, 189, 248, 0.45);
+      background: rgba(14, 165, 233, 0.08);
+      color: #38bdf8;
+      box-shadow: 0 0 12px rgba(14, 165, 233, 0.1);
+      transition: all 0.2s ease;
+    }}
+    .price-badge:hover {{
+      border-color: rgba(56, 189, 248, 0.75);
+      background: rgba(14, 165, 233, 0.15);
     }}
     .status-badge {{
       display: inline-flex;
@@ -1061,9 +1099,14 @@ def render_html_dashboard(server_info: dict, manifest: dict, server_token: str =
           <h1>Vsrania Dedicated Server</h1>
           <p>Managed via Akash Network & Controller</p>
         </div>
-        <div class="status-badge {badge_class}" id="status-badge-container">
-          {dot_html}
-          <span id="status-badge-text">{badge_text}</span>
+        <div class="status-group">
+          <div class="price-badge" id="price-badge-container" style="{'display:inline-flex;' if show_price else 'display:none;'}">
+            <span id="price-badge-text">{price_fmt}</span>
+          </div>
+          <div class="status-badge {badge_class}" id="status-badge-container">
+            {dot_html}
+            <span id="status-badge-text">{badge_text}</span>
+          </div>
         </div>
       </div>
 
@@ -1347,17 +1390,20 @@ def render_html_dashboard(server_info: dict, manifest: dict, server_token: str =
         const rawIp = info.raw_ip || info.ip || "";
         const ip = (st === "online") ? rawIp : "";
         const port = info.port || 16261;
+        const priceHr = info.price_per_hour;
 
         if (st !== lastKnownStatus || ip !== lastKnownIp) {{
           lastKnownStatus = st;
           lastKnownIp = ip;
-          updateStatusUI(st, ip, port);
+          updateStatusUI(st, ip, port, priceHr);
         }}
       }} catch (e) {{}}
     }}
 
-    function updateStatusUI(st, ip, port) {{
+    function updateStatusUI(st, ip, port, priceHr) {{
       const badge = document.getElementById("status-badge-container");
+      const priceBadge = document.getElementById("price-badge-container");
+      const priceText = document.getElementById("price-badge-text");
       const widget = document.getElementById("address-widget-container");
       if (!badge || !widget) return;
 
@@ -1368,6 +1414,18 @@ def render_html_dashboard(server_info: dict, manifest: dict, server_token: str =
       badge.innerHTML = (isOnline ? '<span class="status-dot online"></span><span id="status-badge-text">ONLINE</span>' :
                         isBooting ? '<span class="status-dot booting"></span><span id="status-badge-text">STARTING UP</span>' :
                         '<span class="status-dot offline"></span><span id="status-badge-text">OFFLINE</span>');
+
+      if (priceBadge) {{
+        if (isOnline || isBooting) {{
+          priceBadge.style.display = "inline-flex";
+          if (priceHr !== undefined && priceText) {{
+            const p = parseFloat(priceHr);
+            priceText.textContent = (p < 0.1 ? `$${{p.toFixed(3)}}/hr` : `$${{p.toFixed(2)}}/hr`);
+          }}
+        }} else {{
+          priceBadge.style.display = "none";
+        }}
+      }}
 
       if (isOnline) {{
         widget.innerHTML = `

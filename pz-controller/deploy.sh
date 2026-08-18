@@ -471,8 +471,10 @@ wait_for_lease() { # $1 dseq $2 provider $3 gseq $4 oseq $5 hostUri -> prints IP
 }
 
 # --- server_info.json (pz-saves) ----------------------------------------------
-mark_server_ip() { # $1 = ip
+mark_server_ip() { # $1 = ip, $2 = price_per_hour, $3 = price_per_day
   local ip="$1"
+  local p_hr="${2:-0.011}"
+  local p_day="${3:-0.26}"
   (
     cd "$SERVES_REPO" || return 1
     git_pull_state >/dev/null 2>&1 || true
@@ -481,12 +483,12 @@ mark_server_ip() { # $1 = ip
       cur_st=$(jq -r '.status // "booting"' server_info.json 2>/dev/null || echo "booting")
     fi
     [ "$cur_st" = "stopped" ] && cur_st="booting"
-    echo "{\"ip\": \"$ip\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"$cur_st\"}" > server_info.json
+    echo "{\"ip\": \"$ip\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"$cur_st\", \"price_per_hour\": $p_hr, \"price_per_day\": $p_day}" > server_info.json
     git add server_info.json \
-      && git commit -m "Deployed server at $ip" || true \
+      && git commit -m "Deployed server at $ip (~$p_hr/hr)" || true \
       && push_with_retry
   )
-  log "server_info.json updated: server deployed with IP $ip"
+  log "server_info.json updated: server deployed with IP $ip (~$p_hr/hr)"
 }
 
 wait_server_online() { # $1 = dseq
@@ -611,7 +613,11 @@ PYEOF
   gseq=$(echo "$pick" | awk '{print $2}')
   oseq=$(echo "$pick" | awk '{print $3}')
   hostUri=$(echo "$pick" | awk '{print $4}')
-  log "Picked provider $provider (host $hostUri, $(echo "$pick" | awk '{print $6}') USD/day)."
+  local usd_day
+  usd_day=$(echo "$pick" | awk '{print $6}')
+  local price_per_hour
+  price_per_hour=$(python3 -c "print(round(float('$usd_day') / 24.0, 4))" 2>/dev/null || echo "0.011")
+  log "Picked provider $provider (host $hostUri, $usd_day USD/day -> ~$price_per_hour USD/hr)."
 
   resp=$(api POST /v1/leases "{\"manifest\":$(jq -Rs . <<<"$manifest"),\"leases\":[{\"dseq\":\"$dseq\",\"gseq\":$gseq,\"oseq\":$oseq,\"provider\":\"$provider\"}]}")
   if ! echo "$resp" | jq -e '.data.deployment.state == "active"' >/dev/null 2>&1; then
@@ -638,7 +644,7 @@ PYEOF
   fi
   log "Server container is live at $ip."
 
-  mark_server_ip "$ip" || die "Failed to write server_info.json."
+  mark_server_ip "$ip" "$price_per_hour" "$usd_day" || die "Failed to write server_info.json."
 
   if [ "$SERVER_ONLINE_VERIFY" = "true" ]; then
     log "Waiting for the server to report 'online' (timeout ${SERVER_ONLINE_TIMEOUT_SEC}s)..."
@@ -662,9 +668,9 @@ PYEOF
   (
     cd "$SERVES_REPO" || true
     git_pull_state >/dev/null 2>&1 || true
-    echo "{\"ip\": \"$ip\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"online\"}" > server_info.json
+    echo "{\"ip\": \"$ip\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"online\", \"price_per_hour\": ${price_per_hour:-0.011}, \"price_per_day\": ${usd_day:-0.26}}" > server_info.json
     git add server_info.json \
-      && git commit -m "Server online with verified Akash lease IP $ip" || true \
+      && git commit -m "Server online with verified Akash lease IP $ip (~${price_per_hour:-0.011}/hr)" || true \
       && push_with_retry
   )
 
