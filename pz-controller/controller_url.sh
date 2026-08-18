@@ -38,14 +38,20 @@ for l in leases:
     for name in names:
         if name not in svc:
             continue
-        # IP lease
+        # 1. Ingress URIs (port 80 HTTP ingress)
+        uris = (svc.get(name) or {}).get("uris") or []
+        for u in uris:
+            if u:
+                print(f"http://{u}")
+                sys.exit(0)
+        # 2. IP lease
         for arr in (st.get("ips") or {}).values():
             for e in arr or []:
                 ip = e.get("ip") or e.get("IP")
                 if ip:
                     print(f"http://{ip}:{target_port}")
                     sys.exit(0)
-        # Shared endpoint (forwarded ports)
+        # 3. Shared endpoint (forwarded ports)
         fp = (st.get("forwarded_ports") or {}).get(name) or []
         match = None
         for e in fp:

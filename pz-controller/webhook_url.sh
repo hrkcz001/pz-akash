@@ -43,14 +43,20 @@ for l in leases:
     for name in names:
         if name not in svc:
             continue
-        # IP lease: dedicated IP, port is deterministic
+        # 1. Ingress URIs (port 80 HTTP ingress)
+        uris = (svc.get(name) or {}).get("uris") or []
+        for u in uris:
+            if u:
+                print(f"http://{u}/webhook")
+                sys.exit(0)
+        # 2. IP lease: dedicated IP, port is deterministic
         for arr in (st.get("ips") or {}).values():
             for e in arr or []:
                 ip = e.get("ip") or e.get("IP")
                 if ip:
                     print(f"http://{ip}:{wh_port}/webhook")
                     sys.exit(0)
-        # shared endpoint: forwarded port is provider-assigned (host + externalPort).
+        # 3. shared endpoint: forwarded port is provider-assigned (host + externalPort).
         # Pick the entry whose container port is the webhook port — never fp[0]
         # (the service may also expose the upload server on another port).
         fp = (st.get("forwarded_ports") or {}).get(name) or []

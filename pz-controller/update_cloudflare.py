@@ -93,6 +93,20 @@ def clear_dynamic_redirects(zone_id: str, token: str):
         pass
 
 
+def clear_origin_rules(zone_id: str, token: str):
+    """Remove custom origin port rules so Cloudflare routes directly to standard port 80/443."""
+    try:
+        cf_request(
+            f"/zones/{zone_id}/rulesets/phases/http_request_origin/entrypoint",
+            token,
+            method="PUT",
+            payload={"rules": []}
+        )
+        log("Cleared custom origin port rules (using standard port 80/443).")
+    except Exception:
+        pass
+
+
 def configure_origin_rule(zone_id: str, token: str, domain: str, origin_port: int):
     """Configure Cloudflare Origin Rules to route incoming HTTPS traffic on :443 to the custom origin port."""
     expression = f'(http.host eq "{domain}" or http.host eq "www.{domain}")'
@@ -174,9 +188,11 @@ def update_cloudflare_proxy(target_url: str):
         upsert_dns_record(zone_id, token, domain, rec_type, host)
         upsert_dns_record(zone_id, token, f"www.{domain}", rec_type, host)
 
-        # 4. Configure Origin Port Rule if port is non-standard
+        # 4. Configure or clear Origin Port Rule
         if port not in (80, 443):
             configure_origin_rule(zone_id, token, domain, port)
+        else:
+            clear_origin_rules(zone_id, token)
 
         log(f"SUCCESS: https://{domain} is now proxied to {host}:{port} with valid Cloudflare SSL!")
         return True

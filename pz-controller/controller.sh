@@ -67,16 +67,31 @@ fi
             echo "================================================================="
             
             # Automatically update Cloudflare dynamic redirect if token is configured
+            CF_ACTIVE=false
             if [ -n "${CLOUDFLARE_API_TOKEN:-}" ]; then
-                python3 /usr/local/bin/update_cloudflare.py "$STORAGE_URL" || true
+                if python3 /usr/local/bin/update_cloudflare.py "$STORAGE_URL"; then
+                    CF_ACTIVE=true
+                fi
+            fi
+
+            # Determine public URLs (custom domain if Cloudflare enabled, else raw provider URL)
+            PUB_STORAGE_URL="$STORAGE_URL"
+            PUB_WH_URL="${WH_URL:-$STORAGE_URL/webhook}"
+            if [ "$CF_ACTIVE" = "true" ] && [ -n "${CLOUDFLARE_DOMAIN:-}" ]; then
+                PUB_STORAGE_URL="https://${CLOUDFLARE_DOMAIN}"
+                PUB_WH_URL="https://${CLOUDFLARE_DOMAIN}/webhook"
+                echo "================================================================="
+                echo "  CLOUDFLARE CUSTOM DOMAIN LIVE: $PUB_STORAGE_URL"
+                echo "  CLOUDFLARE WEBHOOK URL:        $PUB_WH_URL"
+                echo "================================================================="
             fi
 
             # Publish to pz-saves so game server and tools automatically discover controller
             cd /root/pz-saves
             git_pull_state
-            echo "{\"storage_url\": \"$STORAGE_URL\", \"webhook_url\": \"${WH_URL:-}\", \"updated_at\": $(date +%s)}" > controller_info.json
+            echo "{\"storage_url\": \"$PUB_STORAGE_URL\", \"raw_storage_url\": \"$STORAGE_URL\", \"webhook_url\": \"$PUB_WH_URL\", \"updated_at\": $(date +%s)}" > controller_info.json
             git add controller_info.json
-            git commit -m "Update controller_info.json with live storage URL: $STORAGE_URL" || true
+            git commit -m "Update controller_info.json with live storage URL: $PUB_STORAGE_URL" || true
             push_with_retry
             exit 0
         fi

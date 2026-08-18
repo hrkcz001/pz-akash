@@ -20,11 +20,13 @@ import base64
 import datetime
 import email
 from email.parser import BytesParser
+import hashlib
 import hmac
 import json
 import os
 import re
 import secrets
+import shlex
 import subprocess
 import sys
 import threading
@@ -38,6 +40,9 @@ GAME_PORT = int(os.environ.get("GAME_PORT", "16261"))
 STORAGE_PASSWORD = os.environ.get("STORAGE_PASSWORD") or os.environ.get("CONTROLLER_SECRET") or os.environ.get("ADMIN_PASSWORD", "")
 SERVER_FILES_PASSWORD = os.environ.get("SERVER_FILES_PASSWORD") or os.environ.get("SERVERFILES_PASSWORD") or STORAGE_PASSWORD
 BACKUPS_PASSWORD = os.environ.get("BACKUPS_PASSWORD") or os.environ.get("BACKUP_PASSWORD") or os.environ.get("BACKUPS_SECRET") or STORAGE_PASSWORD
+WEBHOOK_SECRET = os.environ.get("WEBHOOK_SECRET", "")
+WEBHOOK_TRIGGER = os.environ.get("WEBHOOK_TRIGGER", "/usr/local/bin/trigger.sh")
+WEBHOOK_LOG = os.environ.get("WEBHOOK_LOG", "/data/webhook.log")
 PACKAGES_DIR = Path(os.environ.get("PACKAGES_DIR", "/data/packages"))
 BACKUPS_DIR = Path(os.environ.get("BACKUPS_DIR", "/data/backups"))
 SERVES_REPO = Path(os.environ.get("SERVES_REPO", "/root/pz-saves"))
@@ -1723,6 +1728,13 @@ class StorageHandler(BaseHTTPRequestHandler):
             self.wfile.write(body)
             return
 
+        # 1b. Webhook GET Info
+        if path == "/webhook":
+            body = json.dumps({"ok": True, "service": "pz-controller-webhook", "method": "POST required"}).encode("utf-8")
+            self._send_response_headers(200, "application/json", len(body))
+            self.wfile.write(body)
+            return
+
         # 2. Auth Verification API (GET)
         if path in ("/api/verify", "/api/verify-auth", "/auth/verify"):
             auth_type = query.get("type", ["server_files"])[0].lower()
@@ -1858,6 +1870,33 @@ class StorageHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+
+        # 0. GitHub Webhook Listener: POST /webhook
+        if path == "/webhook":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length) if length else b""
+
+            if WEBHOOK_SECRET:
+                sig = self.headers.get("X-Hub-Signature-256", "")
+                mac = hmac.new(WEBHOOK_SECRET.encode(), body, hashlib.sha256).hexdigest()
+                if not hmac.compare_digest(sig, "sha256=" + mac):
+                    log("[webhook] POST /webhook rejected: invalid signature")
+                    self._send_error(403, "Invalid webhook signature")
+                    return
+
+            try:
+                os.makedirs(os.path.dirname(WEBHOOK_LOG), exist_ok=True)
+                subprocess.Popen(
+                    ["bash", "-c", "%s 2>&1 | tee -a %s" % (shlex.quote(WEBHOOK_TRIGGER), shlex.quote(WEBHOOK_LOG))]
+                )
+                log("[webhook] POST /webhook accepted, trigger spawned.")
+                resp = json.dumps({"ok": True, "message": "Trigger spawned"}).encode("utf-8")
+                self._send_response_headers(200, "application/json", len(resp))
+                self.wfile.write(resp)
+            except OSError as e:
+                log(f"[webhook] Trigger spawn failed: {e}")
+                self._send_error(500, f"Trigger spawn failed: {e}")
+            return
 
         # Auth Verification API (POST)
         if path in ("/api/verify", "/api/verify-auth", "/auth/verify"):
