@@ -103,7 +103,7 @@ _git_pull_state_internal() {
 
     for attempt in 1 2 3; do
       if git fetch origin main >/dev/null 2>&1; then
-        git checkout -B main origin/main >/dev/null 2>&1 || git reset --hard origin/main >/dev/null 2>&1 || true
+        git reset --hard origin/main >/dev/null 2>&1 || git checkout -B main origin/main >/dev/null 2>&1 || true
         return 0
       fi
       sleep 1
