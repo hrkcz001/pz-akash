@@ -116,11 +116,36 @@ require_api_key() {
 
 push_with_retry() {
   for i in {1..5}; do
-    git push && return 0
-    git pull --rebase >/dev/null 2>&1
+    git push origin HEAD:main >/dev/null 2>&1 && return 0
+    git rebase --abort >/dev/null 2>&1 || true
+    git merge --abort >/dev/null 2>&1 || true
+    git fetch origin main >/dev/null 2>&1 || true
+    if ! git pull --rebase origin main >/dev/null 2>&1; then
+      git rebase --abort >/dev/null 2>&1 || true
+      git checkout -B main origin/main >/dev/null 2>&1 || true
+    fi
     sleep $((RANDOM % 3 + 1))
   done
   log "WARNING: git push failed after 5 retries"
+  return 1
+}
+
+git_pull_state() {
+  (
+    cd "$SERVES_REPO" || return 1
+    if [ -d .git/rebase-apply ] || [ -d .git/rebase-merge ]; then
+      git rebase --abort >/dev/null 2>&1 || true
+    fi
+    if [ -f .git/MERGE_HEAD ]; then
+      git merge --abort >/dev/null 2>&1 || true
+    fi
+    git checkout -B main origin/main >/dev/null 2>&1 || git checkout main >/dev/null 2>&1 || true
+    git pull origin main >/dev/null 2>&1
+  ) || {
+    log "WARNING: git pull in $SERVES_REPO failed — state may be stale"
+    return 1
+  }
+  return 0
 }
 
 # api METHOD PATH [BODY] — Console API call with x-api-key; retries once on 429.
@@ -448,12 +473,20 @@ wait_for_lease() { # $1 dseq $2 provider $3 gseq $4 oseq $5 hostUri -> prints IP
 # --- server_info.json (pz-saves) ----------------------------------------------
 mark_server_ip() { # $1 = ip
   local ip="$1"
-  ( cd "$SERVES_REPO" && git pull >/dev/null 2>&1 )
-  echo "{\"ip\": \"$ip\", \"port\": $SSH_PORT, \"status\": \"stopped\"}" > "$SERVES_REPO/server_info.json"
-  ( cd "$SERVES_REPO" && git add server_info.json \
-    && git commit -m "Deployed server at $ip" || true \
-    && push_with_retry )
-  log "server_info.json updated: server deployed with IP $ip (awaiting boot)"
+  (
+    cd "$SERVES_REPO" || return 1
+    git_pull_state >/dev/null 2>&1 || true
+    local cur_st="booting"
+    if [ -f server_info.json ]; then
+      cur_st=$(jq -r '.status // "booting"' server_info.json 2>/dev/null || echo "booting")
+    fi
+    [ "$cur_st" = "stopped" ] && cur_st="booting"
+    echo "{\"ip\": \"$ip\", \"port\": $SSH_PORT, \"status\": \"$cur_st\"}" > server_info.json
+    git add server_info.json \
+      && git commit -m "Deployed server at $ip" || true \
+      && push_with_retry
+  )
+  log "server_info.json updated: server deployed with IP $ip"
 }
 
 wait_server_online() { # $1 = dseq
@@ -472,10 +505,12 @@ wait_server_online() { # $1 = dseq
       log "Halt trigger detected — aborting server online wait."
       return 2
     fi
-    ( cd "$SERVES_REPO" && git pull >/dev/null 2>&1 )
-    st=$(jq -r '.status // ""' "$SERVES_REPO/server_info.json" 2>/dev/null)
-    if [ "$st" = "online" ]; then
-      return 0
+    git_pull_state
+    if [ -f "$SERVES_REPO/server_info.json" ]; then
+      st=$(jq -r '.status // ""' "$SERVES_REPO/server_info.json" 2>/dev/null || echo "")
+      if [ "$st" = "online" ]; then
+        return 0
+      fi
     fi
     sleep 20
   done
@@ -483,11 +518,14 @@ wait_server_online() { # $1 = dseq
 }
 
 reset_server_info() {
-  ( cd "$SERVES_REPO" && git pull >/dev/null 2>&1 )
-  echo "{\"ip\": \"\", \"port\": $SSH_PORT, \"status\": \"stopped\"}" > "$SERVES_REPO/server_info.json"
-  ( cd "$SERVES_REPO" && git add server_info.json \
-    && git commit -m "Deploy cycle failed - reset to stopped" || true \
-    && push_with_retry )
+  (
+    cd "$SERVES_REPO" || return 1
+    git_pull_state >/dev/null 2>&1 || true
+    echo "{\"ip\": \"\", \"port\": $SSH_PORT, \"status\": \"stopped\"}" > server_info.json
+    git add server_info.json \
+      && git commit -m "Deploy cycle failed - reset to stopped" || true \
+      && push_with_retry
+  )
 }
 
 # --- one deploy attempt ---------------------------------------------------------

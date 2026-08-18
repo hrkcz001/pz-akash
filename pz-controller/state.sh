@@ -37,18 +37,35 @@ resolve_rcon() {
 
 push_with_retry() {
   for i in {1..5}; do
-    git push && return 0
-    git pull --rebase >/dev/null 2>&1
+    git push origin HEAD:main >/dev/null 2>&1 && return 0
+    git rebase --abort >/dev/null 2>&1 || true
+    git merge --abort >/dev/null 2>&1 || true
+    git fetch origin main >/dev/null 2>&1 || true
+    if ! git pull --rebase origin main >/dev/null 2>&1; then
+      git rebase --abort >/dev/null 2>&1 || true
+      git checkout -B main origin/main >/dev/null 2>&1 || true
+    fi
     sleep $((RANDOM % 3 + 1))
   done
   echo "WARNING: git push failed after 5 retries"
+  return 1
 }
 
 git_pull_state() {
-  if ! ( cd "$SERVES_REPO" && git pull >/dev/null 2>&1 ); then
-    echo "[state] WARNING: git pull in $SERVES_REPO failed — state may be stale (triggers not seen until the next successful pull)" >&2
+  (
+    cd "$SERVES_REPO" || return 1
+    if [ -d .git/rebase-apply ] || [ -d .git/rebase-merge ]; then
+      git rebase --abort >/dev/null 2>&1 || true
+    fi
+    if [ -f .git/MERGE_HEAD ]; then
+      git merge --abort >/dev/null 2>&1 || true
+    fi
+    git checkout -B main origin/main >/dev/null 2>&1 || git checkout main >/dev/null 2>&1 || true
+    git pull origin main >/dev/null 2>&1
+  ) || {
+    echo "[state] WARNING: git pull in $SERVES_REPO failed — state may be stale" >&2
     return 1
-  fi
+  }
   return 0
 }
 

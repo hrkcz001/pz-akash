@@ -61,47 +61,65 @@ fi
 
 gosu steam bash -c "
 cd /home/steam/pz-saves
-# Define push_with_retry here as well for this isolated subshell
 push_with_retry() {
     for i in {1..5}; do
-        git push && return 0
-        git pull --rebase >/dev/null 2>&1
+        git push origin HEAD:main >/dev/null 2>&1 && return 0
+        git rebase --abort >/dev/null 2>&1 || true
+        git merge --abort >/dev/null 2>&1 || true
+        git fetch origin main >/dev/null 2>&1 || true
+        if ! git pull --rebase origin main >/dev/null 2>&1; then
+            git rebase --abort >/dev/null 2>&1 || true
+            git checkout -B main origin/main >/dev/null 2>&1 || true
+        fi
         sleep \$((RANDOM % 3 + 1))
     done
+    return 1
 }
+
+# Auto-detect public egress IP or read from server_info.json
+CURRENT_IP=\"\"
 if [ -f server_info.json ]; then
-    CURRENT_IP=\$(jq -r '.ip // \"pending\"' server_info.json)
-    if [ \"\$CURRENT_IP\" = \"null\" ] || [ -z \"\$CURRENT_IP\" ]; then CURRENT_IP=\"pending\"; fi
-    PREV_STATUS=\$(jq -r '.status // \"unknown\"' server_info.json)
-    # A previous run that ended (stopped/error) means the recorded IP belongs to
-    # the old Akash lease - it will not come back. Reset to pending so we wait
-    # for the new deployment's IP instead of reusing a dead one.
-    if [ \"\$PREV_STATUS\" = \"stopped\" ] || [ \"\$PREV_STATUS\" = \"error\" ]; then
-        echo \"Previous run ended with status '\$PREV_STATUS' - discarding stale IP, waiting for new one.\"
-        CURRENT_IP=\"pending\"
+    CURRENT_IP=\$(jq -r '.ip // empty' server_info.json 2>/dev/null)
+    if [ \"\$CURRENT_IP\" = \"null\" ] || [ \"\$CURRENT_IP\" = \"pending\" ]; then
+        CURRENT_IP=\"\"
     fi
-else
-    CURRENT_IP=\"pending\"
 fi
-echo \"{\\\"ip\\\": \\\"\$CURRENT_IP\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"booting\\\"}\" > server_info.json
+if [ -z \"\$CURRENT_IP\" ]; then
+    echo \"  Auto-detecting container public IP...\"
+    CURRENT_IP=\$(curl -sS --max-time 4 https://api.ipify.org 2>/dev/null || curl -sS --max-time 4 https://ifconfig.me 2>/dev/null || curl -sS --max-time 4 https://icanhazip.com 2>/dev/null || echo \"\")
+fi
+
+# Update server_info.json with status=booting
+echo \"{\\\"ip\\\": \\\"\${CURRENT_IP:-}\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"booting\\\"}\" > server_info.json
 git add server_info.json
-git commit -m \"Server booting up, status set to booting\" || true
+git commit -m \"Server booting up\${CURRENT_IP:+ at \$CURRENT_IP}\" || true
 export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
 push_with_retry
 
-echo \"Checking IP configuration in server_info.json...\"
-while true; do
-    if [ \"\$CURRENT_IP\" != \"pending\" ] && [ \"\$CURRENT_IP\" != \"null\" ] && [ -n \"\$CURRENT_IP\" ]; then
-        break
-    fi
-    echo \"Waiting for user to replace 'pending' with the real IP in server_info.json...\"
-    sleep 10
-    git pull >/dev/null 2>&1
-    if [ -f server_info.json ]; then
-        CURRENT_IP=\$(jq -r '.ip' server_info.json)
-    fi
-done
-echo \"IP configured as \$CURRENT_IP. Continuing boot...\"
+# If IP is still not resolved, poll briefly for controller or public discovery without blocking indefinitely
+if [ -z \"\$CURRENT_IP\" ]; then
+    echo \"  IP not detected immediately; polling for IP...\"
+    for attempt in {1..6}; do
+        sleep 5
+        git pull origin main >/dev/null 2>&1 || true
+        if [ -f server_info.json ]; then
+            CURRENT_IP=\$(jq -r '.ip // empty' server_info.json 2>/dev/null)
+            if [ -n \"\$CURRENT_IP\" ] && [ \"\$CURRENT_IP\" != \"null\" ] && [ \"\$CURRENT_IP\" != \"pending\" ]; then
+                break
+            fi
+        fi
+        CURRENT_IP=\$(curl -sS --max-time 3 https://api.ipify.org 2>/dev/null || echo \"\")
+        if [ -n \"\$CURRENT_IP\" ]; then
+            echo \"{\\\"ip\\\": \\\"\$CURRENT_IP\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"booting\\\"}\" > server_info.json
+            git add server_info.json
+            git commit -m \"Server IP auto-detected: \$CURRENT_IP\" || true
+            push_with_retry
+            break
+        fi
+    done
+fi
+
+echo \"  Continuing boot with IP: '\${CURRENT_IP:-auto-assigned}'...\"
 "
 
 # 4. Setup Directories (runs as steam)
@@ -128,7 +146,20 @@ if [ -f /home/steam/pz-saves/restore_target ]; then
         echo "Found existing backup target: $TARGET. Changing state to 'ready' to notify autosaver..."
         gosu steam bash -c "
 cd /home/steam/pz-saves
-push_with_retry() { for i in {1..5}; do git push && return 0; git pull --rebase >/dev/null 2>&1; sleep \$((RANDOM % 3 + 1)); done; }
+push_with_retry() {
+    for i in {1..5}; do
+        git push origin HEAD:main >/dev/null 2>&1 && return 0
+        git rebase --abort >/dev/null 2>&1 || true
+        git merge --abort >/dev/null 2>&1 || true
+        git fetch origin main >/dev/null 2>&1 || true
+        if ! git pull --rebase origin main >/dev/null 2>&1; then
+            git rebase --abort >/dev/null 2>&1 || true
+            git checkout -B main origin/main >/dev/null 2>&1 || true
+        fi
+        sleep \$((RANDOM % 3 + 1))
+    done
+    return 1
+}
 echo \"ready\" > request_restore
 export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
 git add request_restore
@@ -268,15 +299,25 @@ mark_server_stopped() {
     gosu steam bash -c "
 cd /home/steam/pz-saves
 export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
-push_with_retry() { for i in {1..5}; do git push && return 0; git pull --rebase >/dev/null 2>&1; sleep \$((RANDOM % 3 + 1)); done; }
+push_with_retry() {
+    for i in {1..5}; do
+        git push origin HEAD:main >/dev/null 2>&1 && return 0
+        git rebase --abort >/dev/null 2>&1 || true
+        git merge --abort >/dev/null 2>&1 || true
+        git fetch origin main >/dev/null 2>&1 || true
+        if ! git pull --rebase origin main >/dev/null 2>&1; then
+            git rebase --abort >/dev/null 2>&1 || true
+            git checkout -B main origin/main >/dev/null 2>&1 || true
+        fi
+        sleep \$((RANDOM % 3 + 1))
+    done
+    return 1
+}
+CURRENT_PORT=0
 if [ -f server_info.json ]; then
-    CURRENT_IP=\$(jq -r '.ip // \"pending\"' server_info.json)
-    CURRENT_PORT=\$(jq -r '.port // 0' server_info.json)
-else
-    CURRENT_IP=\"pending\"
-    CURRENT_PORT=0
+    CURRENT_PORT=\$(jq -r '.port // 0' server_info.json 2>/dev/null || echo 0)
 fi
-echo \"{\\\"ip\\\": \\\"\$CURRENT_IP\\\", \\\"port\\\": \$CURRENT_PORT, \\\"status\\\": \\\"stopped\\\"}\" > server_info.json
+echo \"{\\\"ip\\\": \\\"\\\", \\\"port\\\": \$CURRENT_PORT, \\\"status\\\": \\\"stopped\\\"}\" > server_info.json
 echo \"requested\" > request_restore
 git add server_info.json request_restore
 git commit -m \"Server stopped, auto-restore requested\" || true
@@ -372,17 +413,35 @@ done
 
 if kill -0 $PZ_PID 2>/dev/null; then
     echo "Server is fully started. Marking as online..."
-    # Let Autosaver know it's online
     gosu steam bash -c "
 cd /home/steam/pz-saves
 export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
-CURRENT_IP=\$(jq -r '.ip' server_info.json)
+push_with_retry() {
+    for i in {1..5}; do
+        git push origin HEAD:main >/dev/null 2>&1 && return 0
+        git rebase --abort >/dev/null 2>&1 || true
+        git merge --abort >/dev/null 2>&1 || true
+        git fetch origin main >/dev/null 2>&1 || true
+        if ! git pull --rebase origin main >/dev/null 2>&1; then
+            git rebase --abort >/dev/null 2>&1 || true
+            git checkout -B main origin/main >/dev/null 2>&1 || true
+        fi
+        sleep \$((RANDOM % 3 + 1))
+    done
+    return 1
+}
+CURRENT_IP=\"\"
+if [ -f server_info.json ]; then
+    CURRENT_IP=\$(jq -r '.ip // empty' server_info.json 2>/dev/null)
+fi
+if [ -z \"\$CURRENT_IP\" ] || [ \"\$CURRENT_IP\" = \"null\" ] || [ \"\$CURRENT_IP\" = \"pending\" ]; then
+    CURRENT_IP=\$(curl -sS --max-time 4 https://api.ipify.org 2>/dev/null || curl -sS --max-time 4 https://ifconfig.me 2>/dev/null || echo \"\")
+fi
 
-echo \"Marking server as online at \$CURRENT_IP!\"
-push_with_retry() { for i in {1..5}; do git push && return 0; git pull --rebase >/dev/null 2>&1; sleep \$((RANDOM % 3 + 1)); done; }
-echo \"{\\\"ip\\\": \\\"\$CURRENT_IP\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"online\\\"}\" > server_info.json
+echo \"Marking server as online at \${CURRENT_IP:-unknown}!\"
+echo \"{\\\"ip\\\": \\\"\${CURRENT_IP:-}\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"online\\\"}\" > server_info.json
 git add server_info.json
-git commit -m \"Server online with IP \$CURRENT_IP\" || true
+git commit -m \"Server online with IP \${CURRENT_IP:-unknown}\" || true
 push_with_retry
 "
 fi
