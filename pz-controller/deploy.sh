@@ -220,7 +220,7 @@ build_sdl() { # $1 = max uakt/block
     "${GIT_USER_NAME:-}" "${GIT_USER_EMAIL:-}" "$SSH_PORT" \
     "${SERVER_NAME:-}" "${ADMIN_PASSWORD:-}" "${SERVER_MEMORY_MAX:-}" \
     "${SERVER_MEMORY_MIN:-}" "${RESTORE_POLL_INTERVAL_SEC:-}" \
-    "${MAX_CRASH_RESTARTS:-3}" "${SERVER_FILES_PASSWORD:-${STORAGE_PASSWORD:-${ADMIN_PASSWORD:-}}}" \
+    "${MAX_CRASH_RESTARTS:-3}" "${SERVER_FILES_PASSWORD:-${STORAGE_PASSWORD:-}}" \
     "${CONTROLLER_URL:-}" <<'PYEOF'
 import re, sys
 tpl, out, max_uakt = sys.argv[1], sys.argv[2], str(sys.argv[3])
@@ -510,8 +510,8 @@ mark_server_ip() { # $1 = ip, $2 = price_per_hour, $3 = price_per_day
     if [ -f server_info.json ]; then
       cur_st=$(jq -r '.status // "booting"' server_info.json 2>/dev/null || echo "booting")
     fi
-    [ "$cur_st" = "stopped" ] && cur_st="booting"
-    echo "{\"ip\": \"$ip\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"$cur_st\", \"price_per_hour\": $p_hr, \"price_per_day\": $p_day}" > server_info.json
+    [ "$cur_st" = "stopped" ] || [ "$cur_st" = "offline" ] && cur_st="booting"
+    echo "{\"ip\": \"$ip\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"$cur_st\", \"players_count\": 0, \"price_per_hour\": $p_hr, \"price_per_day\": $p_day}" > server_info.json
     git add server_info.json \
       && git commit -m "Deployed server at $ip (~$p_hr/hr)" || true \
       && push_with_retry
@@ -551,9 +551,9 @@ reset_server_info() {
   (
     cd "$SERVES_REPO" || return 1
     git_pull_state >/dev/null 2>&1 || true
-    echo "{\"ip\": \"\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"stopped\"}" > server_info.json
+    echo "{\"ip\": \"\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"offline\", \"players_count\": 0}" > server_info.json
     git add server_info.json \
-      && git commit -m "Deploy cycle failed - reset to stopped" || true \
+      && git commit -m "Deploy cycle failed - reset to offline" || true \
       && push_with_retry
   )
 }
@@ -699,7 +699,7 @@ PYEOF
   (
     cd "$SERVES_REPO" || true
     git_pull_state >/dev/null 2>&1 || true
-    echo "{\"ip\": \"$ip\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"online\", \"price_per_hour\": ${price_per_hour:-0.011}, \"price_per_day\": ${usd_day:-0.26}}" > server_info.json
+    echo "{\"ip\": \"$ip\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"online\", \"players_count\": 0, \"price_per_hour\": ${price_per_hour:-0.011}, \"price_per_day\": ${usd_day:-0.26}}" > server_info.json
     git add server_info.json \
       && git commit -m "Server online with verified Akash lease IP $ip (~${price_per_hour:-0.011}/hr)" || true \
       && push_with_retry

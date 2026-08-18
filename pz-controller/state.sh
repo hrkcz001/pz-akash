@@ -29,9 +29,10 @@ BACKUP_LOCK="$STATE_DIR/backup.lock"
 resolve_rcon() {
   if [ -z "$RCON_PASSWORD" ]; then
     if [ -f "$SERVES_REPO/deployment.yaml" ]; then
-      RCON_PASSWORD=$(grep -oE 'ADMIN_PASSWORD=[^[:space:]]+' "$SERVES_REPO/deployment.yaml" 2>/dev/null | head -1 | cut -d= -f2-)
+      RCON_PASSWORD=$(grep -oE 'RCON_PASSWORD=[^[:space:]]+' "$SERVES_REPO/deployment.yaml" 2>/dev/null | head -1 | cut -d= -f2-)
+      [ -z "$RCON_PASSWORD" ] && RCON_PASSWORD=$(grep -oE 'STORAGE_PASSWORD=[^[:space:]]+' "$SERVES_REPO/deployment.yaml" 2>/dev/null | head -1 | cut -d= -f2-)
     fi
-    RCON_PASSWORD="${RCON_PASSWORD:-Qwerty0123**}"
+    RCON_PASSWORD="${RCON_PASSWORD:-}"
   fi
 }
 
@@ -163,18 +164,39 @@ kill_running_deploy() {
   pkill -f "deploy.sh" 2>/dev/null || true
 }
 
-reset_server_info_stopped() {
+reset_server_info_offline() {
   git_pull_state
   local current_st current_ip
-  current_st=$(server_info_val status "stopped")
+  current_st=$(server_info_val status "offline")
   current_ip=$(server_info_val ip "")
-  if [ "$current_st" != "stopped" ] || [ -n "$current_ip" ]; then
-    echo "{\"ip\": \"\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"stopped\"}" > "$SERVES_REPO/server_info.json"
+  if [ "$current_st" != "offline" ] || [ -n "$current_ip" ]; then
+    echo "{\"ip\": \"\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"offline\", \"players_count\": 0}" > "$SERVES_REPO/server_info.json"
     ( cd "$SERVES_REPO" && git add server_info.json \
-      && git commit -m "Server stopped - reset status and clear IP" || true \
+      && git commit -m "Server offline - reset status and clear IP" || true \
       && push_with_retry )
-    log "server_info.json updated: status=stopped, IP cleared."
+    log "server_info.json updated: status=offline, IP cleared."
   fi
+}
+
+reset_server_info_stopped() {
+  reset_server_info_offline
+}
+
+mark_server_stopping() {
+  (
+    cd "$SERVES_REPO" || return 1
+    git_pull_state >/dev/null 2>&1 || true
+    local cur_ip cur_port p_hr p_day
+    cur_ip=$(jq -r '.ip // empty' server_info.json 2>/dev/null || echo "")
+    cur_port=$(jq -r '.port // 2222' server_info.json 2>/dev/null || echo 2222)
+    p_hr=$(jq -r '.price_per_hour // empty' server_info.json 2>/dev/null || echo "0.011")
+    p_day=$(jq -r '.price_per_day // empty' server_info.json 2>/dev/null || echo "0.26")
+    echo "{\"ip\": \"$cur_ip\", \"port\": $cur_port, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"stopping\", \"players_count\": 0, \"price_per_hour\": $p_hr, \"price_per_day\": $p_day}" > "$SERVES_REPO/server_info.json"
+    git add server_info.json \
+      && git commit -m "Server stopping - graceful shutdown initiated" || true \
+      && _push_with_retry_internal
+  )
+  log "server_info.json updated: status=stopping (SHUTTING DOWN)"
 }
 
 mark_server_booting() {
@@ -189,7 +211,7 @@ mark_server_booting() {
     fi
     p_hr="${p_hr:-0.011}"
     p_day="${p_day:-0.26}"
-    echo "{\"ip\": \"pending\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"booting\", \"price_per_hour\": $p_hr, \"price_per_day\": $p_day}" > "$SERVES_REPO/server_info.json"
+    echo "{\"ip\": \"pending\", \"port\": $SSH_PORT, \"game_port\": ${GAME_PORT:-16261}, \"status\": \"booting\", \"players_count\": 0, \"price_per_hour\": $p_hr, \"price_per_day\": $p_day}" > "$SERVES_REPO/server_info.json"
     git add server_info.json \
       && git commit -m "Server deployment initiated - status set to booting" || true \
       && _push_with_retry_internal
@@ -215,19 +237,23 @@ api() {
   curl "${args[@]}" 2>/dev/null
 }
 
-# wait_server_stopped — poll server_info.json until status == "stopped".
-wait_server_stopped() {
+# wait_server_offline — poll server_info.json until status == "offline" (or "stopped").
+wait_server_offline() {
   local deadline st
   deadline=$(( $(date +%s) + HALT_CONFIRM_SEC ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
     git_pull_state
     st=$(server_info_val status "")
-    if [ "$st" = "stopped" ]; then
+    if [ "$st" = "offline" ] || [ "$st" = "stopped" ]; then
       return 0
     fi
     sleep 10
   done
   return 1
+}
+
+wait_server_stopped() {
+  wait_server_offline
 }
 
 # save_active_dseq DSEQ — write dseq to both local state and pz-saves (survives controller redeploy).
@@ -282,7 +308,7 @@ run_backup() {
   local ip port st
   ip=$(server_info_val ip "")
   port=$(server_info_val port 2222)
-  st=$(server_info_val status "stopped")
+  st=$(server_info_val status "offline")
 
   # If server is currently booting, wait up to 300s for it to become online before backup
   if [ "$st" = "booting" ] || [ "$ip" = "pending" ]; then
@@ -479,10 +505,10 @@ process_triggers() {
   if [ "$has_backup" = "true" ]; then
     echo "[trigger] manual backup trigger detected (backup) — executing safe backup"
     local cur_st cur_ip
-    cur_st=$(server_info_val status "stopped")
+    cur_st=$(server_info_val status "offline")
     cur_ip=$(server_info_val ip "")
 
-    if [ "$cur_st" = "stopped" ] && [ -z "$cur_ip" ] && [ ! -f "$ACTIVE_DSEQ_FILE" ]; then
+    if { [ "$cur_st" = "offline" ] || [ "$cur_st" = "stopped" ]; } && [ -z "$cur_ip" ] && [ ! -f "$ACTIVE_DSEQ_FILE" ]; then
       echo "[trigger] server is completely offline and no deployment exists — consuming backup trigger."
       consume_file backup
     else
@@ -502,23 +528,26 @@ process_triggers() {
     # Immediately terminate any in-flight deploy.sh process so it releases lock and stops polling
     kill_running_deploy
 
+    # Mark server as stopping immediately so UI and status reflect it
+    mark_server_stopping
+
     # Run safe backup with halt flag (RCON save -> stream zip -> RCON quit)
     run_backup 1 || true
 
     # Close the Akash deployment (billing stops, unspent escrow refunded)
     if [ -n "${AKASH_API_KEY:-}" ] && [ -f "$ACTIVE_DSEQ_FILE" ]; then
-      if wait_server_stopped; then
-        echo "[trigger] server reported 'stopped' — closing deployment to stop billing."
+      if wait_server_offline; then
+        echo "[trigger] server reported 'offline' — closing deployment to stop billing."
       else
-        echo "[trigger] server did not report 'stopped' within ${HALT_CONFIRM_SEC}s — closing deployment anyway."
+        echo "[trigger] server did not report 'offline' within ${HALT_CONFIRM_SEC}s — closing deployment anyway."
       fi
       close_deployment
     else
       echo "[trigger] AKASH_API_KEY not set or no active deployment — skipped deployment close."
     fi
 
-    # Reset server_info.json to stopped and clean up pending IP
-    reset_server_info_stopped
+    # Reset server_info.json to offline and clean up pending IP
+    reset_server_info_offline
 
     consume_file halt
   fi

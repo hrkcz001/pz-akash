@@ -4,8 +4,8 @@
 SSH_PORT=${SSH_PORT:-2222}
 RESTORE_POLL_INTERVAL_SEC=${RESTORE_POLL_INTERVAL_SEC:-10}
 SERVER_NAME=${SERVER_NAME:-vsrania}
-ADMIN_PASSWORD=${ADMIN_PASSWORD:-"Qwerty01234**"}
-STORAGE_PASSWORD=${STORAGE_PASSWORD:-$ADMIN_PASSWORD}
+ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
+STORAGE_PASSWORD=${STORAGE_PASSWORD:-}
 SERVER_FILES_PASSWORD=${SERVER_FILES_PASSWORD:-$STORAGE_PASSWORD}
 CONTROLLER_URL=${CONTROLLER_URL:-}
 SERVER_MEMORY_MAX=${SERVER_MEMORY_MAX:-8192m}
@@ -86,7 +86,7 @@ if [ -f server_info.json ]; then
 fi
 
 # Update server_info.json with status=booting without stomping on the controller-assigned IP
-echo \"{\\\"ip\\\": \\\"\${CURRENT_IP:-}\\\", \\\"port\\\": $SSH_PORT, \\\"game_port\\\": ${GAME_PORT:-16261}, \\\"status\\\": \\\"booting\\\"}\" > server_info.json
+echo \"{\\\"ip\\\": \\\"\${CURRENT_IP:-}\\\", \\\"port\\\": $SSH_PORT, \\\"game_port\\\": ${GAME_PORT:-16261}, \\\"status\\\": \\\"booting\\\", \\\"players_count\\\": 0}\" > server_info.json
 git add server_info.json
 git commit -m \"Server booting up\${CURRENT_IP:+ at \$CURRENT_IP}\" || true
 export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
@@ -315,10 +315,40 @@ if [ ! -f "$SANDBOX_FILE" ]; then
     fi
 fi
 
-# Mod and Map configuration (.ini) is fully generated and packaged by pz-controller.
+mark_server_stopping() {
+    # Mark as stopping
+    gosu steam bash -c "
+cd /home/steam/pz-saves
+export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
+push_with_retry() {
+    for i in {1..5}; do
+        git push origin HEAD:main >/dev/null 2>&1 && return 0
+        git rebase --abort >/dev/null 2>&1 || true
+        git merge --abort >/dev/null 2>&1 || true
+        git fetch origin main >/dev/null 2>&1 || true
+        if ! git pull --rebase origin main >/dev/null 2>&1; then
+            git rebase --abort >/dev/null 2>&1 || true
+            git checkout -B main origin/main >/dev/null 2>&1 || true
+        fi
+        sleep \$((RANDOM % 3 + 1))
+    done
+    return 1
+}
+CURRENT_IP=\"\"
+CURRENT_PORT=0
+if [ -f server_info.json ]; then
+    CURRENT_IP=\$(jq -r '.ip // empty' server_info.json 2>/dev/null || echo \"\")
+    CURRENT_PORT=\$(jq -r '.port // 0' server_info.json 2>/dev/null || echo 0)
+fi
+echo \"{\\\"ip\\\": \\\"\${CURRENT_IP:-}\\\", \\\"port\\\": \$CURRENT_PORT, \\\"game_port\\\": ${GAME_PORT:-16261}, \\\"status\\\": \\\"stopping\\\", \\\"players_count\\\": 0}\" > server_info.json
+git add server_info.json
+git commit -m \"Server stopping\" || true
+push_with_retry
+"
+}
 
-mark_server_stopped() {
-    # Mark as stopped and request restore on next boot
+mark_server_offline() {
+    # Mark as offline and request restore on next boot
     gosu steam bash -c "
 cd /home/steam/pz-saves
 export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
@@ -340,22 +370,31 @@ CURRENT_PORT=0
 if [ -f server_info.json ]; then
     CURRENT_PORT=\$(jq -r '.port // 0' server_info.json 2>/dev/null || echo 0)
 fi
-echo \"{\\\"ip\\\": \\\"\\\", \\\"port\\\": \$CURRENT_PORT, \\\"game_port\\\": ${GAME_PORT:-16261}, \\\"status\\\": \\\"stopped\\\"}\" > server_info.json
+echo \"{\\\"ip\\\": \\\"\\\", \\\"port\\\": \$CURRENT_PORT, \\\"game_port\\\": ${GAME_PORT:-16261}, \\\"status\\\": \\\"offline\\\", \\\"players_count\\\": 0}\" > server_info.json
 echo \"requested\" > request_restore
 git add server_info.json request_restore
-git commit -m \"Server stopped, auto-restore requested\" || true
+git commit -m \"Server offline, auto-restore requested\" || true
 push_with_retry
 "
 }
 
+# Alias for backward compatibility
+mark_server_stopped() {
+    mark_server_offline
+}
+
 graceful_shutdown() {
     echo "=== Termination signal received! Shutting down PZ server gracefully... ==="
+    mark_server_stopping
     if [ -n "${PZ_PID:-}" ] && kill -0 $PZ_PID 2>/dev/null; then
         kill -TERM $PZ_PID
         echo "Waiting for server to save local files and exit..."
         wait $PZ_PID 2>/dev/null || true
     fi
-    mark_server_stopped
+    if [ -n "${TAIL_PID:-}" ]; then
+        kill $TAIL_PID 2>/dev/null || true
+    fi
+    mark_server_offline
     echo "Server shutdown complete. Exiting."
     exit 0
 }
@@ -447,64 +486,46 @@ if [ \"\$CURRENT_IP\" = \"null\" ] || [ \"\$CURRENT_IP\" = \"pending\" ]; then
 fi
 
 echo \"Marking server as online at \${CURRENT_IP:-controller-assigned IP}!\"
-echo \"{\\\"ip\\\": \\\"\${CURRENT_IP:-}\\\", \\\"port\\\": $SSH_PORT, \\\"game_port\\\": ${GAME_PORT:-16261}, \\\"status\\\": \\\"online\\\"}\" > server_info.json
+echo \"{\\\"ip\\\": \\\"\${CURRENT_IP:-}\\\", \\\"port\\\": $SSH_PORT, \\\"game_port\\\": ${GAME_PORT:-16261}, \\\"status\\\": \\\"online\\\", \\\"players_count\\\": 0}\" > server_info.json
 git add server_info.json
 git commit -m \"Server online\${CURRENT_IP:+ with IP \$CURRENT_IP}\" || true
 push_with_retry
 "
 }
 
-CRASH_COUNT=0
-MAX_CRASH_RESTARTS=${MAX_CRASH_RESTARTS:-3}
-
 tail -f /home/steam/server.log &
 TAIL_PID=$!
 
-while true; do
-    echo "=== Launching Project Zomboid Dedicated Server Process (Attempt $((CRASH_COUNT + 1))) ==="
-    LOG_OFFSET=$(wc -l < /home/steam/server.log 2>/dev/null || echo 0)
+echo "=== Launching Project Zomboid Dedicated Server Process ==="
+LOG_OFFSET=$(wc -l < /home/steam/server.log 2>/dev/null || echo 0)
 
-    # Launch without -Xmx/-Xms CLI flags — memory configured in ProjectZomboid64.json vmArgs above
-    gosu steam "$PZ_PATH" -nosteam -servername "$SERVER_NAME" -adminpassword "$ADMIN_PASSWORD" -cachedir=/home/steam/Zomboid >> /home/steam/server.log 2>&1 &
-    PZ_PID=$!
-    START_TIME=$(date +%s)
+# Launch without -Xmx/-Xms CLI flags — memory configured in ProjectZomboid64.json vmArgs above
+ADMIN_FLAG=""
+[ -n "$ADMIN_PASSWORD" ] && ADMIN_FLAG="-adminpassword $ADMIN_PASSWORD"
+gosu steam "$PZ_PATH" -nosteam -servername "$SERVER_NAME" $ADMIN_FLAG -cachedir=/home/steam/Zomboid >> /home/steam/server.log 2>&1 &
+PZ_PID=$!
+START_TIME=$(date +%s)
 
-    echo "Waiting for server to be fully started..."
-    STARTED_OK=false
-    while kill -0 $PZ_PID 2>/dev/null; do
-        if tail -n "+$((LOG_OFFSET + 1))" /home/steam/server.log 2>/dev/null | grep -q "\*\*\* SERVER STARTED \*\*\*"; then
-            STARTED_OK=true
-            break
-        fi
-        sleep 2
-    done
-
-    if [ "$STARTED_OK" = "true" ]; then
-        mark_server_online
+echo "Waiting for server to be fully started..."
+STARTED_OK=false
+while kill -0 $PZ_PID 2>/dev/null; do
+    if tail -n "+$((LOG_OFFSET + 1))" /home/steam/server.log 2>/dev/null | grep -q "\*\*\* SERVER STARTED \*\*\*"; then
+        STARTED_OK=true
+        break
     fi
-
-    # Wait for the PZ server process to exit
-    wait $PZ_PID 2>/dev/null
-    EXIT_CODE=$?
-    UPTIME=$(( $(date +%s) - START_TIME ))
-    echo "=== Project Zomboid Server process exited with code $EXIT_CODE after ${UPTIME}s ==="
-
-    # If the server ran stably for more than 120s, reset crash counter
-    if [ "$UPTIME" -ge 120 ] && [ "$STARTED_OK" = "true" ]; then
-        echo "Server was running stably for ${UPTIME}s. Resetting consecutive crash counter."
-        CRASH_COUNT=0
-    fi
-
-    CRASH_COUNT=$((CRASH_COUNT + 1))
-
-    if [ "$CRASH_COUNT" -le "$MAX_CRASH_RESTARTS" ]; then
-        echo "Server process exited/crashed unexpectedly! Retrying process restart ($CRASH_COUNT/$MAX_CRASH_RESTARTS) in 5s..."
-        sleep 5
-    else
-        echo "ERROR: Server process failed/crashed $CRASH_COUNT times in succession. In-container restarts exhausted."
-        echo "Marking server as stopped so controller can perform full redeploy..."
-        kill $TAIL_PID 2>/dev/null || true
-        mark_server_stopped
-        exit 1
-    fi
+    sleep 2
 done
+
+if [ "$STARTED_OK" = "true" ]; then
+    mark_server_online
+fi
+
+# Wait for the PZ server process to exit (e.g. on quit/halt or termination)
+wait $PZ_PID 2>/dev/null
+EXIT_CODE=$?
+UPTIME=$(( $(date +%s) - START_TIME ))
+echo "=== Project Zomboid Server process exited with code $EXIT_CODE after ${UPTIME}s ==="
+
+kill $TAIL_PID 2>/dev/null || true
+mark_server_offline
+exit $EXIT_CODE

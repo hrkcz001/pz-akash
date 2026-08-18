@@ -15,43 +15,38 @@ def recvall(sock, n):
     return buf
 
 
-def rcon_command(host, port, password, command):
-    print(f"RCON: Connecting to {host}:{port}...")
+def rcon_query(host, port, password, command, timeout=10):
+    """
+    Execute an RCON command and return (success: bool, response_body: str).
+    Does not write to stdout/stderr.
+    """
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(60)  # 60 seconds timeout for a large save to complete
+        s.settimeout(timeout)
         s.connect((host, port))
-        print("RCON: Connected successfully. Sending Auth...")
 
         # Auth packet: size(4) | id(4) | type(4) | body | NUL | NUL-pad
         # type 3 = SERVERDATA_AUTH
         packet_id = 1
         packet_type = 3
         body = password.encode("utf-8") + b"\x00\x00"
-        size = 8 + len(body)  # id(4) + type(4) + body (includes both NULs)
+        size = 8 + len(body)
         s.send(struct.pack("<iii", size, packet_id, packet_type) + body)
-
-        print("RCON: Auth sent. Waiting for response...")
 
         # Read Auth response header (always exactly 12 bytes)
         resp_data = recvall(s, 12)
         resp_size, resp_id, resp_type = struct.unpack("<iii", resp_data)
-        print(f"RCON: Received packet 1 -> size={resp_size}, id={resp_id}, type={resp_type}")
         recvall(s, resp_size - 8)  # drain body
 
         # Some servers send a dummy response (type 0) before the auth response (type 2)
         if resp_type != 2:
-            print("RCON: Packet 1 was not Auth Response. Waiting for packet 2...")
             resp_data = recvall(s, 12)
             resp_size, resp_id, resp_type = struct.unpack("<iii", resp_data)
-            print(f"RCON: Received packet 2 -> size={resp_size}, id={resp_id}, type={resp_type}")
             recvall(s, resp_size - 8)  # drain body
 
         if resp_id == -1:
-            print("RCON Auth Failed")
-            return False
-
-        print("RCON: Auth successful. Sending command...")
+            s.close()
+            return False, "RCON Auth Failed"
 
         # Command packet: type 2 = SERVERDATA_EXECCOMMAND
         packet_id = 2
@@ -60,14 +55,67 @@ def rcon_command(host, port, password, command):
         size = 8 + len(body)
         s.send(struct.pack("<iii", size, packet_id, packet_type) + body)
 
+        # Read command response header
+        resp_data = recvall(s, 12)
+        resp_size, resp_id, resp_type = struct.unpack("<iii", resp_data)
+        response_body = recvall(s, resp_size - 8)
+        s.close()
+
+        decoded = response_body.decode("utf-8", errors="ignore").strip("\x00")
+        return True, decoded
+
+    except socket.timeout:
+        return False, "RCON Error: Socket timed out"
+    except Exception as e:
+        return False, f"RCON Error: {e}"
+
+
+def rcon_command(host, port, password, command, timeout=60):
+    print(f"RCON: Connecting to {host}:{port}...")
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((host, port))
+        print("RCON: Connected successfully. Sending Auth...")
+
+        # Auth packet: size(4) | id(4) | type(4) | body | NUL | NUL-pad
+        packet_id = 1
+        packet_type = 3
+        body = password.encode("utf-8") + b"\x00\x00"
+        size = 8 + len(body)
+        s.send(struct.pack("<iii", size, packet_id, packet_type) + body)
+
+        print("RCON: Auth sent. Waiting for response...")
+        resp_data = recvall(s, 12)
+        resp_size, resp_id, resp_type = struct.unpack("<iii", resp_data)
+        print(f"RCON: Received packet 1 -> size={resp_size}, id={resp_id}, type={resp_type}")
+        recvall(s, resp_size - 8)
+
+        if resp_type != 2:
+            print("RCON: Packet 1 was not Auth Response. Waiting for packet 2...")
+            resp_data = recvall(s, 12)
+            resp_size, resp_id, resp_type = struct.unpack("<iii", resp_data)
+            print(f"RCON: Received packet 2 -> size={resp_size}, id={resp_id}, type={resp_type}")
+            recvall(s, resp_size - 8)
+
+        if resp_id == -1:
+            print("RCON Auth Failed")
+            s.close()
+            return False
+
+        print("RCON: Auth successful. Sending command...")
+        packet_id = 2
+        packet_type = 2
+        body = command.encode("utf-8") + b"\x00\x00"
+        size = 8 + len(body)
+        s.send(struct.pack("<iii", size, packet_id, packet_type) + body)
+
         print("RCON: Command sent. Waiting for response...")
-        # Read command response header — blocks until the command completes
         resp_data = recvall(s, 12)
         resp_size, resp_id, resp_type = struct.unpack("<iii", resp_data)
         response_body = recvall(s, resp_size - 8)
 
         print("RCON Response:", response_body.decode("utf-8", errors="ignore").strip("\x00"))
-
         s.close()
         return True
 

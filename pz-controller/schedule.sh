@@ -89,14 +89,15 @@ check_stop_time() {
   set_desired_state "stopped"
   consume_file stop_at
   kill_running_deploy
+  mark_server_stopping
   run_backup 1
-  if wait_server_stopped; then
-    log "Server reported 'stopped' — closing deployment to stop billing."
+  if wait_server_offline; then
+    log "Server reported 'offline' — closing deployment to stop billing."
   else
-    log "Server did not report 'stopped' within ${HALT_CONFIRM_SEC}s — closing deployment anyway."
+    log "Server did not report 'offline' within ${HALT_CONFIRM_SEC}s — closing deployment anyway."
   fi
   close_deployment
-  reset_server_info_stopped
+  reset_server_info_offline
 }
 
 # --- escrow top-up --------------------------------------------------------------

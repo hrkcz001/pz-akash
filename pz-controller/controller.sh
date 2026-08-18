@@ -158,7 +158,7 @@ server_watchdogs() {
                 echo "[controller] Deployment $dseq is no longer active on Akash (state: '$dep_st')."
                 clear_active_dseq
                 kill_running_deploy
-                reset_server_info_stopped
+                reset_server_info_offline
                 if [ "$des_st" = "running" ]; then
                     echo "[controller] Desired state is 'running' — deployment closed unexpectedly. Triggering auto-redeploy..."
                     trigger_deploy "Akash deployment $dseq closed unexpectedly (state: $dep_st)"
@@ -172,7 +172,7 @@ server_watchdogs() {
                     echo "[controller] Closing faulty deployment $dseq and triggering auto-redeploy..."
                     close_deployment "$dseq"
                     kill_running_deploy
-                    reset_server_info_stopped
+                    reset_server_info_offline
                     trigger_deploy "server reported error status"
                 fi
             fi
@@ -180,7 +180,7 @@ server_watchdogs() {
     elif [ "$des_st" = "running" ]; then
         # Desired state is running, but no active deployment file exists
         local s_st
-        s_st=$(server_info_val status "stopped")
+        s_st=$(server_info_val status "offline")
         if [ "$s_st" != "booting" ] && [ "$s_st" != "online" ]; then
             echo "[controller] Desired state is 'running' but no active deployment exists — triggering auto-redeploy..."
             trigger_deploy "desired_state is running with no active deployment"

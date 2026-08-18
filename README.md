@@ -16,7 +16,7 @@ The system consists of two primary services communicating via the private `pz-sa
      - `client.zip`: Client-specific mods & configs (Public).
      - `server.zip`: Server-specific mods, `.ini`s, and `.lua` files (🔒 Protected).
    - **HTTP Hub & Dashboard (`:8000`)**:
-     - Web UI showing live server IP & Port (with 1-click copy buttons), live status badges, clean game client `.torrent` download, and package statistics (mod count, config file count, archive size).
+     - Web UI showing live server IP & Port (with 1-click copy buttons), live status badges (**ONLINE**, **STARTING UP**, **STOPPING**, **OFFLINE**), live player count during online, clean game client `.torrent` download, and package statistics (mod count, config file count, archive size).
      - Dynamically renders player guide from `README.md` in `pz-saves`.
      - Public endpoints: `/`, `/client.zip`, `/common.zip`, `/game.torrent`, `/server_info.json`, `/manifest`, `/healthz`.
      - Protected endpoints: `/server.zip` (requires `SERVER_FILES_PASSWORD` or `STORAGE_PASSWORD`), `/upload` & `/backups/*` (requires `BACKUPS_PASSWORD` or `STORAGE_PASSWORD`).
@@ -58,13 +58,17 @@ pz-saves/
 ## 🎮 Player Experience & Connecting
 
 1. Open `http://<controller-ip>:8000/` (or your custom domain with Cloudflare SSL `https://...`) in any browser.
-2. Check the live server status badge (**ONLINE**, **STARTING UP**, or **OFFLINE**).
+2. Check the live server status badge (**ONLINE**, **STARTING UP**, **STOPPING**, or **OFFLINE**) and live connected players count.
 3. Download the clean game client using the **`game.torrent`** button (recommended to prevent version mismatches).
-4. Download **`common.zip`** and **`client.zip`** from the web hub.
-5. Extract both `.zip` archives directly into your local Zomboid folder with file replacement / overwrite:
-   - **Windows**: `%USERPROFILE%\Zomboid\` (e.g. `C:\Users\<Name>\Zomboid\`)
+4. **⚠️ Remove or rename your existing Zomboid folder** to avoid conflicts from old mods, configs, or cached data:
+   - **Windows**: `%USERPROFILE%\Zomboid\` (e.g. `C:\Users\<Name>\Zomboid\`) — rename to `Zomboid_old` or delete it.
+   - **Linux / macOS / Steam Deck**: `~/Zomboid/` — rename to `~/Zomboid_old/` or delete it.
+   > This ensures a clean slate. The server provides all required mods and configs via the archives below.
+5. Download **`common.zip`** and **`client.zip`** from the web hub.
+6. Extract both `.zip` archives directly into your local Zomboid folder (a fresh one will be created) with file replacement / overwrite:
+   - **Windows**: `%USERPROFILE%\Zomboid\`
    - **Linux / macOS**: `~/Zomboid/`
-6. When the status is **ONLINE**, copy the **Server IP** and **Port** using the 1-click copy buttons and connect in-game!
+7. When the status is **ONLINE**, copy the **Server IP** and **Port** using the 1-click copy buttons and connect in-game!
 
 ---
 
@@ -84,10 +88,10 @@ Push a file named `stop_at` with an epoch timestamp or `YYYY-MM-DD HH:MM[:SS]` (
 - At the scheduled time, the Controller backs up and halts the server, closing the Akash deployment.
 - Until then, the Controller automatically checks and tops up the lease escrow.
 
-### Self-Healing & Auto-Restart on Crash
-If the Project Zomboid dedicated server crashes or the Akash provider deployment unexpectedly closes before `halt` is sent or `stop_at` is reached:
-- The server process automatically restarts in-container (up to 3 retry attempts).
-- If local restarts are exhausted or the Akash deployment is terminated unexpectedly, the Controller automatically provisions a fresh redeployment on Akash to maintain uptime.
+### Self-Healing & Auto-Redeploy
+If the Project Zomboid dedicated server crashes or the Akash provider deployment unexpectedly closes while `desired_state` is running (before `halt` is sent or `stop_at` is reached):
+- The Controller detects that the server/deployment is inactive and automatically provisions a fresh redeployment on Akash to maintain uptime.
+- On graceful `halt` or `stop_at`, the server cleanly stops and exits without restarting, and the deployment is closed.
 
 ### Restoring a Backup
 1. Write the backup filename into `restore_target` in `pz-saves` (e.g. `backup_20260810_120000.zip`).
