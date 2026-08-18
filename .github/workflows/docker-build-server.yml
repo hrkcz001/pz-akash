@@ -59,7 +59,4 @@ jobs:
             PZ_VERSION=${{ env.PZ_VERSION }}
             DEPOT_380871_MANIFEST=${{ env.DEPOT_380871_MANIFEST }}
             DEPOT_380873_MANIFEST=${{ env.DEPOT_380873_MANIFEST }}
-          secrets: |
-            steam_username=${{ secrets.STEAM_USERNAME }}
-            steam_password=${{ secrets.STEAM_PASSWORD }}
 

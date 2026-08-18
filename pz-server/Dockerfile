@@ -25,21 +25,16 @@ RUN curl -sqL "https://github.com/SteamRE/DepotDownloader/releases/latest/downlo
     rm /tmp/dd.zip
 
 # Download pinned depot manifests for PZ dedicated server.
-# Uses Docker build secrets for Steam credentials (never baked into image layers).
-RUN --mount=type=secret,id=steam_username \
-    --mount=type=secret,id=steam_password \
-    mkdir -p /pz-server && \
-    STEAM_USER=$(cat /run/secrets/steam_username) && \
-    STEAM_PASS=$(cat /run/secrets/steam_password) && \
+# Dedicated server depots are free — DepotDownloader can access them anonymously
+# (unlike SteamCMD's download_depot which Valve restricts for older manifests).
+RUN mkdir -p /pz-server && \
     echo ">>> Downloading depot 380871 (manifest $DEPOT_380871_MANIFEST)..." && \
     /depotdownloader/DepotDownloader \
         -app 380870 -depot 380871 -manifest $DEPOT_380871_MANIFEST \
-        -username "$STEAM_USER" -password "$STEAM_PASS" \
         -os linux -dir /pz-server && \
     echo ">>> Downloading depot 380873 (manifest $DEPOT_380873_MANIFEST)..." && \
     /depotdownloader/DepotDownloader \
         -app 380870 -depot 380873 -manifest $DEPOT_380873_MANIFEST \
-        -username "$STEAM_USER" -password "$STEAM_PASS" \
         -os linux -dir /pz-server && \
     echo "$PZ_VERSION" > /pz-server/PINNED_VERSION
 
