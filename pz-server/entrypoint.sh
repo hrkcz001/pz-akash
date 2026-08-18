@@ -75,51 +75,24 @@ push_with_retry() {
     done
     return 1
 }
-
-# Auto-detect public egress IP or read from server_info.json
+# Read existing IP published by controller in server_info.json
 CURRENT_IP=\"\"
+git pull origin main >/dev/null 2>&1 || true
 if [ -f server_info.json ]; then
     CURRENT_IP=\$(jq -r '.ip // empty' server_info.json 2>/dev/null)
     if [ \"\$CURRENT_IP\" = \"null\" ] || [ \"\$CURRENT_IP\" = \"pending\" ]; then
         CURRENT_IP=\"\"
     fi
 fi
-if [ -z \"\$CURRENT_IP\" ]; then
-    echo \"  Auto-detecting container public IP...\"
-    CURRENT_IP=\$(curl -sS --max-time 4 https://api.ipify.org 2>/dev/null || curl -sS --max-time 4 https://ifconfig.me 2>/dev/null || curl -sS --max-time 4 https://icanhazip.com 2>/dev/null || echo \"\")
-fi
 
-# Update server_info.json with status=booting
+# Update server_info.json with status=booting without stomping on the controller-assigned IP
 echo \"{\\\"ip\\\": \\\"\${CURRENT_IP:-}\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"booting\\\"}\" > server_info.json
 git add server_info.json
 git commit -m \"Server booting up\${CURRENT_IP:+ at \$CURRENT_IP}\" || true
 export GIT_SSH_COMMAND=\"ssh -o StrictHostKeyChecking=no\"
 push_with_retry
 
-# If IP is still not resolved, poll briefly for controller or public discovery without blocking indefinitely
-if [ -z \"\$CURRENT_IP\" ]; then
-    echo \"  IP not detected immediately; polling for IP...\"
-    for attempt in {1..6}; do
-        sleep 5
-        git pull origin main >/dev/null 2>&1 || true
-        if [ -f server_info.json ]; then
-            CURRENT_IP=\$(jq -r '.ip // empty' server_info.json 2>/dev/null)
-            if [ -n \"\$CURRENT_IP\" ] && [ \"\$CURRENT_IP\" != \"null\" ] && [ \"\$CURRENT_IP\" != \"pending\" ]; then
-                break
-            fi
-        fi
-        CURRENT_IP=\$(curl -sS --max-time 3 https://api.ipify.org 2>/dev/null || echo \"\")
-        if [ -n \"\$CURRENT_IP\" ]; then
-            echo \"{\\\"ip\\\": \\\"\$CURRENT_IP\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"booting\\\"}\" > server_info.json
-            git add server_info.json
-            git commit -m \"Server IP auto-detected: \$CURRENT_IP\" || true
-            push_with_retry
-            break
-        fi
-    done
-fi
-
-echo \"  Continuing boot with IP: '\${CURRENT_IP:-auto-assigned}'...\"
+echo \"  Continuing boot with IP: '\${CURRENT_IP:-assigned by controller}'...\"
 "
 
 # 4. Setup Directories (runs as steam)
@@ -430,18 +403,21 @@ push_with_retry() {
     done
     return 1
 }
+# Pull latest state to preserve the true ingress IP assigned by controller
+git pull origin main >/dev/null 2>&1 || true
+
 CURRENT_IP=\"\"
 if [ -f server_info.json ]; then
     CURRENT_IP=\$(jq -r '.ip // empty' server_info.json 2>/dev/null)
 fi
-if [ -z \"\$CURRENT_IP\" ] || [ \"\$CURRENT_IP\" = \"null\" ] || [ \"\$CURRENT_IP\" = \"pending\" ]; then
-    CURRENT_IP=\$(curl -sS --max-time 4 https://api.ipify.org 2>/dev/null || curl -sS --max-time 4 https://ifconfig.me 2>/dev/null || echo \"\")
+if [ \"\$CURRENT_IP\" = \"null\" ] || [ \"\$CURRENT_IP\" = \"pending\" ]; then
+    CURRENT_IP=\"\"
 fi
 
-echo \"Marking server as online at \${CURRENT_IP:-unknown}!\"
+echo \"Marking server as online at \${CURRENT_IP:-controller-assigned IP}!\"
 echo \"{\\\"ip\\\": \\\"\${CURRENT_IP:-}\\\", \\\"port\\\": $SSH_PORT, \\\"status\\\": \\\"online\\\"}\" > server_info.json
 git add server_info.json
-git commit -m \"Server online with IP \${CURRENT_IP:-unknown}\" || true
+git commit -m \"Server online\${CURRENT_IP:+ with IP \$CURRENT_IP}\" || true
 push_with_retry
 "
 fi

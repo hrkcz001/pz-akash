@@ -658,6 +658,16 @@ PYEOF
     fi
   fi
 
+  # Authoritatively ensure server_info.json contains the real Akash ingress IP
+  (
+    cd "$SERVES_REPO" || true
+    git_pull_state >/dev/null 2>&1 || true
+    echo "{\"ip\": \"$ip\", \"port\": $SSH_PORT, \"status\": \"online\"}" > server_info.json
+    git add server_info.json \
+      && git commit -m "Server online with verified Akash lease IP $ip" || true \
+      && push_with_retry
+  )
+
   echo "$ip" > "$STATE_DIR/last_deploy_ip"
   log "Attempt $attempt SUCCEEDED (dseq=$dseq, provider=$provider, ip=$ip)."
   return 0
