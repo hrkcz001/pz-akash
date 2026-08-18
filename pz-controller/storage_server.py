@@ -25,6 +25,7 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import sys
 import threading
 import time
@@ -111,12 +112,44 @@ def check_backups_auth(headers, query_params) -> bool:
     return False
 
 
+_last_git_refresh = 0.0
+
+
+def refresh_saves_repo():
+    """Ensure pz-saves local repo is synced with origin/main."""
+    global _last_git_refresh
+    now = time.time()
+    if now - _last_git_refresh < 3.0:
+        return
+    _last_git_refresh = now
+    try:
+        subprocess.run(
+            ["git", "-C", str(SERVES_REPO), "rebase", "--abort"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=2
+        )
+        subprocess.run(
+            ["git", "-C", str(SERVES_REPO), "pull", "--rebase", "origin", "main"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=4
+        )
+    except Exception:
+        pass
+
+
 def get_server_info():
-    """Read server_info.json from pz-saves repo. Default to stopped status and empty IP."""
+    """Read server_info.json from pz-saves repo with git sync. Default to stopped status and empty IP."""
+    refresh_saves_repo()
     info_path = SERVES_REPO / "server_info.json"
     if info_path.is_file():
         try:
-            data = json.loads(info_path.read_text(encoding="utf-8"))
+            content = info_path.read_text(encoding="utf-8")
+            if "<<<<<<<" in content:
+                # Auto-heal conflicted file
+                subprocess.run(
+                    ["git", "-C", str(SERVES_REPO), "checkout", "-B", "main", "origin/main"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3
+                )
+                content = info_path.read_text(encoding="utf-8")
+            data = json.loads(content)
             st = str(data.get("status", "stopped")).lower()
             return {
                 "ip": data.get("ip", "") if st == "online" else "",
@@ -1035,14 +1068,16 @@ def render_html_dashboard(server_info: dict, manifest: dict, server_token: str =
           <h1>Vsrania Dedicated Server</h1>
           <p>Managed via Akash Network & Controller</p>
         </div>
-        <div class="status-badge {badge_class}">
+        <div class="status-badge {badge_class}" id="status-badge-container">
           {dot_html}
-          <span>{badge_text}</span>
+          <span id="status-badge-text">{badge_text}</span>
         </div>
       </div>
 
       <!-- Address / Status Widget -->
-      {address_widget_html}
+      <div id="address-widget-container">
+        {address_widget_html}
+      </div>
     </div>
 
     <!-- Clean Torrent Client Download Banner -->
@@ -1305,6 +1340,101 @@ def render_html_dashboard(server_info: dict, manifest: dict, server_token: str =
         openModal("backups");
       }}
     }}
+
+    // Live Server Status Polling (Auto-refreshes every 4s without full page reload)
+    let lastKnownStatus = "{status}";
+    let lastKnownIp = "{ip}";
+
+    async function pollServerStatus() {{
+      try {{
+        const res = await fetch("/server_info.json");
+        if (!res.ok) return;
+        const info = await res.json();
+        const st = (info.status || "stopped").toLowerCase();
+        const rawIp = info.raw_ip || info.ip || "";
+        const ip = (st === "online") ? rawIp : "";
+        const port = info.port || 16261;
+
+        if (st !== lastKnownStatus || ip !== lastKnownIp) {{
+          lastKnownStatus = st;
+          lastKnownIp = ip;
+          updateStatusUI(st, ip, port);
+        }}
+      }} catch (e) {{}}
+    }}
+
+    function updateStatusUI(st, ip, port) {{
+      const badge = document.getElementById("status-badge-container");
+      const widget = document.getElementById("address-widget-container");
+      if (!badge || !widget) return;
+
+      const isOnline = (st === "online" && ip && ip !== "pending");
+      const isBooting = (st === "booting");
+
+      badge.className = "status-badge " + (isOnline ? "badge-online" : isBooting ? "badge-booting" : "badge-offline");
+      badge.innerHTML = (isOnline ? '<span class="status-dot online"></span><span id="status-badge-text">ONLINE</span>' :
+                        isBooting ? '<span class="status-dot booting"></span><span id="status-badge-text">STARTING UP</span>' :
+                        '<span class="status-dot offline"></span><span id="status-badge-text">OFFLINE</span>');
+
+      if (isOnline) {{
+        widget.innerHTML = `
+          <div class="address-grid">
+            <div class="address-card">
+              <div class="address-label">SERVER IP</div>
+              <div class="address-value-row">
+                <span class="address-text" id="ip-val">${{ip}}</span>
+                <button type="button" class="copy-btn" onclick="copyValue('${{ip}}', this)">
+                  <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                  <span>Copy</span>
+                </button>
+              </div>
+            </div>
+            <div class="address-card">
+              <div class="address-label">PORT</div>
+              <div class="address-value-row">
+                <span class="address-text" id="port-val">${{port}}</span>
+                <button type="button" class="copy-btn" onclick="copyValue('${{port}}', this)">
+                  <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2v-4"></path></svg>
+                  <span>Copy</span>
+                </button>
+              </div>
+            </div>
+            <div class="address-card">
+              <div class="address-label">SERVER PASSWORD</div>
+              <div class="address-value-row">
+                <span class="address-text" id="pwd-val" style="color:#fbbf24;">1488</span>
+                <button type="button" class="copy-btn" onclick="copyValue('1488', this)">
+                  <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                  <span>Copy</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      }} else if (isBooting) {{
+        widget.innerHTML = `
+          <div class="status-banner booting-banner">
+            <div class="status-banner-icon">🚀</div>
+            <div class="status-banner-content">
+              <div class="status-banner-title">Server is booting up...</div>
+              <div class="status-banner-desc">Starting dedicated server, allocating resources and syncing mods. IP & connection details will appear here as soon as the server is ready.</div>
+            </div>
+          </div>
+        `;
+      }} else {{
+        widget.innerHTML = `
+          <div class="status-banner offline-banner">
+            <div class="status-banner-icon">💤</div>
+            <div class="status-banner-content">
+              <div class="status-banner-title">Server is currently offline</div>
+              <div class="status-banner-desc">The Project Zomboid dedicated server is stopped. Push a <code>start</code> trigger to spin up the server on Akash.</div>
+            </div>
+          </div>
+        `;
+      }}
+    }}
+
+    setInterval(pollServerStatus, 4000);
   </script>
 </body>
 </html>
