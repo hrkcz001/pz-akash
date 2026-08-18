@@ -963,6 +963,28 @@ def render_html_dashboard(server_info: dict, manifest: dict, server_token: str =
       font-size: 0.95rem;
       margin-bottom: 1.25rem;
     }}
+    .modal-error {{
+      display: none;
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.35);
+      color: #fca5a5;
+      padding: 0.6rem 0.85rem;
+      border-radius: 8px;
+      font-size: 0.8rem;
+      font-weight: 500;
+      margin-bottom: 1rem;
+      align-items: center;
+      gap: 0.5rem;
+    }}
+    @keyframes shake {{
+      0%, 100% {{ transform: translateX(0); }}
+      20%, 60% {{ transform: translateX(-6px); }}
+      40%, 80% {{ transform: translateX(6px); }}
+    }}
+    .shake {{
+      animation: shake 0.35s ease-in-out;
+      border-color: #ef4444 !important;
+    }}
     .modal-actions {{
       display: flex;
       justify-content: flex-end;
@@ -975,6 +997,11 @@ def render_html_dashboard(server_info: dict, manifest: dict, server_token: str =
       font-size: 0.85rem;
       cursor: pointer;
       border: none;
+      transition: all 0.15s ease;
+    }}
+    .modal-btn:disabled {{
+      opacity: 0.6;
+      cursor: not-allowed;
     }}
     .modal-btn-cancel {{
       background: transparent;
@@ -1103,14 +1130,15 @@ def render_html_dashboard(server_info: dict, manifest: dict, server_token: str =
   </div>
 
   <!-- Password Unlock Modal -->
-  <div class="modal-backdrop" id="auth-modal">
+  <div class="modal-backdrop" id="auth-modal" onclick="if(event.target===this) closeModal()">
     <div class="modal-box">
       <h3 id="auth-modal-title">🔒 Authorization Required</h3>
       <p id="auth-modal-desc">Enter password to continue:</p>
+      <div class="modal-error" id="auth-error-msg"></div>
       <input type="password" class="modal-input" id="auth-password-input" placeholder="Password..." onkeydown="if(event.key==='Enter') submitPassword()" />
       <div class="modal-actions">
         <button type="button" class="modal-btn modal-btn-cancel" onclick="closeModal()">Cancel</button>
-        <button type="button" class="modal-btn modal-btn-submit" onclick="submitPassword()">Unlock</button>
+        <button type="button" class="modal-btn modal-btn-submit" id="auth-submit-btn" onclick="submitPassword()">Unlock</button>
       </div>
     </div>
   </div>
@@ -1120,8 +1148,19 @@ def render_html_dashboard(server_info: dict, manifest: dict, server_token: str =
     let savedBackupToken = sessionStorage.getItem("pz_backups_token") || "{backup_token}";
     let pendingAction = null;
 
+    // Verify and apply saved server files token asynchronously
     if (savedServerToken) {{
-      applyUnlockedServerUI();
+      fetch(`/api/verify?type=server_files&token=${{encodeURIComponent(savedServerToken)}}`)
+        .then(r => r.json())
+        .then(data => {{
+          if (data && data.ok) {{
+            applyUnlockedServerUI();
+          }} else {{
+            savedServerToken = "";
+            sessionStorage.removeItem("pz_server_files_token");
+          }}
+        }})
+        .catch(() => {{}});
     }}
 
     function copyValue(text, btn) {{
@@ -1139,6 +1178,14 @@ def render_html_dashboard(server_info: dict, manifest: dict, server_token: str =
       const title = document.getElementById("auth-modal-title");
       const desc = document.getElementById("auth-modal-desc");
       const input = document.getElementById("auth-password-input");
+      const errorBox = document.getElementById("auth-error-msg");
+      const submitBtn = document.getElementById("auth-submit-btn");
+
+      errorBox.style.display = "none";
+      errorBox.innerHTML = "";
+      input.classList.remove("shake");
+      submitBtn.disabled = false;
+      submitBtn.innerText = "Unlock";
 
       if (action === "server_download") {{
         title.innerText = "🔒 Unlock Server Files";
@@ -1160,22 +1207,66 @@ def render_html_dashboard(server_info: dict, manifest: dict, server_token: str =
       pendingAction = null;
     }}
 
-    function submitPassword() {{
-      const val = document.getElementById("auth-password-input").value.trim();
-      if (!val) return;
+    async function submitPassword() {{
+      const input = document.getElementById("auth-password-input");
+      const errorBox = document.getElementById("auth-error-msg");
+      const submitBtn = document.getElementById("auth-submit-btn");
+      const val = input.value.trim();
 
-      if (pendingAction === "server_download") {{
-        savedServerToken = val;
-        sessionStorage.setItem("pz_server_files_token", val);
-        applyUnlockedServerUI();
-        closeModal();
-        window.location.href = `/server.zip?token=${{encodeURIComponent(val)}}`;
-      }} else if (pendingAction === "backups") {{
-        savedBackupToken = val;
-        sessionStorage.setItem("pz_backups_token", val);
-        closeModal();
-        window.location.href = `/backups?token=${{encodeURIComponent(val)}}`;
+      errorBox.style.display = "none";
+      input.classList.remove("shake");
+
+      if (!val) {{
+        showModalError("Please enter a password.");
+        return;
       }}
+
+      const authType = (pendingAction === "server_download") ? "server_files" : "backups";
+      
+      submitBtn.disabled = true;
+      submitBtn.innerText = "Verifying...";
+
+      try {{
+        const res = await fetch(`/api/verify?type=${{authType}}&token=${{encodeURIComponent(val)}}`);
+        const data = await res.json().catch(() => ({{}}));
+
+        if (res.ok && data.ok) {{
+          if (pendingAction === "server_download") {{
+            savedServerToken = val;
+            sessionStorage.setItem("pz_server_files_token", val);
+            applyUnlockedServerUI();
+            closeModal();
+            
+            // Trigger file download cleanly without page reload
+            const a = document.createElement("a");
+            a.href = `/server.zip?token=${{encodeURIComponent(val)}}`;
+            a.download = "server.zip";
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+          }} else if (pendingAction === "backups") {{
+            savedBackupToken = val;
+            sessionStorage.setItem("pz_backups_token", val);
+            closeModal();
+            window.location.href = `/backups?token=${{encodeURIComponent(val)}}`;
+          }}
+        }} else {{
+          showModalError(data.error || "Incorrect password. Access denied.");
+          input.classList.add("shake");
+          input.select();
+        }}
+      }} catch (err) {{
+        showModalError("Network error while verifying password.");
+      }} finally {{
+        submitBtn.disabled = false;
+        submitBtn.innerText = "Unlock";
+      }}
+    }}
+
+    function showModalError(msg) {{
+      const errorBox = document.getElementById("auth-error-msg");
+      errorBox.innerHTML = `<span>⚠️ ${{msg}}</span>`;
+      errorBox.style.display = "flex";
     }}
 
     function applyUnlockedServerUI() {{
@@ -1196,7 +1287,12 @@ def render_html_dashboard(server_info: dict, manifest: dict, server_token: str =
 
     function handleServerDownload() {{
       if (savedServerToken) {{
-        window.location.href = `/server.zip?token=${{encodeURIComponent(savedServerToken)}}`;
+        const a = document.createElement("a");
+        a.href = `/server.zip?token=${{encodeURIComponent(savedServerToken)}}`;
+        a.download = "server.zip";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
       }} else {{
         openModal("server_download");
       }}
@@ -1236,6 +1332,8 @@ def render_html_backups(server_info: dict, backups: list, is_authed: bool, token
         </tr>
         """)
 
+    wrong_pwd_html = '<div style="background:rgba(239,68,68,0.15); border:1px solid rgba(239,68,68,0.35); color:#fca5a5; padding:0.6rem 1rem; border-radius:8px; font-size:0.85rem; margin:0 auto 1.25rem; max-width:320px; font-weight:500;">❌ Incorrect backups password. Access denied.</div>' if (token and not is_authed) else ''
+
     table_html = f"""
     <table style="width:100%; border-collapse:collapse; margin-top:1rem;">
       <thead>
@@ -1250,11 +1348,12 @@ def render_html_backups(server_info: dict, backups: list, is_authed: bool, token
         {''.join(rows) if rows else '<tr><td colspan="4" style="text-align:center; padding:2rem; color:var(--text-muted);">No backup archives found in /data/backups/</td></tr>'}
       </tbody>
     </table>
-    """ if is_authed else """
+    """ if is_authed else f"""
     <div style="text-align:center; padding:3rem 1rem; background:rgba(0,0,0,0.3); border-radius:12px; margin-top:1rem;">
       <div style="font-size:2.5rem; margin-bottom:0.75rem;">🔒</div>
       <h3 style="margin:0 0 0.5rem 0;">Backups Password Required</h3>
       <p style="color:var(--text-muted); font-size:0.85rem; margin-bottom:1.25rem;">Server backups and world archives are protected.</p>
+      {wrong_pwd_html}
       <form action="/backups" method="GET" style="display:inline-flex; gap:0.5rem;" onsubmit="saveBackupToken(this)">
         <input type="password" name="token" id="backup-pwd-input" placeholder="Backups Password..." style="background:#020617; border:1px solid rgba(255,255,255,0.1); color:white; padding:0.6rem 1rem; border-radius:8px; font-size:0.9rem;" required />
         <button type="submit" class="copy-btn" style="background:#3b82f6; border:none; padding:0.6rem 1.25rem;">Unlock</button>
@@ -1376,15 +1475,22 @@ def render_html_backups(server_info: dict, backups: list, is_authed: bool, token
     ''' if is_authed else ''}
   </div>
   <script>
+    const isAuthed = {"true" if is_authed else "false"};
     const currentToken = "{token}";
-    if (currentToken) {{
+
+    if (isAuthed && currentToken) {{
       sessionStorage.setItem("pz_backups_token", currentToken);
-    }} else {{
-      const stored = sessionStorage.getItem("pz_backups_token");
-      if (stored && !window.location.search.includes("token=")) {{
-        window.location.href = `/backups?token=${{encodeURIComponent(stored)}}`;
+    }} else if (!isAuthed) {{
+      if (currentToken) {{
+        sessionStorage.removeItem("pz_backups_token");
+      }} else {{
+        const stored = sessionStorage.getItem("pz_backups_token");
+        if (stored && !window.location.search.includes("token=")) {{
+          window.location.href = `/backups?token=${{encodeURIComponent(stored)}}`;
+        }}
       }}
     }}
+
     function saveBackupToken(form) {{
       const input = form.querySelector("input[name='token']");
       if (input && input.value) {{
@@ -1446,6 +1552,26 @@ class StorageHandler(BaseHTTPRequestHandler):
             body = b"ok"
             self._send_response_headers(200, "text/plain", len(body))
             self.wfile.write(body)
+            return
+
+        # 2. Auth Verification API (GET)
+        if path in ("/api/verify", "/api/verify-auth", "/auth/verify"):
+            auth_type = query.get("type", ["server_files"])[0].lower()
+            if auth_type in ("server", "server_files", "serverfiles"):
+                is_valid = check_server_files_auth(self.headers, query)
+                target_name = "Server Files"
+            else:
+                is_valid = check_backups_auth(self.headers, query)
+                target_name = "Backups"
+
+            if is_valid:
+                body = json.dumps({"ok": True, "type": auth_type, "message": f"{target_name} password verified"}).encode("utf-8")
+                self._send_response_headers(200, "application/json", len(body))
+                self.wfile.write(body)
+            else:
+                body = json.dumps({"ok": False, "type": auth_type, "error": f"Incorrect {target_name} password. Access denied."}).encode("utf-8")
+                self._send_response_headers(401, "application/json", len(body))
+                self.wfile.write(body)
             return
 
         # 2. Main Dashboard (Player Downloads + Server IP + 3 Cards)
@@ -1563,6 +1689,37 @@ class StorageHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+
+        # Auth Verification API (POST)
+        if path in ("/api/verify", "/api/verify-auth", "/auth/verify"):
+            try:
+                content_length = int(self.headers.get("Content-Length", 0))
+                body_bytes = self.rfile.read(content_length) if content_length > 0 else b"{}"
+                data = json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+            except Exception:
+                data = {}
+
+            auth_type = str(data.get("type") or query.get("type", ["server_files"])[0]).lower()
+            token = data.get("token") or data.get("password")
+            if token:
+                query["token"] = [str(token)]
+
+            if auth_type in ("server", "server_files", "serverfiles"):
+                is_valid = check_server_files_auth(self.headers, query)
+                target_name = "Server Files"
+            else:
+                is_valid = check_backups_auth(self.headers, query)
+                target_name = "Backups"
+
+            if is_valid:
+                body = json.dumps({"ok": True, "type": auth_type, "message": f"{target_name} password verified"}).encode("utf-8")
+                self._send_response_headers(200, "application/json", len(body))
+                self.wfile.write(body)
+            else:
+                body = json.dumps({"ok": False, "type": auth_type, "error": f"Incorrect {target_name} password. Access denied."}).encode("utf-8")
+                self._send_response_headers(401, "application/json", len(body))
+                self.wfile.write(body)
+            return
 
         # 1. PROTECTED UPLOAD: POST /upload
         if path in ("/upload", "/upload/"):
