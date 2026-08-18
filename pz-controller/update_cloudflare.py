@@ -108,7 +108,8 @@ def clear_origin_rules(zone_id: str, token: str):
 
 
 def set_dynamic_redirect(zone_id: str, token: str, domain: str, target_url: str):
-    """Configure Cloudflare Dynamic Redirect (302) with query string preservation."""
+    """Configure Cloudflare Dynamic Redirect (302) with full path and query string preservation."""
+    clean_target = target_url.rstrip("/")
     expression = f'(http.host eq "{domain}" or http.host eq "www.{domain}")'
     payload = {
         "rules": [
@@ -120,7 +121,7 @@ def set_dynamic_redirect(zone_id: str, token: str, domain: str, target_url: str)
                     "from_value": {
                         "status_code": 302,
                         "target_url": {
-                            "value": target_url
+                            "expression": f'concat("{clean_target}", http.request.uri.path)'
                         },
                         "preserve_query_string": True
                     }
@@ -137,7 +138,7 @@ def set_dynamic_redirect(zone_id: str, token: str, domain: str, target_url: str)
         payload=payload
     )
     if res.get("success"):
-        log(f"Configured Dynamic Redirect: https://{domain} -> {target_url} (302)")
+        log(f"Configured Dynamic Redirect: https://{domain}/* -> {clean_target}/* (302)")
         return True
     else:
         log(f"Note on Dynamic Redirect: {res.get('errors')}")
