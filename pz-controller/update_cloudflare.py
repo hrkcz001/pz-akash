@@ -107,23 +107,18 @@ def clear_origin_rules(zone_id: str, token: str):
         pass
 
 
-def set_dynamic_redirect(zone_id: str, token: str, domain: str, target_url: str):
-    """Configure Cloudflare Dynamic Redirect (302) with full path and query string preservation."""
-    clean_target = target_url.rstrip("/")
+def configure_origin_rule(zone_id: str, token: str, domain: str, origin_port: int):
+    """Configure Cloudflare Origin Rules to route incoming HTTPS traffic on :443 to the custom origin port."""
     expression = f'(http.host eq "{domain}" or http.host eq "www.{domain}")'
     payload = {
         "rules": [
             {
-                "description": f"PZ Controller Dynamic Redirect ({domain})",
+                "description": f"PZ Controller Origin Port Route ({domain} -> :{origin_port})",
                 "expression": expression,
-                "action": "redirect",
+                "action": "route",
                 "action_parameters": {
-                    "from_value": {
-                        "status_code": 302,
-                        "target_url": {
-                            "expression": f'concat("{clean_target}", http.request.uri.path)'
-                        },
-                        "preserve_query_string": True
+                    "origin": {
+                        "port": origin_port
                     }
                 },
                 "enabled": True
@@ -132,21 +127,21 @@ def set_dynamic_redirect(zone_id: str, token: str, domain: str, target_url: str)
     }
     
     res = cf_request(
-        f"/zones/{zone_id}/rulesets/phases/http_request_dynamic_redirect/entrypoint",
+        f"/zones/{zone_id}/rulesets/phases/http_request_origin/entrypoint",
         token,
         method="PUT",
         payload=payload
     )
     if res.get("success"):
-        log(f"Configured Dynamic Redirect: https://{domain}/* -> {clean_target}/* (302)")
+        log(f"Configured Cloudflare Origin Rule: https://{domain} -> origin port {origin_port}")
         return True
     else:
-        log(f"Note on Dynamic Redirect: {res.get('errors')}")
+        log(f"Note on Origin Rules: {res.get('errors')}")
         return False
 
 
 def set_ssl_flexible(zone_id: str, token: str):
-    """Ensure SSL mode is Flexible."""
+    """Ensure SSL mode is Flexible (so Cloudflare serves HTTPS to visitors while talking HTTP to Akash origin)."""
     try:
         cf_request(
             f"/zones/{zone_id}/settings/ssl",
@@ -162,7 +157,7 @@ def set_ssl_flexible(zone_id: str, token: str):
 def update_cloudflare_proxy(target_url: str):
     token = os.environ.get("CLOUDFLARE_API_TOKEN", "").strip()
     if not token:
-        log("CLOUDFLARE_API_TOKEN not set — skipping Cloudflare configuration.")
+        log("CLOUDFLARE_API_TOKEN not set — skipping Cloudflare proxy configuration.")
         return False
 
     zone_id = os.environ.get("CLOUDFLARE_ZONE_ID", "").strip()
@@ -174,26 +169,32 @@ def update_cloudflare_proxy(target_url: str):
             zone_id = zone_id or detected_id
             domain = domain or detected_name
 
-        clean_target = target_url.strip()
-        if not clean_target.startswith("http://") and not clean_target.startswith("https://"):
-            clean_target = f"http://{clean_target}"
+        parsed = urlparse(target_url if "://" in target_url else f"http://{target_url}")
+        host = parsed.hostname or target_url
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
 
-        log(f"Configuring Cloudflare Dynamic Redirect for {domain} -> {clean_target} ...")
+        log(f"Configuring Cloudflare Proxy for {domain} -> {host}:{port} ...")
 
-        # 1. Clear any old origin rules
-        clear_origin_rules(zone_id, token)
+        # 1. Clear any old 302 redirect rules
+        clear_dynamic_redirects(zone_id, token)
 
-        # 2. Ensure SSL is set to Flexible for domain edge SSL
+        # 2. Ensure SSL is set to Flexible for HTTP origin
         set_ssl_flexible(zone_id, token)
 
-        # 3. Create / update Proxied DNS A records pointing to 192.0.2.1 (Cloudflare dummy IP for edge redirects)
-        upsert_dns_record(zone_id, token, domain, "A", "192.0.2.1")
-        upsert_dns_record(zone_id, token, f"www.{domain}", "A", "192.0.2.1")
+        # 3. Create / update Proxied DNS record (A if IPv4, CNAME if hostname)
+        is_ipv4 = bool(re.match(r"^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$", host))
+        rec_type = "A" if is_ipv4 else "CNAME"
+        
+        upsert_dns_record(zone_id, token, domain, rec_type, host)
+        upsert_dns_record(zone_id, token, f"www.{domain}", rec_type, host)
 
-        # 4. Set Dynamic Redirect Rule (302 redirect with query preservation)
-        set_dynamic_redirect(zone_id, token, domain, clean_target)
+        # 4. Configure Origin Port Rule if port is non-standard
+        if port not in (80, 443):
+            configure_origin_rule(zone_id, token, domain, port)
+        else:
+            clear_origin_rules(zone_id, token)
 
-        log(f"SUCCESS: https://{domain} now dynamically redirects to {clean_target} with valid Cloudflare SSL!")
+        log(f"SUCCESS: https://{domain} is now proxied to {host}:{port} with valid Cloudflare SSL!")
         return True
 
     except urllib.error.HTTPError as e:
@@ -201,7 +202,7 @@ def update_cloudflare_proxy(target_url: str):
         log(f"Cloudflare API Error {e.code}: {err_body}")
         return False
     except Exception as e:
-        log(f"Error configuring Cloudflare redirect: {e}")
+        log(f"Error configuring Cloudflare proxy: {e}")
         return False
 
 
