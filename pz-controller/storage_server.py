@@ -158,6 +158,8 @@ def get_server_info():
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3
                 )
                 content = info_path.read_text(encoding="utf-8")
+            data = json.loads(content)
+            st = data.get("status", "stopped").lower()
             p_hr = data.get("price_per_hour")
             if p_hr is None and data.get("price_per_day"):
                 try:
@@ -175,8 +177,8 @@ def get_server_info():
                 "price_per_hour": float(p_hr),
                 "status": st
             }
-        except Exception:
-            pass
+        except Exception as e:
+            log(f"Error reading server_info.json: {e}")
     return {"ip": "", "raw_ip": "", "port": GAME_PORT, "ssh_port": 2222, "price_per_hour": 0.011, "status": "stopped"}
 
 
