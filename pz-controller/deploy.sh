@@ -130,6 +130,32 @@ push_with_retry() {
   return 1
 }
 
+# save_active_dseq DSEQ — persist dseq to both /data and pz-saves so it survives controller redeploy.
+save_active_dseq() {
+  local dseq="$1"
+  echo "$dseq" > "$ACTIVE_DSEQ_FILE"
+  (
+    cd "$SERVES_REPO" || return 1
+    echo "$dseq" > active_dseq
+    git add active_dseq
+    git commit -m "Track active deployment dseq=$dseq" || true
+    push_with_retry
+  )
+}
+
+# clear_active_dseq — remove dseq from both /data and pz-saves.
+clear_active_dseq() {
+  rm -f "$ACTIVE_DSEQ_FILE"
+  (
+    cd "$SERVES_REPO" || return 1
+    if [ -f active_dseq ]; then
+      git rm -f active_dseq > /dev/null 2>&1 || rm -f active_dseq
+      git commit -m "Clear active_dseq (deployment closed)" || true
+      push_with_retry
+    fi
+  )
+}
+
 git_pull_state() {
   (
     cd "$SERVES_REPO" || return 1
@@ -256,7 +282,7 @@ close_deployment() { # $1 = dseq
     api DELETE "/v1/deployments/$dseq" >/dev/null
     sleep "$DEPOSIT_SETTLE_SEC"
   fi
-  rm -f "$ACTIVE_DSEQ_FILE"
+  clear_active_dseq
 }
 
 close_previous() {
@@ -581,7 +607,7 @@ PYEOF
   fi
   manifest=$(echo "$resp" | jq -r '.data.manifest // empty' 2>/dev/null)
   [ -n "$manifest" ] || manifest=$(cat "$SDL_OUT")
-  echo "$dseq" > "$ACTIVE_DSEQ_FILE"
+  save_active_dseq "$dseq"
   log "Deployment created: dseq=$dseq"
 
   # wait for bids
@@ -634,7 +660,7 @@ PYEOF
   if [ -z "$ip" ]; then
     if [ "$lease_rc" -eq 2 ]; then
       log "Lease wait cancelled (deployment closed or halt requested) — ending deploy cycle."
-      rm -f "$ACTIVE_DSEQ_FILE"
+      clear_active_dseq
       return 2
     fi
     log "Lease $dseq did not become ready within ${LEASE_READY_TIMEOUT_SEC}s — provider failed to deploy."
@@ -654,7 +680,7 @@ PYEOF
     if [ "$online_rc" -ne 0 ]; then
       if [ "$online_rc" -eq 2 ]; then
         log "Server online wait cancelled (deployment closed or halt requested) — ending deploy cycle."
-        rm -f "$ACTIVE_DSEQ_FILE"
+        clear_active_dseq
         return 2
       fi
       log "Server did not reach 'online' within ${SERVER_ONLINE_TIMEOUT_SEC}s on $provider — treating as failed deploy."

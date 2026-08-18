@@ -163,6 +163,11 @@ server_watchdogs() {
 
 cd /root/pz-saves
 git_pull_state
+# Restore active_dseq from pz-saves if the local /data copy is missing (e.g. after controller redeploy)
+if [ -f active_dseq ] && [ ! -f /data/active_dseq ]; then
+    cp active_dseq /data/active_dseq
+    echo "[controller] Restored active_dseq=$(cat /data/active_dseq) from pz-saves (controller was redeployed)."
+fi
 # Ensure files exist to avoid errors
 touch backup_log restore_target server_info.json
 git add .

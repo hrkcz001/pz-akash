@@ -210,6 +210,32 @@ wait_server_stopped() {
   return 1
 }
 
+# save_active_dseq DSEQ — write dseq to both local state and pz-saves (survives controller redeploy).
+save_active_dseq() {
+  local dseq="$1"
+  echo "$dseq" > "$ACTIVE_DSEQ_FILE"
+  (
+    cd "$SERVES_REPO" || return 1
+    echo "$dseq" > active_dseq
+    git add active_dseq
+    git commit -m "Track active deployment dseq=$dseq" || true
+    _push_with_retry_internal
+  )
+}
+
+# clear_active_dseq — remove dseq from both local state and pz-saves.
+clear_active_dseq() {
+  rm -f "$ACTIVE_DSEQ_FILE"
+  (
+    cd "$SERVES_REPO" || return 1
+    if [ -f active_dseq ]; then
+      git rm -f active_dseq > /dev/null 2>&1 || rm -f active_dseq
+      git commit -m "Clear active_dseq (deployment closed)" || true
+      _push_with_retry_internal
+    fi
+  )
+}
+
 # close_deployment [dseq] — close the active Akash deployment. This stops billing and
 # the unspent escrow is refunded to the wallet. No-op without an active dseq.
 close_deployment() {
@@ -217,7 +243,7 @@ close_deployment() {
   [ -n "$dseq" ] || return 0
   log "Closing deployment $dseq."
   api DELETE "/v1/deployments/$dseq" >/dev/null
-  rm -f "$ACTIVE_DSEQ_FILE"
+  clear_active_dseq
 }
 
 # run_backup [do_halt] — safe backup: RCON save -> stream zip -> validate ->
