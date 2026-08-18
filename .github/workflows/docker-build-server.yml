@@ -10,6 +10,12 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}-server
+  PZ_VERSION: "42.20.2"
+  # Manifest IDs from SteamDB for version 42.20.2 (August 5 2026)
+  # https://steamdb.info/depot/380871/manifests/
+  # https://steamdb.info/depot/380873/manifests/
+  DEPOT_380871_MANIFEST: "2587362105419356756"
+  DEPOT_380873_MANIFEST: "4894029153115054997"
 
 jobs:
   build-and-push-image:
@@ -37,6 +43,7 @@ jobs:
           tags: |
             type=raw,value=latest
             type=sha,format=short
+            type=raw,value=pz-${{ env.PZ_VERSION }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
@@ -45,3 +52,7 @@ jobs:
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            PZ_VERSION=${{ env.PZ_VERSION }}
+            DEPOT_380871_MANIFEST=${{ env.DEPOT_380871_MANIFEST }}
+            DEPOT_380873_MANIFEST=${{ env.DEPOT_380873_MANIFEST }}

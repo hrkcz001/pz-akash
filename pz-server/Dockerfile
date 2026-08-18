@@ -1,6 +1,16 @@
 # Stage 1: SteamCMD Game Server Builder (Downloads PZ Dedicated Server binaries)
 FROM debian:bookworm-slim AS builder
 
+# Pin the exact PZ dedicated server version using Steam depot manifest IDs.
+# SteamCMD's app_update always grabs the latest, so we use download_depot
+# with explicit manifest IDs to get a specific older version.
+# To upgrade: look up new manifest IDs on https://steamdb.info/app/380870/depots/
+ARG PZ_VERSION=42.20.2
+# Depot 380871 = base server content, Depot 380873 = Linux-specific files
+# Manifest IDs for 42.20.2 (August 5 2026) — find on SteamDB depot history pages
+ARG DEPOT_380871_MANIFEST=2587362105419356756
+ARG DEPOT_380873_MANIFEST=4894029153115054997
+
 ENV DEBIAN_FRONTEND=noninteractive
 RUN dpkg --add-architecture i386 && \
     apt-get update && \
@@ -11,8 +21,14 @@ RUN mkdir -p /steamcmd /pz-server && \
     curl -sqL "https://steamcdn-a.akamaihd.net/client/installer/steamcmd_linux.tar.gz" | tar zxvf - -C /steamcmd && \
     /steamcmd/steamcmd.sh +login anonymous +quit || true
 
-# Download dedicated server (App ID 380870)
-RUN /steamcmd/steamcmd.sh +@sSteamCmdForcePlatformType linux +login anonymous +force_install_dir /pz-server +app_update 380870 validate +quit
+# Download pinned depot manifests for PZ dedicated server 42.20.2
+RUN /steamcmd/steamcmd.sh +@sSteamCmdForcePlatformType linux +login anonymous \
+        +download_depot 380870 380871 $DEPOT_380871_MANIFEST \
+        +download_depot 380870 380873 $DEPOT_380873_MANIFEST \
+        +quit && \
+    cp -r /steamcmd/steamapps/content/app_380870/depot_380871/* /pz-server/ && \
+    cp -r /steamcmd/steamapps/content/app_380870/depot_380873/* /pz-server/ && \
+    echo "$PZ_VERSION" > /pz-server/PINNED_VERSION
 
 # Stage 2: PZ Dedicated Server Runtime
 FROM debian:bookworm-slim
