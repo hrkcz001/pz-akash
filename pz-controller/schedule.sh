@@ -87,6 +87,7 @@ check_stop_time() {
 
   log "stop_at reached (now=$now >= stop=$stop_epoch) — saving and stopping the server."
   consume_file stop_at
+  kill_running_deploy
   run_backup 1
   if wait_server_stopped; then
     log "Server reported 'stopped' — closing deployment to stop billing."
@@ -94,6 +95,7 @@ check_stop_time() {
     log "Server did not report 'stopped' within ${HALT_CONFIRM_SEC}s — closing deployment anyway."
   fi
   close_deployment
+  reset_server_info_stopped
 }
 
 # --- escrow top-up --------------------------------------------------------------

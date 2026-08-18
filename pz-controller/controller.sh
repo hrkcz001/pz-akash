@@ -119,14 +119,31 @@ server_watchdogs() {
     local last_check now url
     last_check=$(cat /data/webhook_url.check 2>/dev/null || echo 0)
     now=$(date +%s)
-    [ $((now - last_check)) -ge 600 ] || return 0
-    echo "$now" > /data/webhook_url.check
-    url=$(/usr/local/bin/webhook_url.sh 2>/dev/null || true)
-    [ -n "$url" ] || return 0
-    if [ -f /data/webhook_url ] && [ "$(cat /data/webhook_url)" != "$url" ]; then
-        echo "[controller] WARNING: webhook URL changed to $url — update it in GitHub -> pz-saves -> Settings -> Webhooks, or deliveries keep failing."
+    if [ $((now - last_check)) -ge 600 ]; then
+        echo "$now" > /data/webhook_url.check
+        url=$(/usr/local/bin/webhook_url.sh 2>/dev/null || true)
+        if [ -n "$url" ]; then
+            if [ -f /data/webhook_url ] && [ "$(cat /data/webhook_url)" != "$url" ]; then
+                echo "[controller] WARNING: webhook URL changed to $url — update it in GitHub -> pz-saves -> Settings -> Webhooks, or deliveries keep failing."
+            fi
+            echo "$url" > /data/webhook_url
+        fi
     fi
-    echo "$url" > /data/webhook_url
+
+    # 4. Akash deployment watchdog: detect if server deployment was closed externally
+    if [ -f "$ACTIVE_DSEQ_FILE" ]; then
+        local dseq dep_st
+        dseq=$(cat "$ACTIVE_DSEQ_FILE" 2>/dev/null || echo "")
+        if [ -n "$dseq" ]; then
+            dep_st=$(api GET "/v1/deployments/$dseq" | jq -r '.data.deployment.state // .data.state // ""' 2>/dev/null)
+            if [ -n "$dep_st" ] && [ "$dep_st" != "active" ]; then
+                echo "[controller] Deployment $dseq is no longer active on Akash (state: $dep_st) — cleaning up."
+                rm -f "$ACTIVE_DSEQ_FILE"
+                kill_running_deploy
+                reset_server_info_stopped
+            fi
+        fi
+    fi
 }
 
 cd /root/pz-saves

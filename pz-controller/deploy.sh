@@ -412,10 +412,21 @@ if (svc.get("ready_replicas") or 0) >= 1:
 
 wait_for_lease() { # $1 dseq $2 provider $3 gseq $4 oseq $5 hostUri -> prints IP or nothing
   local dseq="$1" provider="$2" gseq="$3" oseq="$4" hostUri="$5"
-  local deadline n ip
+  local deadline n ip dep_st
   deadline=$(( $(date +%s) + LEASE_READY_TIMEOUT_SEC ))
   n=0
   while [ "$(date +%s)" -lt "$deadline" ]; do
+    if [ $((n % 3)) -eq 0 ]; then
+      dep_st=$(api GET "/v1/deployments/$dseq" | jq -r '.data.deployment.state // .data.state // empty' 2>/dev/null)
+      if [ -n "$dep_st" ] && [ "$dep_st" != "active" ]; then
+        log "Deployment $dseq is no longer active (state: $dep_st) — aborting lease wait."
+        return 2
+      fi
+      if [ -f "$SERVES_REPO/halt" ]; then
+        log "Halt trigger detected — aborting lease wait."
+        return 2
+      fi
+    fi
     ip=$(console_lease_ip "$dseq")
     if [ -n "$ip" ]; then
       echo "$ip"
@@ -445,10 +456,22 @@ mark_server_ip() { # $1 = ip
   log "server_info.json updated: server deployed with IP $ip (awaiting boot)"
 }
 
-wait_server_online() {
-  local deadline st
+wait_server_online() { # $1 = dseq
+  local dseq="${1:-}"
+  local deadline st dep_st
   deadline=$(( $(date +%s) + SERVER_ONLINE_TIMEOUT_SEC ))
   while [ "$(date +%s)" -lt "$deadline" ]; do
+    if [ -n "$dseq" ]; then
+      dep_st=$(api GET "/v1/deployments/$dseq" | jq -r '.data.deployment.state // .data.state // empty' 2>/dev/null)
+      if [ -n "$dep_st" ] && [ "$dep_st" != "active" ]; then
+        log "Deployment $dseq is no longer active (state: $dep_st) — aborting server online wait."
+        return 2
+      fi
+    fi
+    if [ -f "$SERVES_REPO/halt" ]; then
+      log "Halt trigger detected — aborting server online wait."
+      return 2
+    fi
     ( cd "$SERVES_REPO" && git pull >/dev/null 2>&1 )
     st=$(jq -r '.status // ""' "$SERVES_REPO/server_info.json" 2>/dev/null)
     if [ "$st" = "online" ]; then
@@ -461,14 +484,14 @@ wait_server_online() {
 
 reset_server_info() {
   ( cd "$SERVES_REPO" && git pull >/dev/null 2>&1 )
-  echo "{\"ip\": \"pending\", \"port\": $SSH_PORT, \"status\": \"stopped\"}" > "$SERVES_REPO/server_info.json"
+  echo "{\"ip\": \"\", \"port\": $SSH_PORT, \"status\": \"stopped\"}" > "$SERVES_REPO/server_info.json"
   ( cd "$SERVES_REPO" && git add server_info.json \
-    && git commit -m "Deploy cycle failed - reset to stopped/pending" || true \
+    && git commit -m "Deploy cycle failed - reset to stopped" || true \
     && push_with_retry )
 }
 
 # --- one deploy attempt ---------------------------------------------------------
-# returns 0 = success, 1 = provider failure (skipped, retry), 2 = no candidates left
+# returns 0 = success, 1 = provider failure (skipped, retry), 2 = no candidates left / cancelled
 attempt_deploy() { # $1 = attempt number
   local attempt="$1"
 
@@ -561,9 +584,15 @@ PYEOF
   fi
   log "Lease created with $provider (dseq=$dseq)."
 
-  local ip
+  local ip lease_rc
   ip=$(wait_for_lease "$dseq" "$provider" "$gseq" "$oseq" "$hostUri")
+  lease_rc=$?
   if [ -z "$ip" ]; then
+    if [ "$lease_rc" -eq 2 ]; then
+      log "Lease wait cancelled (deployment closed or halt requested) — ending deploy cycle."
+      rm -f "$ACTIVE_DSEQ_FILE"
+      return 2
+    fi
     log "Lease $dseq did not become ready within ${LEASE_READY_TIMEOUT_SEC}s — provider failed to deploy."
     add_skip "$provider"
     close_deployment "$dseq"
@@ -575,7 +604,15 @@ PYEOF
 
   if [ "$SERVER_ONLINE_VERIFY" = "true" ]; then
     log "Waiting for the server to report 'online' (timeout ${SERVER_ONLINE_TIMEOUT_SEC}s)..."
-    if ! wait_server_online; then
+    local online_rc
+    wait_server_online "$dseq"
+    online_rc=$?
+    if [ "$online_rc" -ne 0 ]; then
+      if [ "$online_rc" -eq 2 ]; then
+        log "Server online wait cancelled (deployment closed or halt requested) — ending deploy cycle."
+        rm -f "$ACTIVE_DSEQ_FILE"
+        return 2
+      fi
       log "Server did not reach 'online' within ${SERVER_ONLINE_TIMEOUT_SEC}s on $provider — treating as failed deploy."
       add_skip "$provider"
       close_deployment "$dseq"
@@ -592,9 +629,32 @@ PYEOF
 main() {
   require_api_key
 
-  if [ -f "$LOCK_FILE" ] && kill -0 "$(cat "$LOCK_FILE")" 2>/dev/null; then
-    log "Another deploy is already running (pid $(cat "$LOCK_FILE")). Exiting."
-    exit 0
+  if [ -f "$LOCK_FILE" ]; then
+    local running_pid
+    running_pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+    if [ -n "$running_pid" ] && kill -0 "$running_pid" 2>/dev/null; then
+      # Check if previous deployment is actually active and running
+      local is_act=false
+      if [ -f "$ACTIVE_DSEQ_FILE" ]; then
+        local dseq dep_st
+        dseq=$(cat "$ACTIVE_DSEQ_FILE")
+        dep_st=$(api GET "/v1/deployments/$dseq" | jq -r '.data.deployment.state // .data.state // ""' 2>/dev/null)
+        [ "$dep_st" = "active" ] && is_act=true
+      fi
+      if [ "$is_act" = "true" ]; then
+        log "Another deploy is actively running (pid $running_pid). Exiting."
+        exit 0
+      else
+        log "Previous deploy process (pid $running_pid) is stale (deployment not active). Terminating it."
+        kill -TERM "$running_pid" 2>/dev/null || true
+        pkill -P "$running_pid" 2>/dev/null || true
+        sleep 1
+        kill -KILL "$running_pid" 2>/dev/null || true
+        rm -f "$LOCK_FILE"
+      fi
+    else
+      rm -f "$LOCK_FILE"
+    fi
   fi
   echo $$ > "$LOCK_FILE"
   trap 'rm -f "$LOCK_FILE"' EXIT

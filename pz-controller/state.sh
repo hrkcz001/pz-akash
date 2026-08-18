@@ -19,6 +19,7 @@ BACKUP_DIR="${BACKUP_DIR:-/data/backups}"
 STATE_DIR="${STATE_DIR:-/data}"
 RCON_PASSWORD="${RCON_PASSWORD:-}"
 RCON_PORT="${RCON_PORT:-27015}"
+SSH_PORT="${SSH_PORT:-2222}"
 SSH_CONNECT_TIMEOUT="${SSH_CONNECT_TIMEOUT:-10}"
 BACKUP_LOCK="$STATE_DIR/backup.lock"
 
@@ -66,6 +67,42 @@ server_info_val() { # $1 = key, $2 = default
   jq -r --arg k "$1" --arg d "$2" '.[$k] // $d' "$SERVES_REPO/server_info.json" 2>/dev/null || echo "$2"
 }
 
+LOCK_FILE="${LOCK_FILE:-$STATE_DIR/deploy.lock}"
+
+# Terminate running deploy process tree if any
+kill_running_deploy() {
+  if [ -f "$LOCK_FILE" ]; then
+    local dpid
+    dpid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+    if [ -n "$dpid" ] && kill -0 "$dpid" 2>/dev/null; then
+      echo "[deploy] Terminating running deploy.sh process (PID $dpid)..."
+      kill -TERM "$dpid" 2>/dev/null || true
+      pkill -P "$dpid" 2>/dev/null || true
+      sleep 1
+      if kill -0 "$dpid" 2>/dev/null; then
+        kill -KILL "$dpid" 2>/dev/null || true
+      fi
+    fi
+    rm -f "$LOCK_FILE"
+  fi
+  pkill -f "/usr/local/bin/deploy.sh" 2>/dev/null || true
+  pkill -f "deploy.sh" 2>/dev/null || true
+}
+
+reset_server_info_stopped() {
+  git_pull_state
+  local current_st current_ip
+  current_st=$(server_info_val status "stopped")
+  current_ip=$(server_info_val ip "")
+  if [ "$current_st" != "stopped" ] || [ -n "$current_ip" ]; then
+    echo "{\"ip\": \"\", \"port\": $SSH_PORT, \"status\": \"stopped\"}" > "$SERVES_REPO/server_info.json"
+    ( cd "$SERVES_REPO" && git add server_info.json \
+      && git commit -m "Server stopped - reset status and clear IP" || true \
+      && push_with_retry )
+    log "server_info.json updated: status=stopped, IP cleared."
+  fi
+}
+
 # --- shared Akash lifecycle helpers (used by both the halt trigger below and
 # schedule.sh's stop_at path). schedule.sh shadows log/api with its own
 # equivalents — identical behavior, just a different log prefix.
@@ -99,11 +136,10 @@ wait_server_stopped() {
   return 1
 }
 
-# close_deployment — close the active Akash deployment. This stops billing and
+# close_deployment [dseq] — close the active Akash deployment. This stops billing and
 # the unspent escrow is refunded to the wallet. No-op without an active dseq.
 close_deployment() {
-  local dseq
-  dseq=$(cat "$ACTIVE_DSEQ_FILE" 2>/dev/null || echo "")
+  local dseq="${1:-$(cat "$ACTIVE_DSEQ_FILE" 2>/dev/null || echo "")}"
   [ -n "$dseq" ] || return 0
   log "Closing deployment $dseq."
   api DELETE "/v1/deployments/$dseq" >/dev/null
@@ -178,6 +214,25 @@ process_triggers() {
     if [ -z "${AKASH_API_KEY:-}" ]; then
       echo "[trigger] WARNING: AKASH_API_KEY is not set — cannot deploy, start consumed anyway."
     else
+      # If previous deploy process is orphaned or dead on Akash, clean it up
+      if [ -f "$LOCK_FILE" ]; then
+        local old_pid
+        old_pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+        if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+          local is_act=false
+          if [ -f "$ACTIVE_DSEQ_FILE" ]; then
+            local dseq dep_st
+            dseq=$(cat "$ACTIVE_DSEQ_FILE")
+            dep_st=$(api GET "/v1/deployments/$dseq" | jq -r '.data.deployment.state // ""' 2>/dev/null)
+            [ "$dep_st" = "active" ] && is_act=true
+          fi
+          if [ "$is_act" = "false" ]; then
+            echo "[trigger] Terminating stale deploy process $old_pid for inactive deployment..."
+            kill_running_deploy
+          fi
+        fi
+      fi
+
       # Stream deploy output to BOTH the container stdout (Akash Console logs)
       # and the deploy log file.
       nohup /usr/local/bin/deploy.sh 2>&1 | tee -a "$STATE_DIR/deploy.log" &
@@ -194,6 +249,10 @@ process_triggers() {
   if [ -f "$SERVES_REPO/halt" ]; then
     echo "[trigger] halt trigger detected (halt) — consuming"
     consume_file halt
+
+    # Immediately terminate any in-flight deploy.sh process so it releases lock and stops polling
+    kill_running_deploy
+
     run_backup 1
     # Halt = graceful stop + close the Akash deployment (billing stops, unspent
     # escrow refunded), mirroring the stop_at path in schedule.sh.
@@ -207,5 +266,8 @@ process_triggers() {
     else
       echo "[trigger] AKASH_API_KEY not set or no active deployment — skipped deployment close."
     fi
+
+    # Reset server_info.json to stopped and clean up pending IP
+    reset_server_info_stopped
   fi
 }
