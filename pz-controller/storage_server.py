@@ -382,30 +382,18 @@ def render_html_dashboard(server_info: dict, manifest: dict, server_token: str =
             <div class="address-label">SERVER IP</div>
             <div class="address-value-row">
               <span class="address-text" id="ip-val">{ip}</span>
-              <button type="button" class="copy-btn" onclick="copyValue('{ip}', this)">
-                <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                <span>Copy</span>
-              </button>
             </div>
           </div>
           <div class="address-card">
             <div class="address-label">PORT</div>
             <div class="address-value-row">
               <span class="address-text" id="port-val">{port}</span>
-              <button type="button" class="copy-btn" onclick="copyValue('{port}', this)">
-                <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2v-4"></path></svg>
-                <span>Copy</span>
-              </button>
             </div>
           </div>
           <div class="address-card">
             <div class="address-label">SERVER PASSWORD</div>
             <div class="address-value-row">
               <span class="address-text" id="pwd-val" style="color:#fbbf24;">1488</span>
-              <button type="button" class="copy-btn" onclick="copyValue('1488', this)">
-                <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                <span>Copy</span>
-              </button>
             </div>
           </div>
         </div>
@@ -1386,30 +1374,18 @@ def render_html_dashboard(server_info: dict, manifest: dict, server_token: str =
               <div class="address-label">SERVER IP</div>
               <div class="address-value-row">
                 <span class="address-text" id="ip-val">${{ip}}</span>
-                <button type="button" class="copy-btn" onclick="copyValue('${{ip}}', this)">
-                  <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                  <span>Copy</span>
-                </button>
               </div>
             </div>
             <div class="address-card">
               <div class="address-label">PORT</div>
               <div class="address-value-row">
                 <span class="address-text" id="port-val">${{port}}</span>
-                <button type="button" class="copy-btn" onclick="copyValue('${{port}}', this)">
-                  <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2v-4"></path></svg>
-                  <span>Copy</span>
-                </button>
               </div>
             </div>
             <div class="address-card">
               <div class="address-label">SERVER PASSWORD</div>
               <div class="address-value-row">
                 <span class="address-text" id="pwd-val" style="color:#fbbf24;">1488</span>
-                <button type="button" class="copy-btn" onclick="copyValue('1488', this)">
-                  <svg class="copy-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                  <span>Copy</span>
-                </button>
               </div>
             </div>
           </div>
