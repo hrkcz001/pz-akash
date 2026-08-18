@@ -176,9 +176,26 @@ run_backup() {
   # lock doesn't stay held for the rest of the calling script).
   trap 'rmdir "$BACKUP_LOCK" 2>/dev/null || true; trap - RETURN' RETURN
 
-  local ip port
+  local ip port st
   ip=$(server_info_val ip "")
   port=$(server_info_val port 2222)
+  st=$(server_info_val status "stopped")
+
+  # If server is currently booting, wait up to 300s for it to become online before backup
+  if [ "$st" = "booting" ] || [ "$ip" = "pending" ]; then
+    echo "[backup] server is currently booting — waiting for server to be online before backup..."
+    local wait_deadline=$(( $(date +%s) + 300 ))
+    while [ "$(date +%s)" -lt "$wait_deadline" ]; do
+      git_pull_state
+      st=$(server_info_val status "")
+      ip=$(server_info_val ip "")
+      if [ "$st" = "online" ] && [ -n "$ip" ] && [ "$ip" != "pending" ]; then
+        break
+      fi
+      sleep 10
+    done
+  fi
+
   if [ -z "$ip" ] || [ "$ip" = "pending" ]; then
     echo "[backup] server IP is not configured — aborting backup"
     return 1
@@ -189,10 +206,20 @@ run_backup() {
   ts=$(date +%Y%m%d_%H%M%S)
   name="backup_$ts.zip"
 
-  if ! python3 /usr/local/bin/rcon.py "$ip" "$RCON_PORT" "$RCON_PASSWORD" "save"; then
-    echo "[backup] ERROR: RCON save failed — aborting to prevent corruption"
-    return 1
+  # Issue save via RCON with retries
+  local rcon_saved=false
+  for rcon_try in {1..3}; do
+    if python3 /usr/local/bin/rcon.py "$ip" "$RCON_PORT" "$RCON_PASSWORD" "save"; then
+      rcon_saved=true
+      break
+    fi
+    sleep 3
+  done
+
+  if [ "$rcon_saved" = "false" ]; then
+    echo "[backup] WARNING: RCON save failed (server may be starting or busy). Proceeding with SSH backup."
   fi
+  # Guaranteed time for save data to flush to disk
   sleep 5
 
   ssh -p "$port" -o StrictHostKeyChecking=no -o ConnectTimeout="$SSH_CONNECT_TIMEOUT" \
@@ -225,54 +252,79 @@ run_backup() {
 # process_triggers — consume and act on start/backup/halt files (call after
 # git_pull_state). Deploy runs in the background; backups run synchronously.
 process_triggers() {
-  if [ -f "$SERVES_REPO/start" ]; then
-    echo "[trigger] deploy trigger detected (start) — consuming and launching deploy"
-    consume_file start
-    if [ -z "${AKASH_API_KEY:-}" ]; then
-      echo "[trigger] WARNING: AKASH_API_KEY is not set — cannot deploy, start consumed anyway."
+  local has_start=false has_backup=false has_halt=false
+  [ -f "$SERVES_REPO/start" ] && has_start=true
+  [ -f "$SERVES_REPO/backup" ] && has_backup=true
+  [ -f "$SERVES_REPO/halt" ] && has_halt=true
+
+  # Priority 1: start (deploy)
+  if [ "$has_start" = "true" ]; then
+    if [ "$has_halt" = "true" ]; then
+      # If start and halt were pushed simultaneously, halt takes precedence
+      echo "[trigger] start and halt detected simultaneously — cancelling start trigger in favor of halt."
+      consume_file start
     else
-      # If previous deploy process is orphaned or dead on Akash, clean it up
-      if [ -f "$LOCK_FILE" ]; then
-        local old_pid
-        old_pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
-        if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
-          local is_act=false
-          if [ -f "$ACTIVE_DSEQ_FILE" ]; then
-            local dseq dep_st
-            dseq=$(cat "$ACTIVE_DSEQ_FILE")
-            dep_st=$(api GET "/v1/deployments/$dseq" | jq -r '.data.deployment.state // ""' 2>/dev/null)
-            [ "$dep_st" = "active" ] && is_act=true
-          fi
-          if [ "$is_act" = "false" ]; then
-            echo "[trigger] Terminating stale deploy process $old_pid for inactive deployment..."
-            kill_running_deploy
+      echo "[trigger] deploy trigger detected (start) — launching deploy"
+      consume_file start
+      if [ -z "${AKASH_API_KEY:-}" ]; then
+        echo "[trigger] WARNING: AKASH_API_KEY is not set — cannot deploy."
+      else
+        # If previous deploy process is orphaned or dead on Akash, clean it up
+        if [ -f "$LOCK_FILE" ]; then
+          local old_pid
+          old_pid=$(cat "$LOCK_FILE" 2>/dev/null || echo "")
+          if [ -n "$old_pid" ] && kill -0 "$old_pid" 2>/dev/null; then
+            local is_act=false
+            if [ -f "$ACTIVE_DSEQ_FILE" ]; then
+              local dseq dep_st
+              dseq=$(cat "$ACTIVE_DSEQ_FILE")
+              dep_st=$(api GET "/v1/deployments/$dseq" | jq -r '.data.deployment.state // .data.state // ""' 2>/dev/null)
+              [ "$dep_st" = "active" ] && is_act=true
+            fi
+            if [ "$is_act" = "false" ]; then
+              echo "[trigger] Terminating stale deploy process $old_pid for inactive deployment..."
+              kill_running_deploy
+            fi
           fi
         fi
-      fi
 
-      # Stream deploy output to BOTH the container stdout (Akash Console logs)
-      # and the deploy log file.
-      nohup /usr/local/bin/deploy.sh 2>&1 | tee -a "$STATE_DIR/deploy.log" &
-      echo "[trigger] deploy.sh started in background (pid $!) — logs follow in the console and $STATE_DIR/deploy.log"
+        # Stream deploy output to BOTH container stdout and deploy log file
+        nohup /usr/local/bin/deploy.sh 2>&1 | tee -a "$STATE_DIR/deploy.log" &
+        echo "[trigger] deploy.sh started in background (pid $!) — logs follow in the console and $STATE_DIR/deploy.log"
+      fi
     fi
   fi
 
-  if [ -f "$SERVES_REPO/backup" ]; then
-    echo "[trigger] manual backup trigger detected (backup) — consuming"
-    consume_file backup
-    run_backup 0
+  # Priority 2: backup (guaranteed safe backup before halt)
+  if [ "$has_backup" = "true" ]; then
+    echo "[trigger] manual backup trigger detected (backup) — executing safe backup"
+    local cur_st cur_ip
+    cur_st=$(server_info_val status "stopped")
+    cur_ip=$(server_info_val ip "")
+
+    if [ "$cur_st" = "stopped" ] && [ -z "$cur_ip" ] && [ ! -f "$ACTIVE_DSEQ_FILE" ]; then
+      echo "[trigger] server is completely offline and no deployment exists — consuming backup trigger."
+      consume_file backup
+    else
+      if run_backup 0; then
+        consume_file backup
+      else
+        echo "[trigger] backup execution did not complete — keeping backup trigger for retry."
+      fi
+    fi
   fi
 
-  if [ -f "$SERVES_REPO/halt" ]; then
-    echo "[trigger] halt trigger detected (halt) — consuming"
-    consume_file halt
+  # Priority 3: halt (guarantees server is stopped and closed)
+  if [ "$has_halt" = "true" ]; then
+    echo "[trigger] halt trigger detected (halt) — executing graceful stop and teardown"
 
     # Immediately terminate any in-flight deploy.sh process so it releases lock and stops polling
     kill_running_deploy
 
-    run_backup 1
-    # Halt = graceful stop + close the Akash deployment (billing stops, unspent
-    # escrow refunded), mirroring the stop_at path in schedule.sh.
+    # Run safe backup with halt flag (RCON save -> stream zip -> RCON quit)
+    run_backup 1 || true
+
+    # Close the Akash deployment (billing stops, unspent escrow refunded)
     if [ -n "${AKASH_API_KEY:-}" ] && [ -f "$ACTIVE_DSEQ_FILE" ]; then
       if wait_server_stopped; then
         echo "[trigger] server reported 'stopped' — closing deployment to stop billing."
@@ -286,5 +338,7 @@ process_triggers() {
 
     # Reset server_info.json to stopped and clean up pending IP
     reset_server_info_stopped
+
+    consume_file halt
   fi
 }
