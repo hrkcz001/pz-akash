@@ -441,7 +441,7 @@ def get_pz_version() -> str:
                     return v
             except Exception:
                 pass
-    return os.environ.get("PZ_VERSION", "42.20.2")
+    return os.environ.get("PZ_VERSION", "42.20.3")
 
 
 def get_readme_html(lang: str = "ru") -> str:
@@ -465,7 +465,7 @@ def get_readme_html(lang: str = "ru") -> str:
         pz_v = get_pz_version()
         fallback_md = f"""# ☣️ Быстрый старт и подключение
 
-> ⚠️ **Важно:** Перед установкой модов **настоятельно рекомендуется удалить или переименовать** существующую папку `Zomboid` (например, в `Zomboid_old`), чтобы избежать конфликтов со старыми версиями модов и поврежденным кэшем:
+> ⚠️ **Важно:** Перед установкой модов **настоятельно рекомендуется удалить или переименовать** существующую папку `Zomboid` (например, в `Zomboid_old`) и **запустить игру один раз**, чтобы создалась новая чистая папка, для избежания конфликтов со старыми версиями модов и файлами:
 > * **Windows**: `%USERPROFILE%\\Zomboid\\` (например, `C:\\Users\\<Имя>\\Zomboid\\`)
 > * **Linux / Steam Deck**: `~/Zomboid/`
 
@@ -496,7 +496,7 @@ def get_readme_html(lang: str = "ru") -> str:
         pz_v = get_pz_version()
         fallback_md = f"""# ☣️ Quick Join Guide
 
-> ⚠️ **Important:** Before installing mods, it is **strongly recommended to delete or rename** your existing `Zomboid` folder (e.g. to `Zomboid_old`) to avoid conflicts with old mod versions and corrupted cache:
+> ⚠️ **Important:** Before installing mods, it is **strongly recommended to delete or rename** your existing `Zomboid` folder (e.g. to `Zomboid_old`) and **launch the game once** to create a new clean folder, to avoid conflicts with old mod versions and files:
 > * **Windows**: `%USERPROFILE%\\Zomboid\\` (e.g. `C:\\Users\\<Name>\\Zomboid\\`)
 > * **Linux / Steam Deck**: `~/Zomboid/`
 
