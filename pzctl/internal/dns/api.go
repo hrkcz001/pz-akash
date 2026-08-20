@@ -114,6 +114,15 @@ func (c *Cloudflare) do(ctx context.Context, method, path string, in, out any) e
 		}
 	}
 
+	// A dry run reads and does not write. It happens after the body is built, so
+	// that a body this package could not encode still fails here rather than
+	// looking like a clean plan; and every caller that writes passes a nil out, so
+	// nothing downstream is left holding an undecoded result.
+	if c.dryRun && method != "GET" {
+		c.logf("cloudflare: DRY RUN would %s %s %s", method, path, snip(string(body)))
+		return nil
+	}
+
 	// Every call is bounded here rather than at the call site. A DNS update is
 	// never worth blocking a deploy on, and an unbounded one could.
 	if c.timeout > 0 {

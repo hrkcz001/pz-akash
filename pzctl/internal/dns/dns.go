@@ -48,6 +48,8 @@ type Cloudflare struct {
 	logf  func(string, ...any)
 	sleep func(context.Context, time.Duration) error
 
+	dryRun bool
+
 	timeout   time.Duration
 	retries   int
 	retryWait time.Duration
@@ -66,6 +68,12 @@ type Options struct {
 
 	HTTP *http.Client
 	Logf func(string, ...any)
+
+	// DryRun performs every read and no write: a sync reports what it would have
+	// changed, having actually compared it against the live zone. This is the only
+	// safe way to point v2 at a zone v1 has been managing, where the question is
+	// not "does the code work" but "what is already in there".
+	DryRun bool
 
 	// sleep is overridden in tests so a backoff costs no wall-clock time.
 	sleep func(context.Context, time.Duration) error
@@ -102,6 +110,7 @@ func New(o Options) (*Cloudflare, error) {
 		hc:        o.HTTP,
 		logf:      o.Logf,
 		sleep:     o.sleep,
+		dryRun:    o.DryRun,
 		timeout:   o.Zone.Timeout.D(),
 		retries:   o.Zone.Retries,
 		retryWait: o.Zone.RetryWait.D(),

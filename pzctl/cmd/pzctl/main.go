@@ -20,6 +20,11 @@
 // Step 4 adds the in-container agent, which replaces v1's entrypoint.sh:
 //
 //	pzctl agent
+//
+// Step 5 adds the live Akash driver and the Cloudflare zone:
+//
+//	pzctl controller
+//	pzctl dns zones|sync|clear-game
 package main
 
 import (
@@ -46,10 +51,19 @@ Usage:
   pzctl state show                       read the live state; --dir reads a v1 checkout
   pzctl controller [--dry-run]           run the controller; --dry-run stubs Akash
   pzctl agent [--controller-url URL]     run the in-container server agent
+  pzctl dns zones                        list the Cloudflare zones the token can see
+  pzctl dns sync --controller URL        point the apex (and www) at the controller
+  pzctl dns sync --game ADDRESS          point dns.game_record at the game server
+  pzctl dns clear-game                   remove the game record
   pzctl version
 
 Config file resolution, in order:
   -c FILE, $PZ_CONFIG, ./config.yaml, ./pzctl/config.yaml
+
+` + "`pzctl dns`" + ` accepts --dry-run, which reads the live zone and reports what it
+would change without writing anything. The game record is also written automatically
+on every server deploy; the controller record is not, because a controller cannot
+know the address Akash assigned to its own lease.
 
 Secrets are never read from the config file. See ` + "`pzctl config secrets`" + `.
 `
@@ -77,6 +91,8 @@ func run(args []string) error {
 		return cmdController(args[1:])
 	case "agent":
 		return cmdAgent(args[1:])
+	case "dns":
+		return cmdDNS(args[1:])
 	case "version", "--version", "-v":
 		fmt.Println("pzctl " + version)
 		return nil
