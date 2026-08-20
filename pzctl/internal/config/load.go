@@ -67,6 +67,7 @@ func Defaults() *Config {
 			DeployDays:         2,
 			InitialDepositDays: 1,
 			MaxAttempts:        15,
+			MaxDeployAttempts:  4,
 			BlocksPerDay:       14400,
 			AdoptUnleased:      true,
 			Price: Price{

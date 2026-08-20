@@ -8,6 +8,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateRejectsAnUnknownDenom(t *testing.T) {
@@ -240,6 +241,131 @@ func TestValidateRejectsAGameRecordCollision(t *testing.T) {
 	c.DNS.GameRecord = "www"
 	if err := c.Validate(); err != nil {
 		t.Errorf("game_record www was rejected with include_www off: %v", err)
+	}
+}
+
+// TestValidateChecksGameTTL: the TTL is the only DNS number with a real cost
+// attached. Too long and a redeploy leaves players resolving a dead lease for as
+// long as the record says; 1 means "let Cloudflare decide", which is only correct
+// for a proxied record and the game record is never proxied. Cloudflare's own floor
+// for an unproxied record is 60.
+func TestValidateChecksGameTTL(t *testing.T) {
+	cases := []struct {
+		ttl int
+		ok  bool
+	}{
+		{60, true},
+		{300, true},
+		{86400, true},
+		{1, true}, // automatic
+		{0, false},
+		{30, false},
+		{59, false},
+		{86401, false},
+		{-1, false},
+	}
+	for _, tc := range cases {
+		c := mustLoadReal(t)
+		c.DNS.GameTTL = tc.ttl
+		err := c.Validate()
+		switch {
+		case tc.ok && err != nil:
+			t.Errorf("game_ttl %d was rejected: %v", tc.ttl, err)
+		case !tc.ok && err == nil:
+			t.Errorf("game_ttl %d was accepted", tc.ttl)
+		case !tc.ok && !strings.Contains(err.Error(), "dns.game_ttl"):
+			t.Errorf("game_ttl %d: error does not name the field:\n%v", tc.ttl, err)
+		}
+	}
+
+	// With no game record there is no TTL to be wrong about, so the check does not
+	// fire: an operator who has turned the record off should not have to keep a
+	// number valid for it.
+	c := mustLoadReal(t)
+	c.DNS.GameRecord = ""
+	c.DNS.GameTTL = 0
+	if err := c.Validate(); err != nil {
+		t.Errorf("game_ttl 0 was rejected with the game record disabled: %v", err)
+	}
+}
+
+// TestValidateChecksTheCloudflareCall covers the four keys that describe the HTTP
+// call itself. They exist because v1 hardcoded all four, and a hardcoded timeout is
+// the reason a Cloudflare outage could hold a deploy open indefinitely.
+func TestValidateChecksTheCloudflareCall(t *testing.T) {
+	cases := []struct {
+		name  string
+		spoil func(*Config)
+		field string
+	}{
+		{"an api_base that is not a URL", func(c *Config) { c.DNS.APIBase = "api.cloudflare.com/client/v4" }, "dns.api_base"},
+		{"an empty api_base", func(c *Config) { c.DNS.APIBase = "" }, "dns.api_base"},
+		{"a zero timeout", func(c *Config) { c.DNS.Timeout = Duration(0) }, "dns.timeout"},
+		{"a negative timeout", func(c *Config) { c.DNS.Timeout = Duration(-time.Second) }, "dns.timeout"},
+		{"negative retries", func(c *Config) { c.DNS.Retries = -1 }, "dns.retries"},
+		{"a zero retry_wait", func(c *Config) { c.DNS.RetryWait = Duration(0) }, "dns.retry_wait"},
+		{"no zone_id", func(c *Config) { c.DNS.ZoneID = "" }, "dns.zone_id"},
+		{"no domain", func(c *Config) { c.DNS.Domain = "" }, "dns.domain"},
+		{"an unsupported provider", func(c *Config) { c.DNS.Provider = "route53" }, "dns.provider"},
+		{"an unknown ssl_mode", func(c *Config) { c.DNS.SSLMode = "half" }, "dns.ssl_mode"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := mustLoadReal(t)
+			tc.spoil(c)
+			err := c.Validate()
+			if err == nil {
+				t.Fatalf("%s was accepted", tc.name)
+			}
+			if !strings.Contains(err.Error(), tc.field) {
+				t.Errorf("error does not name %s:\n%v", tc.field, err)
+			}
+		})
+	}
+
+	// Every one of them is ignored when DNS is off. A deployment that does not manage
+	// a zone must not be blocked by a stale zone id in the file.
+	c := mustLoadReal(t)
+	c.DNS.Enabled = false
+	c.DNS.ZoneID, c.DNS.Domain, c.DNS.APIBase = "", "", "nonsense"
+	c.DNS.Retries, c.DNS.Timeout = -5, Duration(0)
+	if err := c.Validate(); err != nil {
+		t.Errorf("a broken dns block was rejected with dns.enabled false: %v", err)
+	}
+}
+
+// TestValidateSeparatesTheTwoAttemptBudgets: closes and deploys retry for different
+// reasons and at wildly different cost — an API call against an escrow plus a bid
+// window plus a lease-ready wait. One knob for both would mean either abandoning a
+// billing lease too early or churning deployments for hours, so there are two, and
+// both have to be positive.
+func TestValidateSeparatesTheTwoAttemptBudgets(t *testing.T) {
+	for _, tc := range []struct {
+		field string
+		spoil func(*Config)
+	}{
+		{"akash.max_attempts", func(c *Config) { c.Akash.MaxAttempts = 0 }},
+		{"akash.max_attempts", func(c *Config) { c.Akash.MaxAttempts = -1 }},
+		{"akash.max_deploy_attempts", func(c *Config) { c.Akash.MaxDeployAttempts = 0 }},
+		{"akash.max_deploy_attempts", func(c *Config) { c.Akash.MaxDeployAttempts = -3 }},
+	} {
+		c := mustLoadReal(t)
+		tc.spoil(c)
+		err := c.Validate()
+		if err == nil {
+			t.Errorf("%s: a non-positive budget was accepted", tc.field)
+			continue
+		}
+		if !strings.Contains(err.Error(), tc.field) {
+			t.Errorf("error does not name %s:\n%v", tc.field, err)
+		}
+	}
+
+	// They are genuinely independent settings, not one aliased twice.
+	c := mustLoadReal(t)
+	if c.Akash.MaxDeployAttempts == c.Akash.MaxAttempts {
+		t.Errorf("both budgets ship as %d; a deploy retry costs far more than a close retry",
+			c.Akash.MaxAttempts)
 	}
 }
 

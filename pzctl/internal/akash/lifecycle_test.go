@@ -210,14 +210,22 @@ func TestAliveMatchesPartialIdentity(t *testing.T) {
 
 // adoptListDoc is GET /v1/deployments: our server, the controller, an unleased
 // deployment, and one that is already closed.
-const adoptListDoc = `{"data":[{"deployments":[
+//
+// Two details are copied from a real response rather than invented. data is an
+// object, not an array of pages — the shape this fixture had until the first live
+// call, and the reason it is worth saying twice. And the leases are deliberately
+// mispaired: 5001 is listed with 5002's lease and 5002 with 5001's, which is what
+// Console actually returned for a wallet holding two deployments. Nothing decodes
+// them, and the assertion that 5001 is claimed with provider akash1a — from the
+// detail call — is what would fail if anything started to.
+const adoptListDoc = `{"data":{"deployments":[
   {"deployment":{"id":{"owner":"akash1owner","dseq":"5001"},"state":"active"},
-   "leases":[{"id":{"dseq":"5001","gseq":1,"oseq":1,"provider":"akash1a"},"state":"active"}]},
-  {"deployment":{"id":{"owner":"akash1owner","dseq":"5002"},"state":"active"},
    "leases":[{"id":{"dseq":"5002","gseq":1,"oseq":1,"provider":"akash1b"},"state":"active"}]},
+  {"deployment":{"id":{"owner":"akash1owner","dseq":"5002"},"state":"active"},
+   "leases":[{"id":{"dseq":"5001","gseq":1,"oseq":1,"provider":"akash1a"},"state":"active"}]},
   {"deployment":{"id":{"owner":"akash1owner","dseq":"5003"},"state":"open"},"leases":[]},
   {"deployment":{"id":{"owner":"akash1owner","dseq":"5004"},"state":"closed"},"leases":[]}
-], "pagination":{"total":4,"skip":0,"limit":1000,"hasMore":false}}]}`
+], "pagination":{"total":4,"skip":0,"limit":1000,"hasMore":false}}}`
 
 // adoptDetail answers the per-deployment call Adopt makes to read service names.
 func adoptDetail(r *http.Request, _ []byte) (int, string) {

@@ -264,6 +264,7 @@ func (c *Config) validateAkash(p *problems) {
 		p.addf("akash.initial_deposit_days (%d) exceeds akash.deploy_days (%d)", a.InitialDepositDays, a.DeployDays)
 	}
 	requirePositive(p, "akash.max_attempts", a.MaxAttempts)
+	requirePositive(p, "akash.max_deploy_attempts", a.MaxDeployAttempts)
 	requirePositive(p, "akash.blocks_per_day", a.BlocksPerDay)
 
 	if a.Price.MinUSDPerDay < 0 {

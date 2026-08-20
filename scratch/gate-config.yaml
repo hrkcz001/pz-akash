@@ -86,8 +86,8 @@ controller:
     active: 60s
 
 server:
-  image: ghcr.io/hrkcz001/pz-akash-server
-  image_tag: sha-bcba937
+  image: nginx
+  image_tag: alpine
   resources:
     cpu: "8"
     memory: 16Gi
@@ -142,20 +142,7 @@ akash:
   # be enough to get the lease created.
   initial_deposit_days: 1
 
-  # Retries of a failing close. Cheap — a close is one API call — so the number is
-  # generous: a lease left billing is the expensive outcome.
   max_attempts: 15
-
-  # Deployments one start trigger may create before giving up. Each attempt costs a
-  # bid window plus a lease_ready wait, so this is deliberately small.
-  #
-  # It is not zero because a provider can win the bid, accept the lease, and then
-  # never assign the dedicated IP the SDL asked for — the lease goes active with a
-  # ready replica and forwarded ports on a shared host, which players cannot use.
-  # Seen live on the nearest eligible provider. The driver skip-lists it, so a retry
-  # lands somewhere else; usually the eligible providers run out before this does.
-  max_deploy_attempts: 4
-
   blocks_per_day: 14400
 
   # Adoption normally identifies our deployments by the service running in them,
@@ -190,10 +177,18 @@ akash:
     allowed_denoms: [uact, uakt]
 
   placement:
-    # Explicit ISO 3166-1 alpha-2, replacing v1's fuzzy country-name matching.
-    countries:
-      [AT, BE, BG, HR, CY, CZ, DK, EE, FI, FR, DE, GR, HU, IE, IT, LV, LT, LU,
-       MT, NL, PL, PT, RO, SK, SI, ES, SE, GB, CH, NO, UA]
+    # Gate run 3: PT only.
+    #
+    # Run 1 (HR/europlots) won the bid, accepted the lease, and then never assigned
+    # the dedicated IP — it returned forwarded ports on a shared host instead.
+    # Run 2 (BG/digitalfrontier) did not bid at all, which is consistent with it
+    # having no spare IP: it is already leasing one to v1's live server.
+    #
+    # So run 3 goes to the other digitalfrontier site. Same operator as the provider
+    # that demonstrably does deliver IPs, different machine, and not already holding
+    # one of ours. What is under test is our own plumbing, not the market; the driver
+    # skip list is what handles this at runtime.
+    countries: [PT]
     # Warsaw — bids within the price tolerance are ranked by distance from here.
     ref_lat: 52.2297
     ref_lon: 21.0122

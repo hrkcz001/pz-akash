@@ -213,6 +213,19 @@ type Akash struct {
 	MaxAttempts  int `yaml:"max_attempts"`   // MAX_ATTEMPTS
 	BlocksPerDay int `yaml:"blocks_per_day"` // BLOCKS_PER_DAY
 
+	// MaxDeployAttempts bounds how many deployments one start may create before
+	// giving up. It is separate from MaxAttempts because the two failures cost
+	// different things: a retried close is an API call, while a retried deploy is
+	// an escrow funded, a bid window waited out, and a lease-ready timeout — tens
+	// of minutes each. Keeping them on one knob would mean either giving up on a
+	// close too early or churning deployments for hours.
+	//
+	// A retry is worth having at all because a provider can win the bid, accept
+	// the lease, and then never assign the dedicated IP the SDL asked for. The
+	// driver skip-lists such a provider, so in practice the network runs out of
+	// eligible providers before this number does.
+	MaxDeployAttempts int `yaml:"max_deploy_attempts"`
+
 	// AdoptUnleased lets adoption claim an open deployment that has no lease at
 	// all. That is the wreckage of a controller that died between creating a
 	// deployment and leasing it: escrow funded, nothing running, and no service

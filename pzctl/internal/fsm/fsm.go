@@ -131,6 +131,19 @@ type Machine struct {
 	// errors does not turn into an infinite push loop.
 	closeAttempts int
 
+	// deployAttempts counts deploys made for the start trigger currently being
+	// served, and is nonzero only while a failed one is being cleaned up. It is
+	// therefore also the signal that the close in flight is that cleanup rather
+	// than a halt — see onCloseResult.
+	//
+	// The retry exists because a provider can win a bid, accept the lease, and
+	// then never assign the dedicated IP the SDL asked for: the lease goes active
+	// with a ready replica and forwarded ports on a shared host, which is not
+	// something a game server can be reached at. Observed live, on the nearest
+	// eligible provider. Without a retry that provider turns every start into an
+	// offline server until an operator presses start again.
+	deployAttempts int
+
 	// warned remembers one-shot log lines, so an unknown trigger file left in
 	// place does not print on every poll.
 	warned map[string]bool

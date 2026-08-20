@@ -161,6 +161,9 @@ func (m *Machine) toStatus(to state.Status, why string) {
 // fail records an unrecoverable problem with the current cycle.
 func (m *Machine) fail(err error) {
 	m.logf("fsm: FAILED: %v", err)
+	// Failed is where an operator takes over, so the retry budget goes back to
+	// full: their next start trigger should not inherit a spent one.
+	m.deployAttempts = 0
 	m.doc.Fail(err, m.stamp())
 	m.dirty("failed: " + err.Error())
 }
@@ -379,9 +382,10 @@ func (m *Machine) beginHalt(ctx context.Context, reason string) {
 	}
 }
 
-// beginClose moves to closing and starts the job. Reaching offline always ends
-// with intent stopped, so the document never claims to want a server it has just
-// torn down.
+// beginClose moves to closing and starts the job. Reaching offline ends with intent
+// stopped, so the document never claims to want a server it has just torn down —
+// the one exception being a close that is clearing the way for a deploy retry, which
+// has not stopped wanting one.
 func (m *Machine) beginClose(ctx context.Context, reason string) {
 	m.doc.ClearBackupRequest(m.stamp())
 	if m.doc.Lease == nil {
@@ -424,15 +428,43 @@ func (m *Machine) onCloseResult(ctx context.Context, out *closeOutcome) {
 	m.doc.Lease = nil
 	m.doc.Endpoint = state.Endpoint{}
 	m.doc.Price = state.Price{}
-	m.doc.Intent = state.IntentStopped
 	m.toStatus(state.StatusOffline, "closed dseq "+out.lease.DSeq)
 	m.dirty("closed dseq " + out.lease.DSeq)
+
+	if m.retryDeploy() {
+		// The lease is gone, so I1 holds and a second deploy is legal. The provider
+		// that just failed is on the driver's skip list, so this is an attempt at a
+		// different one rather than a repeat of the same wall.
+		m.beginDeploy(ctx, fmt.Sprintf("retrying the deploy (attempt %d of %d)",
+			m.deployAttempts+1, m.cfg.Akash.MaxDeployAttempts))
+		return
+	}
+	m.deployAttempts = 0
+	m.doc.Intent = state.IntentStopped
 	m.advance(ctx)
+}
+
+// retryDeploy decides whether the close that just completed should be followed by
+// another deploy.
+//
+// Three things all have to hold. The close has to have been cleaning up a failed
+// deploy (deployAttempts is nonzero only then); the operator must not have asked
+// for a halt in the meantime, because that ask outranks our own retry; and the
+// budget must not be spent. Note that the budget is rarely what stops this — the
+// driver skip-lists each provider that fails, so after a few attempts there is
+// nothing eligible left and the deploy fails before it creates anything, which is
+// both cheaper and a better error message than "attempt 15 of 15".
+func (m *Machine) retryDeploy() bool {
+	return m.deployAttempts > 0 &&
+		m.doc.Intent == state.IntentRunning &&
+		m.deployAttempts < m.cfg.Akash.MaxDeployAttempts
 }
 
 // --- deploy ---
 
-// beginDeploy starts a deployment. Only a start trigger reaches here.
+// beginDeploy starts a deployment. Two things reach here: a start trigger, and the
+// retry that follows a deploy which created a lease and then could not be reached
+// (see retryDeploy). Nothing else may — offline does not redeploy on its own.
 func (m *Machine) beginDeploy(ctx context.Context, reason string) {
 	if m.job != nil {
 		m.logf("fsm: start ignored, %s is in flight", m.job.what)
@@ -462,10 +494,11 @@ func (m *Machine) beginDeploy(ctx context.Context, reason string) {
 	// before anything can start billing for it.
 	m.flushNow(ctx)
 
+	m.deployAttempts++
 	req := DeployRequest{
 		ControllerURL: m.ctlURL,
 		RestoreTarget: m.doc.RestoreTarget,
-		Attempt:       1,
+		Attempt:       m.deployAttempts,
 	}
 	budget := m.cfg.Akash.Timeouts.BidWait.D() + m.cfg.Akash.Timeouts.LeaseReady.D()
 	m.start(ctx, "deploy", func(jctx context.Context) Event {
@@ -507,6 +540,8 @@ func (m *Machine) onDeployResult(ctx context.Context, out *deployOutcome) {
 
 	m.doc.Endpoint = out.res.Endpoint
 	m.dirty("endpoint " + m.doc.Endpoint.IP)
+	// The budget bought a routable lease, which is what it was for.
+	m.deployAttempts = 0
 
 	if m.doc.Intent == state.IntentStopped {
 		// A halt arrived while we were deploying. The lease exists, so it has to

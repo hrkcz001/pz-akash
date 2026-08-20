@@ -102,7 +102,7 @@ func TestClientHonoursRetryAfter(t *testing.T) {
 		if calls == 1 {
 			return 429, `{"error":"rate limited"}`
 		}
-		return 200, `{"data":[]}`
+		return 200, `{"data":{"deployments":[],"pagination":{"total":0}}}`
 	})
 	// The fake cannot set headers through the handler signature, so the header is
 	// added by a wrapper around the whole server for this test.

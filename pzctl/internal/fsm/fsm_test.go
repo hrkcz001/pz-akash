@@ -1,6 +1,7 @@
 package fsm
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -241,7 +242,9 @@ func TestHaltDuringDeploy(t *testing.T) {
 }
 
 // TestDeployFailureAfterLeaseClosesIt covers the shape of failure that leaks
-// money: the lease is created and then the deploy fails.
+// money: the lease is created and then the deploy fails. It must be closed, and —
+// because the usual cause is one bad provider rather than a bad network — another
+// provider must be tried, up to akash.max_deploy_attempts.
 func TestDeployFailureAfterLeaseClosesIt(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, nil)
@@ -253,10 +256,67 @@ func TestDeployFailureAfterLeaseClosesIt(t *testing.T) {
 
 	h.wantStatus(state.StatusOffline)
 	h.wantLease(false)
+	// The assertion that matters: every deployment the retries created was closed.
 	h.wantLive(0)
 	if !h.logged("deploy failed after creating dseq") {
 		h.dumpLogs()
 		t.Fatal("the partial lease was not recognised")
+	}
+	if !h.logged("retrying the deploy") {
+		h.dumpLogs()
+		t.Fatal("a deploy that failed after leasing was not retried against another provider")
+	}
+	// Bounded, and by the deploy knob rather than the close one: an unbounded retry
+	// is v1's bug 2 with a different trigger.
+	max := h.m.cfg.Akash.MaxDeployAttempts
+	if got := h.logCount("fsm: deploy started"); got != max {
+		h.dumpLogs()
+		t.Fatalf("made %d deploys, want exactly max_deploy_attempts (%d)", got, max)
+	}
+	if !h.logged(fmt.Sprintf("attempt %d of %d", max, max)) {
+		h.dumpLogs()
+		t.Errorf("the last retry did not report itself as attempt %d of %d", max, max)
+	}
+	// Giving up leaves the document not wanting a server, so nothing resumes it
+	// behind the operator's back.
+	h.wantIntent(state.IntentStopped)
+}
+
+// TestDeployRetryYieldsToAHalt: the retry is ours, the halt is the operator's. If
+// one arrives while a failed attempt is being cleaned up, the cleanup is the end of
+// it — otherwise a halt during a bad patch of providers would be ignored for as
+// many attempts as the budget allows.
+func TestDeployRetryYieldsToAHalt(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t, nil)
+	h.dry.FailDeploy = true
+	release := h.holdDeploys()
+	defer release()
+
+	h.trigger("start", "")
+	h.poll()
+	h.wantStatus(state.StatusDeploying)
+
+	// The halt has to be consumed while the deploy is still parked: that is the
+	// window in which the operator's ask and our retry contend.
+	h.trigger("halt", "")
+	h.poll()
+	h.wantIntent(state.IntentStopped)
+
+	release()
+	h.settle()
+
+	h.wantStatus(state.StatusOffline)
+	h.wantLease(false)
+	h.wantLive(0)
+	h.wantIntent(state.IntentStopped)
+	if h.logged("retrying the deploy") {
+		h.dumpLogs()
+		t.Fatal("the deploy was retried after a halt was asked for")
+	}
+	if got := h.logCount("fsm: deploy started"); got != 1 {
+		h.dumpLogs()
+		t.Errorf("made %d deploys after a halt, want 1", got)
 	}
 }
 

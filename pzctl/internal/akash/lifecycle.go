@@ -130,34 +130,33 @@ func (d *Driver) Adopt(ctx context.Context) ([]state.Lease, error) {
 		out    []state.Lease
 		looked int
 	)
-	for _, page := range list.Data {
-		if page.Pagination.HasMore {
-			// Worth saying out loud: a truncated list means a lease we did not look
-			// at, and the whole point of Adopt is that nothing is missed.
-			d.Logf("akash: WARNING the deployment list is paginated (%d total) and only the first page was read",
-				page.Pagination.Total)
+	if list.Data.Pagination.HasMore {
+		// Worth saying out loud: a truncated list means a lease we did not look at,
+		// and the whole point of Adopt is that nothing is missed.
+		d.Logf("akash: WARNING the deployment list is paginated (%d total) and only the first page was read",
+			list.Data.Pagination.Total)
+	}
+	for _, dep := range list.Data.Deployments {
+		dseq, err := decodeSeq(dep.Deployment.ID.DSeq)
+		if err != nil || dseq == "" {
+			continue
 		}
-		for _, dep := range page.Deployments {
-			dseq, err := decodeSeq(dep.Deployment.ID.DSeq)
-			if err != nil || dseq == "" {
-				continue
-			}
-			switch strings.ToLower(strings.TrimSpace(dep.Deployment.State)) {
-			case deployStateOpen, leaseStateActive:
-			default:
-				continue
-			}
-			looked++
-			// The list endpoint's leases carry no status, so the service name — the
-			// only thing that identifies a deployment as ours — needs the detail call.
-			l, ok, err := d.adoptable(ctx, dseq)
-			if err != nil {
-				d.Logf("akash: could not inspect dseq %s while adopting: %v", dseq, err)
-				continue
-			}
-			if ok {
-				out = append(out, l)
-			}
+		switch strings.ToLower(strings.TrimSpace(dep.Deployment.State)) {
+		case deployStateOpen, leaseStateActive:
+		default:
+			continue
+		}
+		looked++
+		// The detail call is not an optimisation to remove. The list's own leases
+		// identify the wrong deployment — see deploymentList — and the service name,
+		// the only thing that says a deployment is ours, is not in the list at all.
+		l, ok, err := d.adoptable(ctx, dseq)
+		if err != nil {
+			d.Logf("akash: could not inspect dseq %s while adopting: %v", dseq, err)
+			continue
+		}
+		if ok {
+			out = append(out, l)
 		}
 	}
 	d.Logf("akash: adopt inspected %d open deployment(s), claimed %d", looked, len(out))

@@ -24,6 +24,7 @@
 // Step 5 adds the live Akash driver and the Cloudflare zone:
 //
 //	pzctl controller
+//	pzctl akash providers|deploy|leases|escrow|close
 //	pzctl dns zones|sync|clear-game
 package main
 
@@ -51,6 +52,11 @@ Usage:
   pzctl state show                       read the live state; --dir reads a v1 checkout
   pzctl controller [--dry-run]           run the controller; --dry-run stubs Akash
   pzctl agent [--controller-url URL]     run the in-container server agent
+  pzctl akash providers [--role ROLE]    list the providers that meet the placement rules
+  pzctl akash deploy --role ROLE         create one deployment; --close closes it again
+  pzctl akash leases                     list every open deployment that looks like ours
+  pzctl akash escrow --dseq DSEQ         what a deployment has left to spend
+  pzctl akash close --dseq DSEQ          close a deployment and stop the billing
   pzctl dns zones                        list the Cloudflare zones the token can see
   pzctl dns sync --controller URL        point the apex (and www) at the controller
   pzctl dns sync --game ADDRESS          point dns.game_record at the game server
@@ -64,6 +70,10 @@ Config file resolution, in order:
 would change without writing anything. The game record is also written automatically
 on every server deploy; the controller record is not, because a controller cannot
 know the address Akash assigned to its own lease.
+
+` + "`pzctl akash`" + ` spends real money. Every deployment it creates funds an escrow,
+so a deploy that fails partway still prints its dseq — that is the number ` +
+	"`akash close`" + ` needs. Run ` + "`pzctl akash leases`" + ` after any crash.
 
 Secrets are never read from the config file. See ` + "`pzctl config secrets`" + `.
 `
@@ -91,6 +101,8 @@ func run(args []string) error {
 		return cmdController(args[1:])
 	case "agent":
 		return cmdAgent(args[1:])
+	case "akash":
+		return cmdAkash(args[1:])
 	case "dns":
 		return cmdDNS(args[1:])
 	case "version", "--version", "-v":

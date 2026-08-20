@@ -217,6 +217,20 @@ func (h *harness) logged(substr string) bool {
 	return false
 }
 
+// logCount is how many log lines contain substr, for the assertions that care that
+// something happened a bounded number of times rather than merely happened.
+func (h *harness) logCount(substr string) int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	n := 0
+	for _, l := range h.logs {
+		if strings.Contains(l, substr) {
+			n++
+		}
+	}
+	return n
+}
+
 // --- operator actions ---
 
 // push writes files on main and pushes them, the way an operator does.

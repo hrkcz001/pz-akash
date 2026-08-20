@@ -119,6 +119,9 @@ func (m *Machine) consumeTriggers(ctx context.Context) {
 	case act[TriggerHalt].Name != "":
 		m.beginHalt(ctx, "halt trigger")
 	case act[TriggerStart].Name != "":
+		// An operator's ask starts its own retry budget, whatever the last cycle
+		// spent.
+		m.deployAttempts = 0
 		m.beginDeploy(ctx, "start trigger")
 	}
 

@@ -134,11 +134,14 @@ func pick(coins []coin, d string) (float64, bool) {
 	return 0, false
 }
 
-// deploymentList is GET /v1/deployments, used by Adopt. The leases it returns
-// carry no status, so anything that needs to know which service is running has to
-// follow up per deployment.
+// deploymentList is GET /v1/deployments, used by Adopt.
+//
+// data is an object holding deployments and pagination — not, as this type first
+// had it, an array of pages. The difference is invisible until the call is made
+// against the real API, which is why it survived a whole test suite: a fake is only
+// ever as right as whoever wrote it.
 type deploymentList struct {
-	Data []struct {
+	Data struct {
 		Deployments []struct {
 			Deployment struct {
 				ID struct {
@@ -148,7 +151,15 @@ type deploymentList struct {
 				State     string `json:"state"`
 				CreatedAt string `json:"created_at"`
 			} `json:"deployment"`
-			Leases []leaseDetail `json:"leases"`
+			// Leases is deliberately absent. The list response carries one, and on a
+			// wallet holding two deployments it carried each deployment paired with the
+			// *other* one's lease — same gseq and oseq, a dseq belonging to its
+			// neighbour. Whether that is a zip bug in Console or an ordering nobody
+			// documented, a lease read from here identifies the wrong deployment, and
+			// the one thing this list is used for is deciding what to close.
+			//
+			// Everything that needs a lease asks /v1/deployments/{dseq}, where the
+			// answer is scoped to the deployment by construction.
 		} `json:"deployments"`
 		Pagination struct {
 			Total   int  `json:"total"`
