@@ -108,8 +108,13 @@ func TestRenderControllerShape(t *testing.T) {
 	if len(doc.Endpoints) != 0 {
 		t.Errorf("controller SDL must not declare endpoints, got %v", doc.Endpoints)
 	}
-	if got := doc.Profiles.Placement[PlacementName].Pricing[ControllerService].Amount; got != cfg.Controller.PricingUAKT {
-		t.Errorf("pricing amount = %d, want %d", got, cfg.Controller.PricingUAKT)
+	if got := doc.Profiles.Placement[PlacementName].Pricing[ControllerService].Amount; got != cfg.Controller.PricingAmount {
+		t.Errorf("pricing amount = %d, want %d", got, cfg.Controller.PricingAmount)
+	}
+	// The denomination has to be the one the wallet spends, not a constant: the
+	// template hardcoded uakt while every real bid arrives in uact.
+	if got := doc.Profiles.Placement[PlacementName].Pricing[ControllerService].Denom; got != cfg.Akash.Price.Denom {
+		t.Errorf("pricing denom = %q, want %q", got, cfg.Akash.Price.Denom)
 	}
 	if got := doc.Deployment[ControllerService][PlacementName].Count; got != 1 {
 		t.Errorf("count = %d, want 1", got)
@@ -131,7 +136,7 @@ func TestRenderControllerFoldsWebhookOntoHTTPPort(t *testing.T) {
 
 func TestRenderServerShape(t *testing.T) {
 	cfg := loadCfg(t)
-	raw, err := RenderServer(Input{Cfg: cfg, MaxUAKT: 69})
+	raw, err := RenderServer(Input{Cfg: cfg, MaxPricePerBlock: 69})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -161,13 +166,13 @@ func TestRenderServerShape(t *testing.T) {
 
 func TestRenderServerFallsBackToPlaceholderPricing(t *testing.T) {
 	cfg := loadCfg(t)
-	raw, err := RenderServer(Input{Cfg: cfg}) // MaxUAKT unset
+	raw, err := RenderServer(Input{Cfg: cfg}) // MaxPricePerBlock unset
 	if err != nil {
 		t.Fatal(err)
 	}
 	doc := parse(t, raw)
-	if got := doc.Profiles.Placement[PlacementName].Pricing[ServerService].Amount; got != cfg.Server.PricingUAKT {
-		t.Errorf("pricing amount = %d, want the placeholder %d", got, cfg.Server.PricingUAKT)
+	if got := doc.Profiles.Placement[PlacementName].Pricing[ServerService].Amount; got != cfg.Server.PricingAmount {
+		t.Errorf("pricing amount = %d, want the placeholder %d", got, cfg.Server.PricingAmount)
 	}
 }
 
@@ -333,33 +338,6 @@ func TestEnvScalarSurvivesYAMLRoundTrip(t *testing.T) {
 		}
 		if want := "PZ_TEST=" + v; out.Env[0] != want {
 			t.Errorf("value %q round-tripped to %q, want %q", v, out.Env[0], want)
-		}
-	}
-}
-
-func TestMaxUAKTPerBlock(t *testing.T) {
-	// 3 USD/day at 3 USD/AKT over 14400 blocks: 3e6 / (3 * 14400) = 69.44 -> 69.
-	// Truncation matches the bash implementation's int().
-	got, err := MaxUAKTPerBlock(3.0, 3.0, 14400)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got != 69 {
-		t.Errorf("MaxUAKTPerBlock(3, 3, 14400) = %d, want 69", got)
-	}
-
-	for _, tc := range []struct {
-		name      string
-		usd, rate float64
-		bpd       int
-	}{
-		{"zero usd", 0, 3.0, 14400},
-		{"zero rate", 3.0, 0, 14400},
-		{"zero blocks", 3.0, 3.0, 0},
-		{"ceiling rounds to zero", 0.0001, 1000, 14400},
-	} {
-		if _, err := MaxUAKTPerBlock(tc.usd, tc.rate, tc.bpd); err == nil {
-			t.Errorf("%s: want an error, got nil", tc.name)
 		}
 	}
 }

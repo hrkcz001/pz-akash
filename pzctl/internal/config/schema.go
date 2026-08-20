@@ -116,9 +116,11 @@ type Controller struct {
 	// drops the second exposed port from the SDL. Replaces WEBHOOK_PORT.
 	WebhookPort int `yaml:"webhook_port"`
 
-	Resources   Resources      `yaml:"resources"`
-	PricingUAKT int            `yaml:"pricing_uakt"`
-	Poll        ControllerPoll `yaml:"poll"`
+	Resources Resources `yaml:"resources"`
+	// PricingAmount is the per-block bid ceiling in Akash.Price.Denom. The
+	// controller is deployed by hand, so unlike the server's it is not computed.
+	PricingAmount int            `yaml:"pricing_amount"`
+	Poll          ControllerPoll `yaml:"poll"`
 }
 
 type ControllerPoll struct {
@@ -174,9 +176,10 @@ type Server struct {
 	// lease goes ready. Replaces SERVER_ONLINE_TIMEOUT_SEC.
 	OnlineTimeout Duration `yaml:"online_timeout"`
 
-	// PricingUAKT is only a placeholder for hand-deploys; the real bid ceiling
-	// is computed from Akash.Price.MaxUSDPerDay at deploy time.
-	PricingUAKT int `yaml:"pricing_uakt"`
+	// PricingAmount is only a placeholder for hand-deploys, in
+	// Akash.Price.Denom; the real bid ceiling is computed from
+	// Akash.Price.MaxUSDPerDay at deploy time.
+	PricingAmount int `yaml:"pricing_amount"`
 }
 
 type ServerPorts struct {
@@ -210,10 +213,67 @@ type Akash struct {
 	MaxAttempts  int `yaml:"max_attempts"`   // MAX_ATTEMPTS
 	BlocksPerDay int `yaml:"blocks_per_day"` // BLOCKS_PER_DAY
 
+	// AdoptUnleased lets adoption claim an open deployment that has no lease at
+	// all. That is the wreckage of a controller that died between creating a
+	// deployment and leasing it: escrow funded, nothing running, and no service
+	// name to identify it by. Claiming it is how the deposit gets reclaimed rather
+	// than stranded.
+	//
+	// Turn it off when the Akash wallet is shared with deployments this system did
+	// not create, because a stranger's deployment is briefly unleased too, in the
+	// seconds between its create and its lease.
+	AdoptUnleased bool `yaml:"adopt_unleased"`
+
 	Price     Price         `yaml:"price"`
 	Placement Placement     `yaml:"placement"`
 	Timeouts  AkashTimeouts `yaml:"timeouts"`
 	Funds     Funds         `yaml:"funds"`
+	API       AkashAPI      `yaml:"api"`
+
+	ProviderStatus ProviderStatus `yaml:"provider_status"`
+}
+
+// AkashAPI configures the HTTP client that talks to Console: how hard it tries
+// and how long any single request may take.
+//
+// These are here rather than in the code because they are the two numbers that
+// decide whether a Console hiccup costs a retry or a deploy. v1 had neither — it
+// was `curl` with no retry at all, which is how a single 502 became a failed cycle.
+type AkashAPI struct {
+	// Retries is how many extra attempts a retryable failure gets (429, 408, 5xx,
+	// or a transport error). 3 means up to 4 requests.
+	Retries int `yaml:"retries"`
+	// RetryWait is the base backoff, doubled per attempt and capped at a minute.
+	// A Retry-After header from the API overrides it.
+	RetryWait Duration `yaml:"retry_wait"`
+	// Timeout bounds one HTTP request, including its retries' individual attempts
+	// but not the polling loops above them — those have their own deadlines in
+	// akash.timeouts. It exists so a connection that opens and then stalls cannot
+	// hold the controller past the point where the lease starts billing unwatched.
+	Timeout Duration `yaml:"timeout"`
+}
+
+// ProviderStatus configures asking the provider directly for a lease's IP, as a
+// fallback when the Console API's lease status has not caught up yet. Without it
+// a deploy can time out waiting for an address the provider already has — which
+// costs a redeploy and leaves the first lease's escrow to reclaim.
+type ProviderStatus struct {
+	Enabled bool `yaml:"enabled"`
+	// Every is the lease-poll interval at which to try the provider: 6 means
+	// every sixth poll. The Console API is the primary source and this is a
+	// second opinion, not a replacement.
+	Every int `yaml:"every"`
+	// JWTTTL is the lifetime requested for the scoped status token.
+	JWTTTL  Duration `yaml:"jwt_ttl"`
+	Timeout Duration `yaml:"timeout"`
+	// InsecureSkipVerify permits an unverified TLS connection to the provider —
+	// what v1's `curl -sk` did unconditionally. Verification is always attempted
+	// first and this is only the retry, because provider lease endpoints often
+	// serve a certificate that does not match hostUri. The exchange is a
+	// read-only status query carrying a token scoped to "status" and valid for
+	// minutes, so the exposure is bounded; set false to require a valid chain
+	// and accept losing the fallback.
+	InsecureSkipVerify bool `yaml:"insecure_skip_verify"`
 }
 
 type Price struct {
@@ -223,9 +283,23 @@ type Price struct {
 	// cheapest is eligible, and the geographically closest of those wins.
 	Tolerance float64 `yaml:"tolerance"` // PRICE_TOLERANCE
 	// AKTUSDFallback is used only when the price oracle is unreachable. 0
-	// means "no fallback, abort the cycle" — the old default.
+	// means "no fallback, abort the cycle" — the old default. It is consulted
+	// only when Denom is a denomination whose value depends on the AKT price.
 	AKTUSDFallback float64 `yaml:"akt_usd_fallback"`
 	PriceOracleURL string  `yaml:"price_oracle_url"`
+
+	// Denom is the denomination our bid ceiling is expressed in, and it must be
+	// the one the wallet spends: Console's managed wallets hold `uact`, a
+	// dollar-pegged credit at 1e6 to the dollar, and price every bid in it.
+	// `uakt` is micro-AKT and is the only denom that needs the oracle. Getting
+	// this wrong does not overspend — it miscomputes the ceiling by the AKT
+	// price and silently rejects every bid.
+	Denom string `yaml:"denom"`
+
+	// AllowedDenoms are the denominations a bid may be priced in. A bid in
+	// anything else is skipped rather than guessed at, because a denom we cannot
+	// convert is a price we cannot check.
+	AllowedDenoms []string `yaml:"allowed_denoms"`
 }
 
 type Placement struct {
@@ -237,6 +311,12 @@ type Placement struct {
 	// SkipTTL is how long a provider stays on the skip list after failing us.
 	SkipTTL       Duration `yaml:"skip_ttl"` // SKIP_TTL_SEC
 	DenyProviders []string `yaml:"deny_providers"`
+
+	// MinUptime30d filters providers by the 30-day uptime the API reports, as a
+	// fraction in [0, 1]. Replaces MIN_UPTIME30D. A provider that drops the lease
+	// costs a redeploy and a world rolled back to the last backup, so this is the
+	// cheapest filter we have; 0 disables it.
+	MinUptime30d float64 `yaml:"min_uptime_30d"`
 }
 
 type AkashTimeouts struct {
@@ -317,6 +397,26 @@ type DNS struct {
 	SSLMode  string `yaml:"ssl_mode"`
 	// IncludeWWW also upserts the www subdomain.
 	IncludeWWW bool `yaml:"include_www"`
+
+	// GameRecord is the subdomain label pointed at the game server's dedicated IP,
+	// so players keep one address across redeploys instead of a fresh IP each time.
+	// Empty disables it.
+	//
+	// This record is never proxied, whatever Proxied says, and that is not a
+	// preference. Cloudflare's proxy carries HTTP only, and a proxied name resolves
+	// to Cloudflare's addresses — so a player pasting a proxied name into the PZ
+	// client would be sent to Cloudflare instead of the server. Proxying game
+	// traffic needs Spectrum, which is a paid product this system does not use.
+	GameRecord string `yaml:"game_record"`
+}
+
+// GameHost is the fully qualified name for the game server, or "" when no game
+// record is configured.
+func (d DNS) GameHost() string {
+	if !d.Enabled || d.GameRecord == "" || d.Domain == "" {
+		return ""
+	}
+	return d.GameRecord + "." + d.Domain
 }
 
 // Game holds the PZ server .ini values that the agent renders at boot. Secret

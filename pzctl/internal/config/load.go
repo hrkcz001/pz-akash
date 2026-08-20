@@ -39,10 +39,10 @@ func Defaults() *Config {
 			NetTimeout:            Duration(45 * time.Second),
 		},
 		Controller: Controller{
-			HTTPPort:    8000,
-			WebhookPort: 8080,
-			Resources:   Resources{CPU: "1", Memory: "2Gi", Storage: "20Gi"},
-			PricingUAKT: 100,
+			HTTPPort:      8000,
+			WebhookPort:   8080,
+			Resources:     Resources{CPU: "1", Memory: "2Gi", Storage: "20Gi"},
+			PricingAmount: 50,
 			Poll: ControllerPoll{
 				Tick:   Duration(15 * time.Second),
 				Idle:   Duration(5 * time.Minute),
@@ -60,7 +60,7 @@ func Defaults() *Config {
 			SSH:           Feature{Enabled: false, Port: 2222},
 			Crash:         Crash{MaxRestarts: 3, Backoff: Duration(30 * time.Second)},
 			OnlineTimeout: Duration(20 * time.Minute),
-			PricingUAKT:   400,
+			PricingAmount: 208,
 		},
 		Akash: Akash{
 			APIBase:            "https://console-api.akash.network",
@@ -68,17 +68,21 @@ func Defaults() *Config {
 			InitialDepositDays: 1,
 			MaxAttempts:        15,
 			BlocksPerDay:       14400,
+			AdoptUnleased:      true,
 			Price: Price{
 				MaxUSDPerDay:   3.0,
 				MinUSDPerDay:   0.001,
 				Tolerance:      0.20,
 				AKTUSDFallback: 0,
 				PriceOracleURL: "https://api.coingecko.com/api/v3/simple/price?ids=akash-network&vs_currencies=usd",
+				Denom:          "uact",
+				AllowedDenoms:  []string{"uact", "uakt"},
 			},
 			Placement: Placement{
-				RefLat:  52.2297,
-				RefLon:  21.0122,
-				SkipTTL: Duration(24 * time.Hour),
+				RefLat:       52.2297,
+				RefLon:       21.0122,
+				SkipTTL:      Duration(24 * time.Hour),
+				MinUptime30d: 0.95,
 			},
 			Timeouts: AkashTimeouts{
 				BidPoll:       Duration(5 * time.Second),
@@ -91,6 +95,11 @@ func Defaults() *Config {
 				CheckInterval: Duration(10 * time.Minute),
 				MinTopupUSD:   0.5,
 				Margin:        1.2,
+			},
+			API: AkashAPI{
+				Retries:   3,
+				RetryWait: Duration(2 * time.Second),
+				Timeout:   Duration(45 * time.Second),
 			},
 		},
 		Backups: Backups{
@@ -113,6 +122,7 @@ func Defaults() *Config {
 			Proxied:    true,
 			SSLMode:    "flexible",
 			IncludeWWW: true,
+			GameRecord: "pz",
 		},
 		Game: Game{
 			MaxPlayers:            32,

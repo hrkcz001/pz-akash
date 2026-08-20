@@ -205,11 +205,12 @@ func (d *DryRun) Deploy(ctx context.Context, req DeployRequest) (DeployResult, e
 			UDPPort:  d.Cfg.Server.Ports.UDP,
 		},
 		Price: state.Price{
-			UAKTPerBlock: d.Cfg.Server.PricingUAKT,
-			AKTUSD:       d.Cfg.Akash.Price.AKTUSDFallback,
-			USDPerDay:    d.Cfg.Akash.Price.MaxUSDPerDay / 2,
-			USDPerHour:   d.Cfg.Akash.Price.MaxUSDPerDay / 48,
-			QuotedAt:     state.At(now),
+			AmountPerBlock: d.Cfg.Server.PricingAmount,
+			Denom:          d.Cfg.Akash.Price.Denom,
+			AKTUSD:         d.Cfg.Akash.Price.AKTUSDFallback,
+			USDPerDay:      d.Cfg.Akash.Price.MaxUSDPerDay / 2,
+			USDPerHour:     d.Cfg.Akash.Price.MaxUSDPerDay / 48,
+			QuotedAt:       state.At(now),
 		},
 	}
 	if d.Cfg.Server.RCON.Enabled {

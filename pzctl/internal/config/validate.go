@@ -5,12 +5,14 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
-
 	// Embed the IANA timezone database so Identity.Timezone resolves
 	// identically on a Windows workstation and in a scratch container.
 	_ "time/tzdata"
+
+	"github.com/hrkcz001/pz-akash/pzctl/internal/denom"
 )
 
 // ValidationError lists every problem found, not just the first. Fixing config
@@ -176,7 +178,7 @@ func (c *Config) validateController(p *problems) {
 		}
 	}
 	validateResources(p, "controller.resources", ct.Resources)
-	requirePositive(p, "controller.pricing_uakt", ct.PricingUAKT)
+	requirePositive(p, "controller.pricing_amount", ct.PricingAmount)
 	requirePositiveDur(p, "controller.poll.tick", ct.Poll.Tick)
 	requirePositiveDur(p, "controller.poll.idle", ct.Poll.Idle)
 	requirePositiveDur(p, "controller.poll.active", ct.Poll.Active)
@@ -242,13 +244,19 @@ func (c *Config) validateServer(p *problems) {
 		p.addf("server.crash.backoff: must not be negative")
 	}
 	requirePositiveDur(p, "server.online_timeout", s.OnlineTimeout)
-	requirePositive(p, "server.pricing_uakt", s.PricingUAKT)
+	requirePositive(p, "server.pricing_amount", s.PricingAmount)
 }
 
 func (c *Config) validateAkash(p *problems) {
 	a := c.Akash
 	requireHTTPURL(p, "akash.api_base", a.APIBase)
-	requireHTTPURL(p, "akash.price.price_oracle_url", a.Price.PriceOracleURL)
+	// The oracle URL is optional, and only checked as a URL when it is set: a
+	// uact wallet never asks for a rate, and an AKT one may carry a fallback
+	// instead. Requiring it unconditionally would reject a config the code below
+	// (and Oracle.Rate) both accept.
+	if a.Price.PriceOracleURL != "" {
+		requireHTTPURL(p, "akash.price.price_oracle_url", a.Price.PriceOracleURL)
+	}
 
 	requirePositive(p, "akash.deploy_days", a.DeployDays)
 	requirePositive(p, "akash.initial_deposit_days", a.InitialDepositDays)
@@ -273,6 +281,48 @@ func (c *Config) validateAkash(p *problems) {
 	if a.Price.AKTUSDFallback < 0 {
 		p.addf("akash.price.akt_usd_fallback: must not be negative (0 means no fallback)")
 	}
+	if len(a.Price.AllowedDenoms) == 0 {
+		p.addf("akash.price.allowed_denoms: at least one denomination is required")
+	}
+	for i, d := range a.Price.AllowedDenoms {
+		if !denom.Known(d) {
+			p.addf("akash.price.allowed_denoms[%d]: %q is not a denomination this build can convert to USD (known: %s, %s)", i, d, denom.UACT, denom.UAKT)
+		}
+	}
+	if !denom.Known(a.Price.Denom) {
+		p.addf("akash.price.denom: %q is not a denomination this build can convert to USD (known: %s, %s)", a.Price.Denom, denom.UACT, denom.UAKT)
+	} else if !slices.Contains(a.Price.AllowedDenoms, a.Price.Denom) {
+		// Bidding in a denomination we would then refuse to read back is a deploy
+		// that always ends in "no eligible bids".
+		p.addf("akash.price.denom: %q must also appear in allowed_denoms %v", a.Price.Denom, a.Price.AllowedDenoms)
+	}
+	// The oracle is only on the critical path for AKT-denominated bids. Saying so
+	// here is what lets a uact deployment start with CoinGecko unreachable.
+	if denom.NeedsOracle(a.Price.Denom) && a.Price.AKTUSDFallback == 0 && a.Price.PriceOracleURL == "" {
+		p.addf("akash.price: denom %s needs either price_oracle_url or akt_usd_fallback", a.Price.Denom)
+	}
+	// A hand-deploy placeholder above the stated dollar limit is a ceiling that
+	// contradicts the config it sits next to. Only checkable when the denomination
+	// does not need a live rate.
+	if denom.Known(a.Price.Denom) && !denom.NeedsOracle(a.Price.Denom) && a.Price.MaxUSDPerDay > 0 {
+		for _, f := range []struct {
+			key    string
+			amount int
+		}{
+			{"controller.pricing_amount", c.Controller.PricingAmount},
+			{"server.pricing_amount", c.Server.PricingAmount},
+		} {
+			if f.amount <= 0 {
+				continue // reported by the per-section validators
+			}
+			usd, err := denom.USDPerDay(float64(f.amount), a.Price.Denom, a.BlocksPerDay, 0)
+			if err != nil || usd <= a.Price.MaxUSDPerDay {
+				continue
+			}
+			p.addf("%s: %d %s/block is $%.2f/day, above akash.price.max_usd_per_day ($%.2f)",
+				f.key, f.amount, a.Price.Denom, usd, a.Price.MaxUSDPerDay)
+		}
+	}
 
 	if len(a.Placement.Countries) == 0 {
 		p.addf("akash.placement.countries: at least one ISO 3166-1 alpha-2 code is required")
@@ -289,6 +339,9 @@ func (c *Config) validateAkash(p *problems) {
 		p.addf("akash.placement.ref_lon: %g is out of range [-180, 180]", a.Placement.RefLon)
 	}
 	requirePositiveDur(p, "akash.placement.skip_ttl", a.Placement.SkipTTL)
+	if a.Placement.MinUptime30d < 0 || a.Placement.MinUptime30d > 1 {
+		p.addf("akash.placement.min_uptime_30d: %g must be a fraction between 0 and 1", a.Placement.MinUptime30d)
+	}
 
 	requirePositiveDur(p, "akash.timeouts.bid_poll", a.Timeouts.BidPoll)
 	requirePositiveDur(p, "akash.timeouts.bid_wait", a.Timeouts.BidWait)
@@ -302,6 +355,22 @@ func (c *Config) validateAkash(p *problems) {
 	}
 	if a.Funds.Margin < 1 {
 		p.addf("akash.funds.margin: %g must be at least 1 (it is a multiplier over the computed cost)", a.Funds.Margin)
+	}
+
+	// 0 retries is a legitimate choice (fail fast, let the FSM's attempt loop
+	// handle it); a negative count is a typo that would read as "no attempts".
+	if a.API.Retries < 0 {
+		p.addf("akash.api.retries: must not be negative (0 means one attempt with no retry)")
+	}
+	if a.API.RetryWait <= 0 {
+		p.addf("akash.api.retry_wait: must be greater than 0")
+	}
+	requirePositiveDur(p, "akash.api.timeout", a.API.Timeout)
+	// A request timeout shorter than the poll interval it is used from would
+	// cancel every poll on the way out. This is the pair that would actually bite.
+	if a.API.Timeout > 0 && a.Timeouts.BidWait > 0 && a.API.Timeout.D() > a.Timeouts.BidWait.D() {
+		p.addf("akash.api.timeout (%v) exceeds akash.timeouts.bid_wait (%v) — one stalled request would consume the whole bid window",
+			a.API.Timeout.D(), a.Timeouts.BidWait.D())
 	}
 }
 
@@ -362,6 +431,40 @@ func (c *Config) validateDNS(p *problems) {
 	default:
 		p.addf("dns.ssl_mode: %q must be one of off, flexible, full, strict", d.SSLMode)
 	}
+	// A malformed label is worth catching here rather than in a Cloudflare 400 at
+	// deploy time: by then the lease exists and is billing.
+	if d.GameRecord != "" {
+		if err := checkDNSName(d.GameRecord); err != nil {
+			p.addf("dns.game_record: %v", err)
+		}
+		if d.GameRecord == "www" && d.IncludeWWW {
+			p.addf("dns.game_record: %q collides with dns.include_www, which points the same name at the controller", d.GameRecord)
+		}
+	}
+}
+
+// checkDNSName validates a subdomain, which may be several labels deep.
+func checkDNSName(s string) error {
+	if len(s) > 253 {
+		return fmt.Errorf("%q is longer than 253 characters", s)
+	}
+	for _, label := range strings.Split(s, ".") {
+		switch {
+		case label == "":
+			return fmt.Errorf("%q has an empty label", s)
+		case len(label) > 63:
+			return fmt.Errorf("label %q is longer than 63 characters", label)
+		case strings.HasPrefix(label, "-"), strings.HasSuffix(label, "-"):
+			return fmt.Errorf("label %q must not start or end with a hyphen", label)
+		}
+		for _, r := range label {
+			ok := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-'
+			if !ok {
+				return fmt.Errorf("label %q contains %q; only letters, digits and hyphens are allowed", label, r)
+			}
+		}
+	}
+	return nil
 }
 
 func (c *Config) validateGame(p *problems) {

@@ -48,9 +48,9 @@ func printReport(out io.Writer, in reportInput) {
 	} else {
 		row("endpoint", "not ready")
 	}
-	if p := c.Price; p.USDPerDay > 0 || p.USDPerHour > 0 || p.UAKTPerBlock > 0 {
-		row("price", fmt.Sprintf("%.4f USD/h · %.2f USD/day · %d uakt/block",
-			p.USDPerHour, p.USDPerDay, p.UAKTPerBlock))
+	if p := c.Price; p.USDPerDay > 0 || p.USDPerHour > 0 || p.AmountPerBlock > 0 {
+		row("price", fmt.Sprintf("%.4f USD/h · %.2f USD/day · %d %s/block",
+			p.USDPerHour, p.USDPerDay, p.AmountPerBlock, p.Denom))
 	}
 	if u := c.URLs.Base(); u != "" {
 		row("url", u)

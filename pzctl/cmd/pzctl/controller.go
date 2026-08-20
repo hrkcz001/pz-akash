@@ -130,11 +130,9 @@ func openBus(cfg *config.Config, o busOptions) (*gitbus.Repo, *gitbus.Controller
 
 // cmdController implements `pzctl controller`.
 //
-// Step 3 ships it with the Akash driver stubbed, so --dry-run walks the whole
-// lifecycle against a real repository and real trigger files while creating
-// nothing and billing nothing. Running it without --dry-run is refused rather
-// than quietly dry-run: a controller that reports "deployed" without deploying
-// would be worse than one that does not start.
+// With --dry-run it walks the whole lifecycle against a real repository and real
+// trigger files while creating nothing and billing nothing; without it, the live
+// Akash driver is wired in and every deploy costs money.
 func cmdController(args []string) error {
 	fs := flag.NewFlagSet("controller", flag.ContinueOnError)
 	path := fs.String("c", "", "path to config.yaml")
@@ -170,8 +168,9 @@ func cmdController(args []string) error {
 		fmt.Fprintf(os.Stderr, time.Now().In(cfg.Location()).Format("15:04:05")+" "+f+"\n", a...)
 	}
 
-	// The stub is chosen explicitly, never as a fallback. Step 5 replaces this
-	// branch with the real client.
+	// The stub is chosen explicitly, never as a fallback: a controller that
+	// reported "deployed" without deploying would be worse than one that refuses
+	// to start.
 	var driver fsm.Akash
 	switch {
 	case *dryRun:
@@ -183,7 +182,11 @@ func cmdController(args []string) error {
 		driver = &fsm.DryRun{Cfg: cfg, Logf: logf, Delay: *dryDelay, StateFile: *dryState}
 		logf("controller: DRY RUN — no deployment will be created and no lease will be paid for")
 	default:
-		return errors.New("controller: the Akash driver arrives in step 5; run with --dry-run for now")
+		if driver, err = newAkashDriver(cfg, logf); err != nil {
+			return err
+		}
+		logf("controller: LIVE — deployments will be created against %s and will cost money",
+			cfg.Akash.APIBase)
 	}
 
 	_, bus, cleanup, err := openBus(cfg, busOptions{

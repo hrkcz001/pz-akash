@@ -39,11 +39,17 @@ func (e Endpoint) Ready() bool { return e.IP != "" && e.GamePort > 0 }
 // Price is what the lease actually costs, as opposed to the ceiling we were
 // willing to bid.
 type Price struct {
-	UAKTPerBlock int     `json:"uakt_per_block"`
-	AKTUSD       float64 `json:"akt_usd"`
-	USDPerHour   float64 `json:"usd_per_hour"`
-	USDPerDay    float64 `json:"usd_per_day"`
-	QuotedAt     Stamp   `json:"quoted_at"`
+	// AmountPerBlock is in Denom, which is recorded alongside it because the two
+	// are meaningless apart: 34 is half a dollar a day in uact and whatever AKT
+	// happens to be worth in uakt.
+	AmountPerBlock int    `json:"amount_per_block"`
+	Denom          string `json:"denom"`
+	// AKTUSD is the rate used for the conversion, and is absent for
+	// dollar-pegged denominations where no rate was involved.
+	AKTUSD     float64 `json:"akt_usd,omitempty"`
+	USDPerHour float64 `json:"usd_per_hour"`
+	USDPerDay  float64 `json:"usd_per_day"`
+	QuotedAt   Stamp   `json:"quoted_at"`
 }
 
 // URLs are the controller's own public addresses, discovered after its lease is

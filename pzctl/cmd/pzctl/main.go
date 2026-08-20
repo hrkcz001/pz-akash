@@ -28,6 +28,7 @@ import (
 	"os"
 
 	"github.com/hrkcz001/pz-akash/pzctl/internal/config"
+	"github.com/hrkcz001/pz-akash/pzctl/internal/denom"
 	"github.com/hrkcz001/pz-akash/pzctl/internal/sdl"
 	"github.com/hrkcz001/pz-akash/pzctl/internal/secrets"
 )
@@ -196,7 +197,7 @@ func cmdSDL(args []string) error {
 	case "controller":
 		out, err = sdl.RenderController(in)
 	case "server":
-		in.MaxUAKT, err = serverBidCeiling(cfg, *aktUSD)
+		in.MaxPricePerBlock, err = serverBidCeiling(cfg, *aktUSD)
 		if err != nil {
 			return err
 		}
@@ -209,24 +210,28 @@ func cmdSDL(args []string) error {
 	return nil
 }
 
-// serverBidCeiling resolves the AKT/USD rate offline and converts the USD/day
-// ceiling into uakt/block. It deliberately refuses to invent a rate: an
-// incorrect ceiling either overpays or wins no bids at all.
+// serverBidCeiling converts the USD/day ceiling into a per-block bid ceiling in
+// the configured denomination. It deliberately refuses to invent an AKT/USD rate:
+// an incorrect ceiling either overpays or wins no bids at all. For a
+// dollar-pegged denomination no rate is needed, so no rate is asked for.
 func serverBidCeiling(cfg *config.Config, flagRate float64) (int, error) {
-	rate := flagRate
-	source := "--akt-usd"
-	if rate <= 0 {
-		rate = cfg.Akash.Price.AKTUSDFallback
-		source = "akash.price.akt_usd_fallback"
+	d := cfg.Akash.Price.Denom
+	rate, source := 0.0, "not needed"
+	if denom.NeedsOracle(d) {
+		rate, source = flagRate, "--akt-usd"
+		if rate <= 0 {
+			rate = cfg.Akash.Price.AKTUSDFallback
+			source = "akash.price.akt_usd_fallback"
+		}
+		if rate <= 0 {
+			fmt.Fprintf(os.Stderr,
+				"pzctl: no AKT/USD rate available for denom %s (pass --akt-usd, or set akash.price.akt_usd_fallback);\n"+
+					"       rendering with the server.pricing_amount placeholder of %d instead\n",
+				d, cfg.Server.PricingAmount)
+			return 0, nil
+		}
 	}
-	if rate <= 0 {
-		fmt.Fprintf(os.Stderr,
-			"pzctl: no AKT/USD rate available (pass --akt-usd, or set akash.price.akt_usd_fallback);\n"+
-				"       rendering with the server.pricing_uakt placeholder of %d instead\n",
-			cfg.Server.PricingUAKT)
-		return 0, nil
-	}
-	max, err := sdl.MaxUAKTPerBlock(cfg.Akash.Price.MaxUSDPerDay, rate, cfg.Akash.BlocksPerDay)
+	max, err := denom.CeilingPerBlock(cfg.Akash.Price.MaxUSDPerDay, d, cfg.Akash.BlocksPerDay, rate)
 	if err != nil {
 		return 0, err
 	}
@@ -237,7 +242,7 @@ func serverBidCeiling(cfg *config.Config, flagRate float64) (int, error) {
 		cfg.Akash.Funds.MinTopupUSD,
 	)
 	fmt.Fprintf(os.Stderr,
-		"pzctl: AKT/USD=%g (%s) · ceiling=%d uakt/block (%g USD/day over %d blocks/day) · initial deposit=%.2f USD\n",
-		rate, source, max, cfg.Akash.Price.MaxUSDPerDay, cfg.Akash.BlocksPerDay, deposit)
+		"pzctl: AKT/USD=%g (%s) · ceiling=%d %s/block (%g USD/day over %d blocks/day) · initial deposit=%.2f USD\n",
+		rate, source, max, d, cfg.Akash.Price.MaxUSDPerDay, cfg.Akash.BlocksPerDay, deposit)
 	return max, nil
 }

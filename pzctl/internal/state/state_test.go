@@ -327,7 +327,7 @@ func TestUnmarshalRoundTrip(t *testing.T) {
 	c.Status = StatusOnline
 	c.Lease = &Lease{DSeq: "20603991", GSeq: 1, OSeq: 1, Provider: "akash1abc", CreatedAt: Now(loc)}
 	c.Endpoint = Endpoint{IP: "194.107.163.7", GamePort: 16261, UDPPort: 16262}
-	c.Price = Price{UAKTPerBlock: 198, AKTUSD: 1.05, USDPerHour: 0.011, USDPerDay: 0.26, QuotedAt: Now(loc)}
+	c.Price = Price{AmountPerBlock: 198, Denom: "uact", USDPerHour: 0.011, USDPerDay: 0.26, QuotedAt: Now(loc)}
 	c.URLs = URLs{Public: "https://vsrania.online", Raw: "http://provider:32167", Webhook: "https://vsrania.online/webhook"}
 	c.RestoreTarget = "backup_20260819_013623.zip"
 	stop := Now(loc)

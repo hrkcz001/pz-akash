@@ -72,7 +72,13 @@ controller:
     cpu: "1"
     memory: 2Gi
     storage: 20Gi
-  pricing_uakt: 100
+  # Per-block bid ceiling in akash.price.denom. The controller is hand-deployed,
+  # so unlike the server's this is not computed at deploy time.
+  #
+  # 50 uact/block is $0.72/day. The live controller lease was won at 5, so this
+  # is an order of magnitude of slack: a ceiling set near the going rate is how
+  # you get no bids at all on a day when providers are pricier than usual.
+  pricing_amount: 50
   poll:
     # Housekeeping only — trigger latency is webhook round-trip, not this.
     tick: 15s
@@ -119,9 +125,13 @@ server:
 
   online_timeout: 20m
 
-  # Placeholder for hand-deploys only; the real ceiling is computed from
-  # akash.price.max_usd_per_day at deploy time.
-  pricing_uakt: 400
+  # Placeholder for hand-deploys only, in akash.price.denom; the real ceiling is
+  # computed from akash.price.max_usd_per_day at deploy time.
+  #
+  # 208 is that same computation done by hand — max_usd_per_day 3.0 over 14400
+  # blocks at 1e-6 USD per uact — so a hand-deploy bids exactly what the
+  # controller would. The live server lease was won at 34, about $0.49/day.
+  pricing_amount: 208
 
 akash:
   api_base: https://console-api.akash.network
@@ -135,16 +145,36 @@ akash:
   max_attempts: 15
   blocks_per_day: 14400
 
+  # Adoption normally identifies our deployments by the service running in them,
+  # which is why it can never mistake the controller for the server. A deployment
+  # with no lease at all has no service to read, so it needs this switch: it is the
+  # wreckage a controller leaves if it dies between creating a deployment and
+  # leasing it — escrow funded, nothing running — and claiming it is how the
+  # deposit gets reclaimed instead of stranded.
+  #
+  # Set false if this Akash wallet also holds deployments made by hand, since one
+  # of those is briefly unleased too, in the seconds between its create and lease.
+  adopt_unleased: true
+
   price:
     max_usd_per_day: 3.0
     min_usd_per_day: 0.001
     # Any bid within this fraction of the cheapest is eligible; the closest of
     # those wins.
     tolerance: 0.20
-    # Used only when the oracle is unreachable. 0 means "no fallback, abort the
-    # cycle" — the v1 behaviour. Set a number to trade accuracy for resilience.
+    # Used only when the oracle is unreachable, and only for AKT-denominated
+    # bids. 0 means "no fallback, abort the cycle" — the v1 behaviour.
     akt_usd_fallback: 0
     price_oracle_url: https://api.coingecko.com/api/v3/simple/price?ids=akash-network&vs_currencies=usd
+
+    # The denomination our bid ceiling is written in, which must be the one the
+    # wallet spends. Console managed wallets hold `uact`: a dollar-pegged credit
+    # at 1e6 to the dollar, which is why the oracle is not on the critical path.
+    # v1 declared `uakt` in the SDL and then converted uact bids as if they were
+    # micro-AKT — harmless at AKT $1, and at AKT $5 it rejects every bid.
+    denom: uact
+    # A bid in any other denomination is skipped, not guessed at.
+    allowed_denoms: [uact, uakt]
 
   placement:
     # Explicit ISO 3166-1 alpha-2, replacing v1's fuzzy country-name matching.
@@ -156,6 +186,9 @@ akash:
     ref_lon: 21.0122
     skip_ttl: 24h
     deny_providers: []
+    # Providers below this 30-day uptime are never bid on. A provider that drops
+    # the lease costs a redeploy and rolls the world back to the last backup.
+    min_uptime_30d: 0.95
 
   timeouts:
     bid_poll: 5s
@@ -164,10 +197,37 @@ akash:
     lease_ready: 10m
     deposit_settle: 15s
 
+  # Ask the provider directly for a lease IP when the Console API's lease status
+  # has not caught up. Without this a deploy can time out waiting for an address
+  # the provider already knows, which costs a redeploy.
+  provider_status:
+    enabled: true
+    every: 6
+    jwt_ttl: 600s
+    timeout: 15s
+    # Provider lease endpoints commonly serve a certificate that does not match
+    # hostUri; v1 used `curl -sk` unconditionally. A verified connection is
+    # always tried first — this only permits the retry. false requires a valid
+    # chain and gives up the fallback.
+    insecure_skip_verify: true
+
   funds:
     check_interval: 10m
     min_topup_usd: 0.5
     margin: 1.2
+
+  # The HTTP client that talks to Console. v1 used curl with no retry, so a
+  # single 502 from the API cost a whole deploy cycle.
+  api:
+    # Extra attempts for a retryable failure (429, 408, 5xx, transport error).
+    # 3 means up to 4 requests. Rejections (400, 401, 404, 422) are never retried.
+    retries: 3
+    # Base backoff, doubled per attempt, capped at a minute. A Retry-After header
+    # from the API wins over it.
+    retry_wait: 2s
+    # Bound on one request. Must stay under timeouts.bid_wait, or one stalled
+    # connection would consume the entire bid window.
+    timeout: 45s
 
 backups:
   dir: /data/backups
@@ -211,6 +271,15 @@ dns:
   proxied: true
   ssl_mode: flexible
   include_www: true
+
+  # Subdomain pointed at the game server's dedicated IP, so players keep one
+  # address across redeploys: pz.vsrania.online:16261. Empty disables it and
+  # players go back to reading a fresh IP off the dashboard after every deploy.
+  #
+  # It is always a DNS-only record, never proxied. Cloudflare's proxy carries HTTP
+  # and PZ does not, and a proxied name resolves to Cloudflare's own addresses — so
+  # proxying this would point every player at Cloudflare instead of the server.
+  game_record: pz
 
 # PZ .ini values the agent renders at boot. RCONPassword, Password and
 # AdminPassword are absent by design: they arrive as placeholders inside

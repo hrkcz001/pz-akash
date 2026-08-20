@@ -43,10 +43,11 @@ type Input struct {
 	// normal case: the URL is not known until the controller's own lease is up.
 	ControllerURL string
 
-	// MaxUAKT is the bid ceiling for the server SDL, computed from
-	// Akash.Price.MaxUSDPerDay and the live AKT/USD rate. Zero falls back to
-	// Server.PricingUAKT, the hand-deploy placeholder.
-	MaxUAKT int
+	// MaxPricePerBlock is the bid ceiling for the server SDL, in
+	// Cfg.Akash.Price.Denom, computed from Akash.Price.MaxUSDPerDay (and the live
+	// AKT/USD rate, if that denomination needs one). Zero falls back to
+	// Server.PricingAmount, the hand-deploy placeholder.
+	MaxPricePerBlock int
 }
 
 type expose struct {
@@ -71,7 +72,8 @@ type view struct {
 	CPU           string
 	Memory        string
 	Storage       string
-	PricingUAKT   int
+	PricingAmount int
+	PricingDenom  string
 	IPLease       bool
 	IPName        string
 }
@@ -91,7 +93,8 @@ func RenderController(in Input) ([]byte, error) {
 		CPU:           c.Controller.Resources.CPU,
 		Memory:        c.Controller.Resources.Memory,
 		Storage:       c.Controller.Resources.Storage,
-		PricingUAKT:   c.Controller.PricingUAKT,
+		PricingAmount: c.Controller.PricingAmount,
+		PricingDenom:  c.Akash.Price.Denom,
 	}
 
 	// The controller uses shared endpoints: the provider assigns the external
@@ -116,9 +119,9 @@ func RenderController(in Input) ([]byte, error) {
 // written to disk in the repository.
 func RenderServer(in Input) ([]byte, error) {
 	c := in.Cfg
-	pricing := in.MaxUAKT
+	pricing := in.MaxPricePerBlock
 	if pricing <= 0 {
-		pricing = c.Server.PricingUAKT
+		pricing = c.Server.PricingAmount
 	}
 
 	v := view{
@@ -130,7 +133,8 @@ func RenderServer(in Input) ([]byte, error) {
 		CPU:           c.Server.Resources.CPU,
 		Memory:        c.Server.Resources.Memory,
 		Storage:       c.Server.Resources.Storage,
-		PricingUAKT:   pricing,
+		PricingAmount: pricing,
+		PricingDenom:  c.Akash.Price.Denom,
 		IPLease:       c.Server.IPLease,
 		IPName:        c.Server.IPName,
 	}

@@ -41,8 +41,8 @@ profiles:
     {{ .PlacementName }}:
       pricing:
         {{ .ServiceName }}:
-          denom: uakt
-          amount: {{ .PricingUAKT }}
+          denom: {{ .PricingDenom }}
+          amount: {{ .PricingAmount }}
 deployment:
   {{ .ServiceName }}:
     {{ .PlacementName }}:
