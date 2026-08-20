@@ -97,6 +97,16 @@ func (f *fakeCF) client(t *testing.T, zone config.DNS) *Cloudflare {
 	return c
 }
 
+// dryClient is the same client with DryRun on, for the tests that assert a plan is
+// produced without a write. DryRun is not reachable from client() because every other
+// test wants the opposite, and a bool parameter on the common helper would put
+// "false" at thirty call sites to serve two.
+func (f *fakeCF) dryClient(t *testing.T, zone config.DNS) *Cloudflare {
+	c := f.client(t, zone)
+	c.dryRun = true
+	return c
+}
+
 // zone is the shipping dns: block, with the API base filled in by client().
 func testZone() config.DNS {
 	return config.DNS{

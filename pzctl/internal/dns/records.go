@@ -96,6 +96,7 @@ func (c *Cloudflare) upsert(ctx context.Context, want record) (Change, error) {
 	ch := Change{
 		Name: want.Name, Type: want.Type, Content: want.Content,
 		Proxied: want.Proxied, TTL: want.TTL,
+		Planned: c.dryRun,
 	}
 
 	// Prefer the record already of the right type: rewriting that one changes an
@@ -156,6 +157,7 @@ func (c *Cloudflare) deleteByName(ctx context.Context, name string) ([]Change, e
 		}
 		changes = append(changes, Change{
 			Action: Deleted, Name: r.Name, Type: r.Type, Content: r.Content,
+			Planned: c.dryRun,
 		})
 	}
 	return changes, nil

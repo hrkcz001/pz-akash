@@ -155,6 +155,26 @@ const (
 	Deleted   Action = "deleted"
 )
 
+// verb is how to say the Action happened, or — for a plan — that it would. Only the
+// three that write have a future form: "would unchanged" is not English, and a record
+// that already matches would be left alone either way, so the plan and the outcome
+// are the same word.
+func (a Action) verb(planned bool) string {
+	if !planned {
+		return string(a)
+	}
+	switch a {
+	case Created:
+		return "would create"
+	case Updated:
+		return "would update"
+	case Deleted:
+		return "would delete"
+	default:
+		return string(a)
+	}
+}
+
 // Change is one record a sync touched. Unchanged is reported rather than omitted:
 // these syncs run on every deploy and an operator reading the log needs to see that
 // the record was checked, not infer it from silence.
@@ -165,10 +185,18 @@ type Change struct {
 	Content string
 	Proxied bool
 	TTL     int
+
+	// Planned means the write was withheld because of Options.DryRun, so the Action
+	// is what would have happened rather than what did. It is carried on the change
+	// rather than handled by whoever prints one because there is more than one such
+	// printer, and a report of a dry run that reads exactly like a report of a real
+	// run is how an operator comes to believe a record exists.
+	Planned bool
 }
 
 func (ch Change) String() string {
-	s := fmt.Sprintf("%s %s %s -> %s", ch.Action, ch.Type, ch.Name, ch.Content)
+	s := fmt.Sprintf("%s %s %s -> %s", ch.Action.verb(ch.Planned),
+		ch.Type, ch.Name, ch.Content)
 	if ch.Action != Deleted {
 		if ch.Proxied {
 			s += " (proxied)"
