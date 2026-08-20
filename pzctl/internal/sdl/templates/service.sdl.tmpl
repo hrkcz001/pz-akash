@@ -1,0 +1,55 @@
+---
+# {{ .Note }}
+#
+# Rendered by `pzctl sdl render {{ .Role }}` from pz-saves/config.yaml.
+# Do not edit by hand — edit config.yaml and re-render, or the next render
+# will silently discard the change.
+#
+# Every PZ_* value below is either bootstrap information (which repository to
+# clone) or a secret taken from the renderer's environment. Placeholders read
+# {{ "__REDACTED__" }} unless the SDL was rendered with --with-secrets.
+version: "2.0"
+services:
+  {{ .ServiceName }}:
+    image: {{ .Image }}
+    expose:
+{{- range .Exposes }}
+      - port: {{ .Port }}
+        as: {{ .As }}
+        proto: {{ .Proto }}
+        to:
+          - global: true
+{{- if .IP }}
+            ip: {{ .IP }}
+{{- end }}
+{{- end }}
+    env:
+{{- range .Env }}
+      - {{ . }}
+{{- end }}
+profiles:
+  compute:
+    {{ .ServiceName }}:
+      resources:
+        cpu:
+          units: {{ .CPU }}
+        memory:
+          size: {{ .Memory }}
+        storage:
+          - size: {{ .Storage }}
+  placement:
+    {{ .PlacementName }}:
+      pricing:
+        {{ .ServiceName }}:
+          denom: uakt
+          amount: {{ .PricingUAKT }}
+deployment:
+  {{ .ServiceName }}:
+    {{ .PlacementName }}:
+      profile: {{ .ServiceName }}
+      count: 1
+{{- if .IPLease }}
+endpoints:
+  {{ .IPName }}:
+    kind: ip
+{{- end }}

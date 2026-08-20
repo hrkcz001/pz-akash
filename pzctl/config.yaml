@@ -1,0 +1,318 @@
+# ==========================================================================
+# PZ-on-Akash — central configuration
+#
+# Destination: pz-saves/config.yaml  (this copy is the Step 1 draft)
+#
+# This file is the single source of truth for every tunable value in the
+# system. It is safe to commit: there is deliberately nowhere in the schema to
+# put a secret. Run `pzctl config secrets` for the list of environment
+# variables that hold those instead.
+#
+# Values here were transcribed from the v1 system: pz-controller/deployment.yaml,
+# pz-saves/deployment.yaml, the `${VAR:-default}` lines in the bash scripts, and
+# pz-saves/server/Server/vsrania.ini. Comments in internal/config/schema.go name
+# the environment variable each field replaces.
+# ==========================================================================
+version: 1
+
+identity:
+  server_name: vsrania
+  # The one wall-clock reference for the whole system: backup filenames,
+  # dashboard timestamps, log lines, and bare `stop_at` values with no offset.
+  # An IANA name, so CET/CEST is handled without anyone touching a host clock.
+  timezone: Europe/Prague
+
+git:
+  repo_url: git@github.com:hrkcz001/pz-saves.git
+  branch: main
+  user_name: hrkcz001
+  user_email: hrkcz001@gmail.com
+
+  # `branches` keeps runtime state on dedicated branches, each force-pushed as a
+  # single orphan commit. One writer per branch, no history growth, and webhook
+  # noise is distinguishable from human intent by ref alone. Use `single` to put
+  # everything on `branch` the way v1 did.
+  layout: branches
+  controller_state_branch: state/controller
+  agent_state_branch: state/agent
+
+  # The only directory whose changes fire the webhook.
+  triggers_dir: triggers
+
+  # Bare mirror of repo_url. Bare because nothing in v2 has a working tree —
+  # v1 kept one and ran `git reset --hard` on it, which deleted files out from
+  # under a backup that was still writing them.
+  cache_dir: /data/repo
+
+  # Pinned SSH host keys for github.com, from https://api.github.com/meta.
+  # These are public keys, so unlike the deploy key they belong in config; having
+  # them here is what lets a fresh container verify the remote without
+  # StrictHostKeyChecking=no, which is what v1 used and which trusts whatever
+  # answers on port 22 before handing over a repository write key.
+  # Refresh with: curl -s https://api.github.com/meta | jq -r '.ssh_keys[] | "github.com " + .'
+  known_hosts: |
+    github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+    github.com ecdsa-sha2-nistp256 AAAAE2VjZHNhLXNoYTItbmlzdHAyNTYAAAAIbmlzdHAyNTYAAABBBEmKSENjQEezOmxkZMy7opKgwFB9nkt5YRrYMjNuG5N87uRgg6CLrbo5wAdT/y6v0mKV0U2w0WZ2YB/++Tpockg=
+    github.com ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQCj7ndNxQowgcQnjshcLrqPEiiphnt+VTTvDP6mHBL9j1aNUkY4Ue1gvwnGLVlOhGeYrnZaMgRK6+PKCUXaDbC7qtbW8gIkhL7aGCsOr/C56SJMy/BCZfxd1nWzAOxSDPgVsmerOBYfNqltV9/hWCqBywINIR+5dIg6JTJ72pcEpEjcYgXkE2YEFXV1JHnsKgbLWNlhScqb2UmyRkQyytRLtL+38TGxkxCflmO+5Z8CSSNY7GidjMIZ7Q4zMjA2n1nGrlTDkzwDCsw+wqFPGQA179cnfGWOWRVruj16z6XyvxvjJwbz0wQZ75XK5tKSb7FNyeIEs4TT4jk+S4dhPeAUC5y+bDYirYgM4GC7uEnztnZyaVWQ7B381AK4Qdrwt51ZqExKbQpTUNn+EjqoTwvqNj4kqx5QUCI0ThS/YkOxJCXmPUWZbhjpCg56i+2aB6CmK2JGhn57K5mj0MNdBXA4/WnwH6XoPWJzK5Nyu2zB3nAZp+S5hpQs+p1vN1/wsjk=
+
+  # Only for tests against a local remote. Validation refuses to let this be true
+  # while repo_url is an SSH URL.
+  allow_unverified_host: false
+
+  # Coalesces state pushes so a burst of transitions costs one commit.
+  min_push_interval: 5s
+
+controller:
+  image: ghcr.io/hrkcz001/pz-akash-controller
+  image_tag: sha-6b9f327
+  http_port: 8000
+  # Set to 0 to serve the webhook on http_port and expose one port instead of two.
+  webhook_port: 8080
+  resources:
+    cpu: "1"
+    memory: 2Gi
+    storage: 20Gi
+  pricing_uakt: 100
+  poll:
+    # Housekeeping only — trigger latency is webhook round-trip, not this.
+    tick: 15s
+    idle: 5m
+    active: 60s
+
+server:
+  image: ghcr.io/hrkcz001/pz-akash-server
+  image_tag: sha-bcba937
+  resources:
+    cpu: "8"
+    memory: 16Gi
+    storage: 30Gi
+  # JVM heap, injected into ProjectZomboid64.json.
+  memory_max: 14336m
+  memory_min: 14336m
+
+  # A dedicated IP keeps the game ports on their real numbers; without it the
+  # provider assigns arbitrary external ports and players cannot be told a
+  # stable address.
+  ip_lease: true
+  ip_name: pz-ip
+
+  ports:
+    game: 16261   # PZ DefaultPort, udp
+    udp: 16262    # PZ UDPPort, udp
+
+  # Both are opt-in in v2. The agent owns the PZ process, so it drives saves
+  # through stdin and reads player counts from stdout; nothing needs RCON, and
+  # backups are uploaded by the agent rather than pulled over SSH. Enabling
+  # either only adds an exposed port and an attack surface.
+  rcon:
+    enabled: false
+    port: 27015
+  ssh:
+    enabled: false
+    port: 2222
+
+  # A relaunch budget for the PZ process, not for the container: the agent never
+  # exits, so Kubernetes never restarts the pod out from under the controller.
+  crash:
+    max_restarts: 3
+    backoff: 30s
+
+  online_timeout: 20m
+
+  # Placeholder for hand-deploys only; the real ceiling is computed from
+  # akash.price.max_usd_per_day at deploy time.
+  pricing_uakt: 400
+
+akash:
+  api_base: https://console-api.akash.network
+
+  # Escrow horizon the funds loop tops up to, at the actual lease price.
+  deploy_days: 2
+  # Deposit made at deploy time, at max price. Small on purpose: it only has to
+  # be enough to get the lease created.
+  initial_deposit_days: 1
+
+  max_attempts: 15
+  blocks_per_day: 14400
+
+  price:
+    max_usd_per_day: 3.0
+    min_usd_per_day: 0.001
+    # Any bid within this fraction of the cheapest is eligible; the closest of
+    # those wins.
+    tolerance: 0.20
+    # Used only when the oracle is unreachable. 0 means "no fallback, abort the
+    # cycle" — the v1 behaviour. Set a number to trade accuracy for resilience.
+    akt_usd_fallback: 0
+    price_oracle_url: https://api.coingecko.com/api/v3/simple/price?ids=akash-network&vs_currencies=usd
+
+  placement:
+    # Explicit ISO 3166-1 alpha-2, replacing v1's fuzzy country-name matching.
+    countries:
+      [AT, BE, BG, HR, CY, CZ, DK, EE, FI, FR, DE, GR, HU, IE, IT, LV, LT, LU,
+       MT, NL, PL, PT, RO, SK, SI, ES, SE, GB, CH, NO, UA]
+    # Warsaw — bids within the price tolerance are ranked by distance from here.
+    ref_lat: 52.2297
+    ref_lon: 21.0122
+    skip_ttl: 24h
+    deny_providers: []
+
+  timeouts:
+    bid_poll: 5s
+    bid_wait: 90s
+    lease_poll: 10s
+    lease_ready: 10m
+    deposit_settle: 15s
+
+  funds:
+    check_interval: 10m
+    min_topup_usd: 0.5
+    margin: 1.2
+
+backups:
+  dir: /data/backups
+
+  interval: 1h
+  # Both limits apply; a backup is deleted when it fails either.
+  retention_days: 7
+  retention_count: 24
+
+  on_halt: true
+  halt_timeout: 10m
+  halt_confirm: 3m
+
+  pause_file: pause_autosave
+
+  # backups.dir does not survive a controller redeploy. This threshold drives
+  # the dashboard warning that pushes you to download backups before they are
+  # rotated out or the lease is closed — it is the only durability mechanism.
+  disk_warn_percent: 70
+
+  upload_max_bytes: 2147483648
+
+  # What the next boot restores when nobody has said otherwise.
+  #
+  #   latest — follow the newest completed backup. The disk does not survive the
+  #            lease, so this is what makes "start again" mean "continue".
+  #   pinned — never follow; the target changes only when you name an archive.
+  #   none   — never restore; every start is a fresh world, and a restore
+  #            trigger is refused rather than quietly ignored.
+  #
+  # Naming an archive in a restore trigger pins it under any policy, so a backup
+  # that captured a broken world cannot overwrite your choice. Push a restore
+  # trigger containing "latest" to release the pin.
+  restore_policy: latest
+
+dns:
+  enabled: true
+  provider: cloudflare
+  domain: vsrania.online
+  zone_id: 560a787fa0f063440222a08fc9d5af4f
+  proxied: true
+  ssl_mode: flexible
+  include_www: true
+
+# PZ .ini values the agent renders at boot. RCONPassword, Password and
+# AdminPassword are absent by design: they arrive as placeholders inside
+# server.zip and are substituted by the controller as it serves that file, so
+# they never reach an image layer or an Akash manifest.
+game:
+  map: Muldraugh, KY
+  public_name: My PZ Server
+  max_players: 32
+  pause_empty: true
+  public: false
+  open: true
+  # Whether joining requires the password in PZ_JOIN_PASSWORD. Independent of
+  # `open`: v1 ran with open: true and a password set, and the dashboard printed
+  # the password for players. false makes the server joinable by anyone who has
+  # the address.
+  password_protected: true
+  global_chat: true
+  ping_limit: 0
+  max_accounts_per_user: 0
+  upnp: false
+  save_world_every_minutes: 0
+  # The game's own in-Saves backups, distinct from ours.
+  pz_backups:
+    count: 5
+    on_start: false
+    on_version_change: false
+    period: 0
+
+dashboard:
+  default_locale: ru
+  locales: [ru, en]
+
+agent:
+  # Stamps agent state even when nothing changed, so the controller can tell
+  # "quiet" from "wedged".
+  liveness_push: 10m
+  # Rate-limits player-count pushes. With git as the bus, this is what stops
+  # join/leave churn becoming commit churn.
+  players_push_min_interval: 2m
+
+  # How often the agent re-reads the controller's branch for intent, a restore
+  # target and a backup request. It bounds how quickly a halt is noticed, so
+  # validation requires it to be shorter than backups.halt_confirm.
+  reconcile: 20s
+
+  restore_download_retries: 5
+  restore_download_timeout: 30m
+
+  # The container's filesystem layout. In v1 every one of these was a literal
+  # inside entrypoint.sh, several of them written out more than once, so the
+  # image and the script could disagree — and did, over Zomboid vs zomboid.
+  paths:
+    home: /home/steam
+    game_dir: /home/steam/pz-server
+    # What PZ calls ~/Zomboid: Server/, Saves/, db/, mods/.
+    data_dir: /home/steam/Zomboid
+    # A symlink to data_dir under a lowercase name. The game reads mods from
+    # ~/Zomboid but builds some internal paths (checksums, animsets) in
+    # ~/zomboid whatever -cachedir says, and ext4 has no directory hardlinks —
+    # so on a case-sensitive filesystem both names have to reach one directory.
+    # Empty disables it.
+    lowercase_link: /home/steam/zomboid
+    # The agent's own bare mirror of pz-saves. Separate from git.cache_dir,
+    # which belongs to the controller's container.
+    repo_cache: /home/steam/pz-saves.git
+    # Downloads and the zip being built. Emptied on boot, so it must not name
+    # anything else.
+    work_dir: /home/steam/work
+    # Where PZ's console output is mirrored, for an operator with a shell. The
+    # agent watches the pipe, not this file: v1 tailed the file and had to track
+    # a line offset across restarts to avoid re-matching an old banner.
+    log_file: /home/steam/server.log
+
+  # How to drive the game process. This is PZ's interface rather than ours, so it
+  # changes when the game changes — which is exactly why it is config.
+  pz:
+    # Candidate launcher names, searched for beneath game_dir in order.
+    launch_scripts: [start-server.sh, StartServer64.sh]
+    # The line that means the server is accepting connections. Without it the
+    # agent could only call the server ready the moment the process started.
+    ready_banner: "*** SERVER STARTED ***"
+    # -servername, -cachedir and -adminpassword are supplied by the agent from
+    # config and secrets; these are the rest.
+    extra_args: [-nosteam]
+
+    # Written to PZ's stdin. This is why v2 needs neither RCON nor SSH: the agent
+    # owns the process, so it owns the console.
+    save_command: save
+    quit_command: quit
+    # Substrings that mean the save finished, matched case-insensitively against
+    # the console. The wording has changed between PZ builds, so a new build
+    # costs a line here rather than a rebuild. Empty means "just wait out
+    # save_timeout"; a confirmation that never arrives is a logged warning, not a
+    # failed backup — v1 zipped the world with no save at all.
+    save_confirm: [SAVED, save complete, world saved]
+    save_timeout: 5m
+    # How long a polite quit gets before the agent escalates to a signal, then to
+    # a kill.
+    quit_timeout: 3m
+
+    # Polled to keep players_count live — bug 1. In v1 this was an RCON call the
+    # container never made, and eleven separate write sites hardcoded a 0.
+    players_command: players
+    players_interval: 30s

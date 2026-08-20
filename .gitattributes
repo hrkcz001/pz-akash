@@ -1,0 +1,10 @@
+# Line endings are normalised to LF in the repository. Without this, a clone on
+# Windows with core.autocrlf=true produces CRLF working files, and then
+# `gofmt -l` reports the whole tree and a shell script fails under WSL with
+# "bad interpreter" — both from a checkout that changed nothing.
+* text=auto eol=lf
+
+# Never touch these.
+*.zip binary
+*.png binary
+*.jpg binary
