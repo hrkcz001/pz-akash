@@ -52,12 +52,15 @@ func cmdDNS(args []string) error {
 		return fmt.Errorf("dns: dns.enabled is false in %s — nothing to do", resolved)
 	}
 
-	// Only the Cloudflare token is required here, whatever else the deployment
-	// needs: this command renders no SDL and creates no lease, and demanding the
-	// Akash key to read a zone would make it unusable from a laptop.
-	set, err := secrets.Load(secrets.RoleController, secrets.Requirements{DNS: true})
-	if err != nil {
-		return err
+	// One secret, demanded on its own. secrets.Load(RoleController) would require
+	// the nine a controller needs to run, and none of them has anything to do with
+	// a zone: this command renders no SDL and creates no lease, and asking for the
+	// Akash key and the deploy key to read a DNS record would make it unusable from
+	// a laptop — which is exactly where an operator runs it.
+	set := secrets.LoadOptional()
+	if set.CloudflareAPIToken == "" {
+		return fmt.Errorf("dns: set PZ_CLOUDFLARE_API_TOKEN (the token needs Zone.DNS:Edit, " +
+			"and Zone Settings:Edit plus Zone.Config:Edit for the zone settings and the origin rule)")
 	}
 
 	logf := func(format string, a ...any) { fmt.Fprintf(os.Stderr, format+"\n", a...) }
