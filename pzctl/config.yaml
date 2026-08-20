@@ -266,6 +266,7 @@ backups:
 dns:
   enabled: true
   provider: cloudflare
+  api_base: https://api.cloudflare.com/client/v4
   domain: vsrania.online
   zone_id: 560a787fa0f063440222a08fc9d5af4f
   proxied: true
@@ -280,6 +281,26 @@ dns:
   # and PZ does not, and a proxied name resolves to Cloudflare's own addresses — so
   # proxying this would point every player at Cloudflare instead of the server.
   game_record: pz
+  # Seconds. Short because the address changes on every redeploy: a resolver
+  # holding the old one sends players to a machine that is no longer ours until it
+  # expires. 1 means Cloudflare's "automatic", which is 300.
+  game_ttl: 60
+
+  # Turn off the Browser Integrity Check and drop the security level, as v1 did on
+  # every boot. What arrives at this zone is a GitHub webhook POST and the agent's
+  # uploads; neither can answer a browser challenge.
+  relax_security: true
+  # Empty the zone's dynamic-redirect ruleset. v1 did this to undo an earlier
+  # design of its own that answered 302 instead of proxying. It deletes every rule
+  # in that phase, including any you wrote by hand.
+  clear_redirect_rules: false
+
+  # The Cloudflare HTTP client. Bounded tightly and separately from akash.api: a
+  # DNS update that does not land costs an address players read off the dashboard
+  # instead, and it must never be able to hold up a deploy.
+  timeout: 15s
+  retries: 3
+  retry_wait: 2s
 
 # PZ .ini values the agent renders at boot. RCONPassword, Password and
 # AdminPassword are absent by design: they arrive as placeholders inside

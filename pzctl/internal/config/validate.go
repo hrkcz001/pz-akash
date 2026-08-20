@@ -426,6 +426,19 @@ func (c *Config) validateDNS(p *problems) {
 	if d.ZoneID == "" {
 		p.addf("dns.zone_id: required when dns.enabled is true")
 	}
+	requireHTTPURL(p, "dns.api_base", d.APIBase)
+	requirePositiveDur(p, "dns.timeout", d.Timeout)
+	if d.Retries < 0 {
+		p.addf("dns.retries: must not be negative (0 means one attempt with no retry)")
+	}
+	if d.RetryWait <= 0 {
+		p.addf("dns.retry_wait: must be greater than 0")
+	}
+	// 1 is Cloudflare's "automatic", and anything between 2 and 59 is rejected by
+	// the API — a 400 at deploy time, on a lease that is already billing.
+	if d.GameRecord != "" && d.GameTTL != 1 && (d.GameTTL < 60 || d.GameTTL > 86400) {
+		p.addf("dns.game_ttl: %d must be 1 (automatic) or between 60 and 86400 seconds", d.GameTTL)
+	}
 	switch d.SSLMode {
 	case "off", "flexible", "full", "strict":
 	default:

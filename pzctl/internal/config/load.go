@@ -119,10 +119,20 @@ func Defaults() *Config {
 		},
 		DNS: DNS{
 			Provider:   "cloudflare",
+			APIBase:    "https://api.cloudflare.com/client/v4",
 			Proxied:    true,
 			SSLMode:    "flexible",
 			IncludeWWW: true,
 			GameRecord: "pz",
+			GameTTL:    60,
+			// v1's posture, kept: the endpoints behind this zone are a webhook and
+			// an upload API, and a challenge page to either is an outage.
+			RelaxSecurity: true,
+			// Not v1's: it deletes rules we did not write. See the field comment.
+			ClearRedirectRules: false,
+			Timeout:            Duration(15 * time.Second),
+			Retries:            3,
+			RetryWait:          Duration(2 * time.Second),
 		},
 		Game: Game{
 			MaxPlayers:            32,

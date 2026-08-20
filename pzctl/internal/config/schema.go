@@ -391,6 +391,7 @@ const (
 type DNS struct {
 	Enabled  bool   `yaml:"enabled"`
 	Provider string `yaml:"provider"`
+	APIBase  string `yaml:"api_base"`
 	Domain   string `yaml:"domain"`  // CLOUDFLARE_DOMAIN
 	ZoneID   string `yaml:"zone_id"` // CLOUDFLARE_ZONE_ID
 	Proxied  bool   `yaml:"proxied"`
@@ -408,6 +409,35 @@ type DNS struct {
 	// client would be sent to Cloudflare instead of the server. Proxying game
 	// traffic needs Spectrum, which is a paid product this system does not use.
 	GameRecord string `yaml:"game_record"`
+
+	// GameTTL is the TTL, in seconds, of the game record. It is short on purpose:
+	// the address changes on every redeploy, and a resolver holding the old one
+	// sends players at a machine that is no longer ours until it expires.
+	// Cloudflare's "automatic" is 300; 1 means automatic.
+	GameTTL int `yaml:"game_ttl"`
+
+	// RelaxSecurity turns off the Browser Integrity Check and drops the security
+	// level, which v1 did unconditionally on every controller boot. Both defend a
+	// website against browsers; what they reach here is GitHub's webhook POST and
+	// the agent's uploads, neither of which can answer a challenge. Set false to
+	// leave the zone's own settings alone.
+	RelaxSecurity bool `yaml:"relax_security"`
+
+	// ClearRedirectRules empties the zone's dynamic-redirect ruleset. v1 did this
+	// on every boot to undo an earlier design of its own that answered 302 instead
+	// of proxying, so a fresh zone has nothing to clear.
+	//
+	// It deletes every rule in that phase, including rules an operator wrote by
+	// hand, which is why it defaults to false.
+	ClearRedirectRules bool `yaml:"clear_redirect_rules"`
+
+	// Timeout, Retries and RetryWait bound the Cloudflare calls. Separate from
+	// akash.api because the failure means something different: a DNS update that
+	// does not land costs an address players have to read off the dashboard, so it
+	// is bounded tightly and never allowed to hold up a deploy.
+	Timeout   Duration `yaml:"timeout"`
+	Retries   int      `yaml:"retries"`
+	RetryWait Duration `yaml:"retry_wait"`
 }
 
 // GameHost is the fully qualified name for the game server, or "" when no game
@@ -417,6 +447,20 @@ func (d DNS) GameHost() string {
 		return ""
 	}
 	return d.GameRecord + "." + d.Domain
+}
+
+// ControllerHosts are the names that point at the controller: the apex, plus www
+// when include_www is set. Empty when DNS is off, so a caller that iterates it
+// does nothing rather than having to remember the check.
+func (d DNS) ControllerHosts() []string {
+	if !d.Enabled || d.Domain == "" {
+		return nil
+	}
+	hosts := []string{d.Domain}
+	if d.IncludeWWW {
+		hosts = append(hosts, "www."+d.Domain)
+	}
+	return hosts
 }
 
 // Game holds the PZ server .ini values that the agent renders at boot. Secret
