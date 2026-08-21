@@ -344,10 +344,18 @@ Carried from step 7 §11, unchanged, and not blocking:
    permits 48 GiB on a 20 GiB volume that also holds `packages_dir` and must keep
    `min_free_bytes: 2 GiB` free — the count rule can never bind. ~8 is the honest
    number.
-2. **`PZ_ADMIN_PASSWORD` has no delivery channel**, and the comment at
-   `internal/agent/boot.go:289-292` states as fact that the controller substitutes it
-   into the ini, which no code does. (Step 9 item 5 gives the join and RCON passwords
-   that channel; the admin password needs the same treatment or an explicit decision.)
+2. ~~**`PZ_ADMIN_PASSWORD` has no delivery channel**~~ — **resolved, and it was already
+   resolved when this was written.** Step 6 built the channel: `httpapi.Substituter` maps
+   `__ADMIN_PASSWORD__` to `secrets.Set.AdminPassword`, loaded from `PZ_ADMIN_PASSWORD` on
+   the controller only (`internal/secrets/secrets.go:106`), wired at
+   `internal/httpapi/server.go:92` and selected per-file at `handlers.go:44`;
+   `internal/sdl/render_test.go:267` asserts the variable reaches the controller SDL. The
+   comment at `internal/agent/boot.go:289-292` is accurate. What is actually missing is one
+   line in pz-saves: `server/Server/vsrania.ini` has no `AdminPassword` key at all, so
+   there is no placeholder for the substituter to hit. v1 passed the value as
+   `ADMIN_PASSWORD` in the server SDL's environment instead — which is exactly the
+   arrangement that comment describes as v1's. Step 9 item 5 now says to *add*
+   `AdminPassword=__ADMIN_PASSWORD__`, not to replace a literal.
 3. **The downloaded/not-downloaded tag** on the dashboard: keep or drop (step 7 §6.11).
 
 New, noticed while writing this and not urgent: both runtime images are
@@ -364,3 +372,16 @@ builder I may use?** Right now every image iteration is a push and a CI round tr
 which is slow and burns Actions minutes on things `bash -n` could have caught. Starting
 Docker Desktop is the zero-install option; a podman install in the WSL Debian is the
 other. I am not going to work around it — the question is yours to answer.
+
+New, and the one item here that is a decision rather than a cleanup: **the full inventory
+of publicly-readable live credentials is four values, three of them distinct.** The image
+gate's two warnings name the ini's `RCONPassword` and `Password`; closing them out led to
+pz-saves' tracked `deployment.yaml`, which is v1's server SDL and carries `ADMIN_PASSWORD`
+and `STORAGE_PASSWORD` as plain env entries in the same public repository. `RCONPassword`
+and `STORAGE_PASSWORD` are one string doing two jobs, so they rotate together. Two of the
+three were also echoed into this session's terminal output by a mistake of mine — a helper
+function I named `H`, which is PowerShell's alias for `Get-History`, so the binding error
+printed the argument it could not convert. No attacker gained anything they could not
+already `curl` from a public repository, but it does put the values in a scrollback and a
+transcript as well. The rotation recommendation in PLAN step 9 item 5 is therefore no
+longer balanced against "reuse costs nothing": rotate all three at cutover.

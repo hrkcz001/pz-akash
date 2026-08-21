@@ -204,8 +204,35 @@ Work happens in a new top-level `pzctl/` directory and a `v2` branch of pz-saves
 2. Halt the server through the old system; confirm the lease is closed.
 3. Close the old controller deployment. *(Old and new must never run against pz-saves simultaneously.)*
 4. Merge pz-saves `v2` → `main` (adds `config.yaml`, `triggers/`, templated inis; removes `deployment.yaml`).
+   - **There is no `v2` branch of pz-saves yet** — `git branch -a` shows `main` and nothing else, and `main` has neither `config.yaml` nor `triggers/`. The v2 config lives in this repository as `pzctl/config.yaml`, the draft the CI gate validates. So this item begins by *creating* that branch from today's `main` and adding the three things to it; there is nothing to merge until then.
 5. **Replace the literal passwords in `server/Server/*.ini` with `__RCON_PASSWORD__` and `__JOIN_PASSWORD__`**, and move the two values into the controller's environment (`PZ_RCON_PASSWORD`, `PZ_JOIN_PASSWORD` — `internal/secrets`). The committed ini still carries the real values v1 put there; the substitution happens in the controller as the archive is served, so nothing in the repo or in an image layer needs them. Until this lands, `docker/check_image.sh` emits a `::warning::` for each literal it finds in `server.zip`; **after** it lands, change that `note` to `fail` so a regression is a red build.
+   - **`AdminPassword` is not in the ini at all** — `server/Server/vsrania.ini` has
+     `RCONPassword` (line 167) and `Password` (line 188) and no admin key, because v1
+     passed the admin password as `ADMIN_PASSWORD` in the server SDL's environment
+     instead. So this item *adds* `AdminPassword=__ADMIN_PASSWORD__` rather than
+     replacing a literal. The controller side is already built and tested: step 6's
+     `httpapi.Substituter` maps `__ADMIN_PASSWORD__` to `secrets.Set.AdminPassword`,
+     loaded from `PZ_ADMIN_PASSWORD` on the controller only, and substituted into the
+     response body as `server.zip` is served — never onto disk, never into a layer,
+     never into the game container's environment or its `/proc` command line.
    - **`hrkcz001/pz-saves` is a public repository** (found in step 8: the CI checkout succeeded with no deploy key). So those two passwords are not merely in git, they are readable by anyone, along with every value the ini holds. **Recommend rotating both at cutover** rather than reusing them — this is the one place the "reuse everything, just move it out of git" decision meets a value that is already public, and it is your call. Rotation costs one edit to two GitHub secrets and one message to the players; reuse costs nothing and leaves a known-public join password in place.
+   - **The exposed set is four values, not two, and three of them are distinct.** Public
+     `pz-saves` also tracks `deployment.yaml` at HEAD (commit `5201938`, 2026-08-19) —
+     v1's *server* SDL, carrying `ADMIN_PASSWORD` (12 chars) and `STORAGE_PASSWORD`
+     (19 chars) as plain env entries. With the ini's `RCONPassword` (19) and `Password`
+     (4) that is four live credentials anyone can read. `RCONPassword` and
+     `STORAGE_PASSWORD` are **the same string**, so rotating either one means rotating
+     both — they are one value doing two jobs (RCON login and the dashboard's storage
+     realm). §7 already says to delete this file; it is listed here because it is an
+     exposure, not only a layout problem.
+   - **Two of those values were echoed into this session's terminal output** on
+     2026-08-22, by a gate command of mine whose helper function named `H` collided with
+     PowerShell's alias for `Get-History`; the binding error printed the argument it
+     could not convert. The affected values are the shared `RCONPassword`/
+     `STORAGE_PASSWORD` string and `ADMIN_PASSWORD`. They were already world-readable in
+     a public repository, so this changes no attacker's access — but it does mean they
+     now also sit in a terminal scrollback and a session transcript, and it removes any
+     remaining argument for reuse. **Rotate all three distinct values at cutover.**
    - Decide whether the new `pz-saves` is public or private. v2 needs neither: with placeholders in the ini, nothing secret is in the repository, and the workflow's `ssh-key:` line works either way.
 6. Rename the repositories: `pz-akash` → `pz-akash-proto`, `pz-saves` → `pz-saves-proto`, then create the new `pz-akash` / `pz-saves` from the v2 trees. Both image names in `config.yaml` and the workflow's `${{ github.repository }}` follow the slug, and `scratch/gate8.ps1` asserts the two agree — run it after the rename.
 7. Point the GitHub webhook at the new controller.
