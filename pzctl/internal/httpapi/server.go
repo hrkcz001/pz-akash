@@ -30,6 +30,7 @@ type Server struct {
 	sub   *Substituter
 
 	packagesDir string
+	torrentFile string
 	uploadLimit time.Duration
 	readHeader  time.Duration
 	idle        time.Duration
@@ -80,11 +81,17 @@ func NewServer(o ServerOptions) (*Server, error) {
 	if now == nil {
 		now = time.Now
 	}
+	d := o.Cfg.Dashboard
+	sess, err := newSessions(d.SessionTTL.D(), d.UnlockWindow.D(), d.UnlockAttempts, now)
+	if err != nil {
+		return nil, fmt.Errorf("httpapi: generating the unlock signing key: %w", err)
+	}
 	return &Server{
 		store:       o.Store,
-		guard:       newGuard(o.Secrets, logf),
+		guard:       newGuard(o.Secrets, sess, logf),
 		sub:         NewSubstituter(st.SubstituteEntries, o.Secrets, st.SubstituteMaxBytes, logf),
 		packagesDir: st.PackagesDir,
+		torrentFile: d.TorrentFile,
 		uploadLimit: st.UploadTimeout.D(),
 		readHeader:  st.ReadHeaderTimeout.D(),
 		idle:        st.IdleTimeout.D(),
@@ -99,11 +106,15 @@ func NewServer(o ServerOptions) (*Server, error) {
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc(PathHealth, s.handleHealth)
-	for _, p := range packages {
+	for _, p := range s.static() {
 		mux.HandleFunc(p.urlPath, s.packageHandler(p))
 	}
 	mux.HandleFunc(PathBackupsIndex, s.handleIndex)
-	mux.HandleFunc(PathBackupsDir, s.handleBackup)
+	// One segment, not a subtree. Registering the bare prefix would make
+	// ServeMux redirect "/backups" — the dashboard's page — into this handler, and
+	// it would also route "/backups/sub/dir.zip" here for BackupName to reject.
+	// The wildcard matches exactly the shape a backup name has.
+	mux.HandleFunc(PathBackupsDir+"{name}", s.handleBackup)
 	if s.extra != nil {
 		mux.Handle("/", s.extra)
 	}
@@ -168,6 +179,45 @@ func orDefault(d, fallback time.Duration) time.Duration {
 	}
 	return d
 }
+
+// --- the unlock, for the dashboard ---
+
+// Unlocked reports whether r may follow realm's downloads.
+//
+// The dashboard calls it to decide between a link and a lock, and it is the same
+// predicate the download handlers enforce — deliberately the same function, so a
+// page that renders a link cannot be showing one the file handler would 401.
+func (s *Server) Unlocked(realm Realm, r *http.Request) bool {
+	return s.guard.allow(realm, r)
+}
+
+// Unlock checks a submitted password for realm and, when it matches, sets the
+// cookie that Unlocked will accept. It reports whether the password was right.
+//
+// Rate limiting lives here rather than in the dashboard because this is the only
+// place a password is compared, and a limiter attached to the page could be walked
+// around by whatever else learns to call this. Exhausting the limit answers the
+// same "no" a wrong password does: an attacker who can tell "throttled" from
+// "wrong" knows when to back off, and the operator's own retry is a page reload
+// either way.
+func (s *Server) Unlock(w http.ResponseWriter, r *http.Request, realm Realm, password string) bool {
+	if realm != RealmServerFiles && realm != RealmBackups {
+		return false
+	}
+	if !s.sessions().take(r) {
+		s.logf("auth: unlock for realm %q from %s refused — attempt limit reached", realm, clientKey(r))
+		return false
+	}
+	if !s.guard.verify(realm, password) {
+		s.sessions().penalise(r)
+		return false
+	}
+	s.sessions().grant(w, r, realm)
+	s.logf("auth: unlocked realm %q for %s", realm, clientKey(r))
+	return true
+}
+
+func (s *Server) sessions() *sessions { return s.guard.sess }
 
 // --- handlers ---
 

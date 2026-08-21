@@ -580,17 +580,37 @@ func (c *Config) validateDashboard(p *problems) {
 	if len(d.Locales) == 0 {
 		p.addf("dashboard.locales: at least one locale is required")
 	}
-	if d.DefaultLocale == "" {
+	switch {
+	case d.DefaultLocale == "":
 		p.addf("dashboard.default_locale: required")
-		return
+	case !slices.Contains(d.Locales, d.DefaultLocale):
+		p.addf("dashboard.default_locale: %q is not listed in dashboard.locales (%s)",
+			d.DefaultLocale, strings.Join(d.Locales, ", "))
 	}
-	for _, l := range d.Locales {
-		if l == d.DefaultLocale {
-			return
-		}
+
+	// Both are joined onto packages_dir, so a separator or a .. would let a config
+	// edit read any file the controller can. Empty is how each is turned off.
+	requireBasename(p, "dashboard.torrent_file", d.TorrentFile)
+	requireBasename(p, "dashboard.guide_file", strings.ReplaceAll(d.GuideFile, "{lang}", "xx"))
+
+	if d.PollInterval < 0 {
+		p.addf("dashboard.poll_interval: must not be negative")
 	}
-	p.addf("dashboard.default_locale: %q is not listed in dashboard.locales (%s)",
-		d.DefaultLocale, strings.Join(d.Locales, ", "))
+	if d.PlayersStaleAfter < 0 {
+		p.addf("dashboard.players_stale_after: must not be negative")
+	}
+	// The agent only pushes a count when it changed or when liveness comes due, so
+	// a quiet server's newest count is one push interval old at best. A shorter
+	// staleness threshold than that renders every idle server as a broken agent —
+	// the false alarm nobody can act on, which is how real alarms stop being read.
+	if pi := c.Agent.PlayersPushMinInterval; d.PlayersStaleAfter > 0 && pi > 0 && d.PlayersStaleAfter <= pi {
+		p.addf("dashboard.players_stale_after (%v) must exceed agent.players_push_min_interval (%v) — a quiet server's count is always at least that old",
+			d.PlayersStaleAfter.D(), pi.D())
+	}
+
+	requirePositiveDur(p, "dashboard.session_ttl", d.SessionTTL)
+	requirePositive(p, "dashboard.unlock_attempts", d.UnlockAttempts)
+	requirePositiveDur(p, "dashboard.unlock_window", d.UnlockWindow)
 }
 
 func (c *Config) validateAgent(p *problems) {
@@ -722,6 +742,21 @@ func requireAbsPath(p *problems, path, v string) {
 func requirePositiveDur(p *problems, path string, d Duration) {
 	if d <= 0 {
 		p.addf("%s: must be greater than 0", path)
+	}
+}
+
+// requireBasename accepts a bare filename, or nothing.
+//
+// It exists for the two dashboard filenames, which are joined onto packages_dir
+// before being opened. filepath.Base would sanitise them silently; refusing them
+// instead means a config that meant to point somewhere else is reported rather
+// than quietly redirected. Empty is allowed: it is how the caller turns the
+// feature off.
+func requireBasename(p *problems, path, v string) {
+	switch {
+	case v == "":
+	case strings.ContainsAny(v, `/\`), v == ".", v == "..":
+		p.addf("%s: %q must be a plain filename, not a path", path, v)
 	}
 }
 

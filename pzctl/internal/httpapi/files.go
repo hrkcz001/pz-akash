@@ -194,37 +194,62 @@ func copyRaw(zw *zip.Writer, f *zip.File) error {
 
 // --- serving ---
 
-// zipFile is one of the three packages, resolved against packages_dir.
-type zipFile struct {
+// staticFile is one file served straight out of packages_dir.
+type staticFile struct {
 	// urlPath is the path clients request.
 	urlPath string
 	// fileName is the basename inside packages_dir.
 	fileName string
+	// mime is the Content-Type. Explicit per row rather than sniffed: these are
+	// the controller's own files, and a torrent served as application/zip is a
+	// browser offering to open it with the wrong program.
+	mime string
 	// realm guards it. Empty means public.
 	realm Realm
 	// substitute is set for the archive that carries the game secrets.
 	substitute bool
 }
 
-// packages is the complete served set, in the order the dashboard lists them.
+const (
+	mimeZip     = "application/zip"
+	mimeTorrent = "application/x-bittorrent"
+)
+
+// packages is the served set every controller has, in the order the dashboard
+// lists them.
 //
 // It is a table rather than three registrations so that the realm and the
 // substitution flag sit next to the path they apply to. In v1 the equivalent
 // facts were spread across a `do_GET` if-chain, an auth helper that took the path
 // as a string, and a separate branch for server.zip — and the way that fails is a
 // new path added to the router and to neither of the other two.
-var packages = []zipFile{
-	{PathCommonZip, "common.zip", RealmPublic, false},
-	{PathClientZip, "client.zip", RealmPublic, false},
-	{PathServerZip, "server.zip", RealmServerFiles, true},
+var packages = []staticFile{
+	{PathCommonZip, "common.zip", mimeZip, RealmPublic, false},
+	{PathClientZip, "client.zip", mimeZip, RealmPublic, false},
+	{PathServerZip, "server.zip", mimeZip, RealmServerFiles, true},
+}
+
+// static is the table plus whatever configuration adds to it.
+//
+// The torrent is here rather than in a handler of its own so that it inherits the
+// same method check, the same realm check and the same open-and-serve path as the
+// zips. A second implementation is how a public file ends up with a subtly
+// different 404, or with Range support the others have.
+func (s *Server) static() []staticFile {
+	if s.torrentFile == "" {
+		return packages
+	}
+	return append(append([]staticFile{}, packages...),
+		staticFile{PathTorrent, s.torrentFile, mimeTorrent, RealmPublic, false})
 }
 
 // openPackage opens one package for reading, as a *zip.Reader when it needs
 // rewriting and as a plain file when it does not.
-func openPackage(dir string, p zipFile) (*os.File, os.FileInfo, error) {
-	// filepath.Base defends the join even though fileName comes from the table
-	// above: it costs nothing, and the day someone makes the table configurable is
-	// the day the absence of this line becomes a path traversal.
+func openPackage(dir string, p staticFile) (*os.File, os.FileInfo, error) {
+	// filepath.Base defends the join because fileName is no longer only from the
+	// table above: the torrent's name comes from config, and validation refusing a
+	// separator there is a rule in another package that this line does not depend
+	// on.
 	f, err := os.Open(filepath.Join(dir, filepath.Base(p.fileName)))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {

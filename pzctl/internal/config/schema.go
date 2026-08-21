@@ -566,9 +566,54 @@ type PZBackups struct {
 	Period          int  `yaml:"period"`
 }
 
+// Dashboard is the public page: the one part of the system players see.
+//
+// v1 had all of this as literals inside storage_server.py — the locale list, the
+// poll interval, the torrent filename, the join password, and the decision to
+// show it. The password in particular could not be hidden, because it was written
+// into the HTML by the same f-string that wrote the address.
 type Dashboard struct {
 	DefaultLocale string   `yaml:"default_locale"`
 	Locales       []string `yaml:"locales"`
+
+	// TorrentFile is the clean-client torrent, as a basename inside
+	// controller.storage.packages_dir. Empty hides the banner — which v1 could not
+	// do: it rendered the banner unconditionally and 404ed the link when the file
+	// was missing.
+	TorrentFile string `yaml:"torrent_file"`
+
+	// GuideFile is the markdown rendered under the cards. {lang} is replaced with
+	// the locale being rendered, and the unsuffixed name is the fallback, so a
+	// saves repo with one README.md serves both locales until someone translates
+	// it. Resolved inside packages_dir. Empty omits the section.
+	GuideFile string `yaml:"guide_file"`
+
+	// ShowJoinPassword puts server.password_protected's secret on the page next to
+	// the address. It is true for a server that is public in the "anyone we told
+	// may join" sense, which is how v1 ran, and false for one where the password is
+	// the access control.
+	ShowJoinPassword bool `yaml:"show_join_password"`
+
+	// PollInterval is how often an open page re-reads the status line. Zero
+	// disables polling and the page is then only as current as its last load.
+	PollInterval Duration `yaml:"poll_interval"`
+
+	// PlayersStaleAfter is how old a player count may be before the page says so.
+	// It must exceed agent.players_push_min_interval or an idle server — one where
+	// the count has not changed, so the agent has nothing to push — reads as a
+	// broken agent. Zero never marks a count stale.
+	PlayersStaleAfter Duration `yaml:"players_stale_after"`
+
+	// SessionTTL is how long an unlock lasts. The unlock cookie is signed with a
+	// key generated at startup, so a controller restart ends every session
+	// regardless — this bounds the other direction.
+	SessionTTL Duration `yaml:"session_ttl"`
+
+	// UnlockAttempts and UnlockWindow rate-limit password attempts per client
+	// address. v1's /api/verify was an unauthenticated, unthrottled oracle that
+	// answered as fast as it could be asked.
+	UnlockAttempts int      `yaml:"unlock_attempts"`
+	UnlockWindow   Duration `yaml:"unlock_window"`
 }
 
 type Agent struct {

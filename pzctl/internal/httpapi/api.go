@@ -43,6 +43,13 @@ const (
 	// so it is guarded by RealmServerFiles.
 	PathServerZip = "/server.zip"
 
+	// PathTorrent is the clean-client torrent the dashboard links to. It is only
+	// routed when dashboard.torrent_file names a file, so an unconfigured
+	// controller answers 404 here rather than serving an empty body — and the
+	// dashboard hides the banner from the same setting, which is the pairing v1
+	// lacked: it rendered the link unconditionally.
+	PathTorrent = "/game.torrent"
+
 	// PathBackupsDir is the prefix for one backup: GET to download, PUT to
 	// upload. Guarded by RealmBackups.
 	PathBackupsDir = "/backups/"

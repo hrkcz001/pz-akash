@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/hrkcz001/pz-akash/pzctl/internal/config"
+	"github.com/hrkcz001/pz-akash/pzctl/internal/dashboard"
 	"github.com/hrkcz001/pz-akash/pzctl/internal/fsm"
 	"github.com/hrkcz001/pz-akash/pzctl/internal/gitbus"
 	"github.com/hrkcz001/pz-akash/pzctl/internal/httpapi"
@@ -263,16 +264,46 @@ func cmdController(args []string) error {
 		return err
 	}
 
+	// One load, shared by the page and by the file service below. Two calls would
+	// read the environment twice and could disagree — the page offering a join
+	// password the file server has no token for is exactly the kind of split v2 is
+	// meant not to have.
+	set := secrets.LoadOptional()
+
 	// One port or two. controller.webhook_port: 0 folds the webhook onto http_port,
 	// so Akash exposes one endpoint instead of two — the SDL follows the same
 	// setting, so the two cannot disagree. Folding can only be honoured when there
 	// is a file service to fold into; config.yaml currently names 8080, which is two.
+	//
+	// The dashboard mounts on the file port in both arrangements, which is why it is
+	// built here and not inside the folding branch: it is the human-facing half of
+	// the same service the agent downloads from, and a two-port deployment must not
+	// lose it.
 	var extra http.Handler
-	if hook != nil && cfg.WebhookOnHTTPPort() && store != nil {
-		extra = foldedRoutes(hook, m)
-		hook = nil
-		logf("controller: webhook folded onto http_port %d at %s",
-			cfg.Controller.HTTPPort, webhook.Path)
+	var dash *dashData
+	if store != nil {
+		folded := hook
+		if !cfg.WebhookOnHTTPPort() {
+			folded = nil
+		}
+		dash = newDashData(m, store, cfg, logf)
+		page, err := dashboard.NewHandler(dashboard.HandlerOptions{
+			View: dashboardOptions(cfg, set),
+			Data: dash,
+			Logf: logf,
+		})
+		if err != nil {
+			// A template that does not parse is a bug in the binary, not a
+			// misconfiguration, and it is the same on every request. Failing at startup
+			// is how it gets found by the deploy rather than by a player.
+			return err
+		}
+		extra = foldedRoutes(folded, m, page)
+		if folded != nil {
+			hook = nil
+			logf("controller: webhook folded onto http_port %d at %s",
+				cfg.Controller.HTTPPort, webhook.Path)
+		}
 	}
 	if hook != nil {
 		srv, err := webhookServer(cfg, hook, m, *httpAddr, *dryRun, logf)
@@ -299,13 +330,14 @@ func cmdController(args []string) error {
 		files, err := httpapi.NewServer(httpapi.ServerOptions{
 			Store:   store,
 			Cfg:     cfg,
-			Secrets: secrets.LoadOptional(),
+			Secrets: set,
 			Logf:    logf,
 			Extra:   extra,
 		})
 		if err != nil {
 			return err
 		}
+		dash.use(files)
 		addr := net.JoinHostPort("", fmt.Sprint(cfg.Controller.HTTPPort))
 		go func() {
 			err := files.ListenAndServe(ctx, addr)
@@ -357,21 +389,34 @@ func openStore(cfg *config.Config, dirOverride string, logf func(string, ...any)
 	})
 }
 
-// foldedRoutes is what the file service mounts under everything it does not claim,
-// when the webhook shares its port.
+// foldedRoutes is what the file service mounts under everything it does not claim:
+// the dashboard, a plain-text status line, and — when the webhook shares this port —
+// the webhook.
 //
 // /healthz is deliberately absent: httpapi owns that path and answers it with
-// liveness, which is what the Akash probe wants. The machine's status line moves to
-// /state, where step 7's dashboard will replace it.
-func foldedRoutes(hook http.Handler, m *fsm.Machine) http.Handler {
+// liveness, which is what the Akash probe wants. /state stays even though the
+// dashboard now renders the same three fields, because it is the one status answer
+// that needs no template, no locale and no client: `curl .../state` is what an
+// operator reaches for when the page itself is what looks broken.
+//
+// hook may be nil, which is the two-port arrangement — the webhook has a listener
+// of its own and must not also answer here.
+func foldedRoutes(hook http.Handler, m *fsm.Machine, page http.Handler) http.Handler {
 	mux := http.NewServeMux()
-	mux.Handle(webhook.Path, hook)
+	if hook != nil {
+		mux.Handle(webhook.Path, hook)
+	}
 	mux.HandleFunc("/state", func(w http.ResponseWriter, _ *http.Request) {
 		s := m.State()
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		fmt.Fprintf(w, "status=%s intent=%s phase=%s\n", s.Status, s.Intent, s.Phase)
 	})
+	// Last, and at the root: the dashboard owns every path above that neither this
+	// mux nor httpapi claimed, and answers 404 for the ones it does not recognise.
+	if page != nil {
+		mux.Handle("/", page)
+	}
 	return mux
 }
 

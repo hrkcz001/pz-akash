@@ -214,9 +214,28 @@ func (p *pzProcess) notify(line string) {
 // the timeout expires, or the process exits. It reports whether a line matched,
 // because for a save the timeout is a warning rather than a failure: proceeding
 // with a possibly-unflushed world is better than never producing a backup.
+//
+// Only lines that arrive after the call are seen, so a caller that writes the
+// command first has a window in which the answer can be missed. Use expect for
+// that; this is the shape for a line nobody provoked.
 func (p *pzProcess) waitFor(want []string, timeout time.Duration) (string, bool) {
+	return p.expect(want)(timeout)
+}
+
+// expect arms the watch and returns the wait, so a caller can register before
+// writing the command that provokes the line.
+//
+// The split is the fix for a real race and not a tidiness: PZ acknowledges a save
+// on its own schedule, and with waitFor called after Send there is a window —
+// widened by a loaded host, which is exactly when a halt is happening — in which
+// the confirmation is printed before anything is listening for it. The agent then
+// reports "no save confirmation" for a save that completed, which is the sort of
+// message that gets an operator to go looking at the wrong thing.
+//
+// The returned function must be called: it is what removes the matcher.
+func (p *pzProcess) expect(want []string) func(time.Duration) (string, bool) {
 	if len(want) == 0 {
-		return "", false
+		return func(time.Duration) (string, bool) { return "", false }
 	}
 	m := &matcher{hit: make(chan string, 1)}
 	for _, w := range want {
@@ -226,26 +245,35 @@ func (p *pzProcess) waitFor(want []string, timeout time.Duration) (string, bool)
 	p.matchers = append(p.matchers, m)
 	p.mu.Unlock()
 
-	defer func() {
-		p.mu.Lock()
-		defer p.mu.Unlock()
-		for i, x := range p.matchers {
-			if x == m {
-				p.matchers = append(p.matchers[:i], p.matchers[i+1:]...)
-				return
+	return func(timeout time.Duration) (string, bool) {
+		defer func() {
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			for i, x := range p.matchers {
+				if x == m {
+					p.matchers = append(p.matchers[:i], p.matchers[i+1:]...)
+					return
+				}
 			}
-		}
-	}()
+		}()
 
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	select {
-	case line := <-m.hit:
-		return line, true
-	case <-p.done:
-		return "", false
-	case <-timer.C:
-		return "", false
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case line := <-m.hit:
+			return line, true
+		case <-p.done:
+			// The process is gone. A line it printed before exiting may already be
+			// buffered in the matcher, and it is the answer the caller asked for.
+			select {
+			case line := <-m.hit:
+				return line, true
+			default:
+				return "", false
+			}
+		case <-timer.C:
+			return "", false
+		}
 	}
 }
 

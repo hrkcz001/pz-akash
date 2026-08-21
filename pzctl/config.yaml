@@ -378,6 +378,40 @@ dashboard:
   default_locale: ru
   locales: [ru, en]
 
+  # Both are basenames inside controller.storage.packages_dir, which the image
+  # build populates. Empty turns the feature off — v1 could do neither: it always
+  # drew the torrent banner (404ing the link when the file was absent) and always
+  # read a README from the saves working tree.
+  #
+  # {lang} in guide_file is replaced with the locale being rendered, and the
+  # unsuffixed name is the fallback, so today's single README.md serves both
+  # locales and a README.en.md added later is picked up without a code change.
+  torrent_file: game.torrent
+  guide_file: README.{lang}.md
+
+  # The join password on the public page next to the address. True is v1's
+  # behaviour, and it is right while the password only keeps strangers out of a
+  # server whose address is published anyway. Set it false and the password stops
+  # being rendered at all, rather than being rendered where nobody looks.
+  show_join_password: true
+
+  # How often an open page re-reads the status line. 0 disables polling.
+  poll_interval: 10s
+
+  # How old a player count may be before the page says so. Must exceed
+  # agent.players_push_min_interval, or an idle server — no count change, so
+  # nothing to push — would read as a broken agent on every page load.
+  players_stale_after: 5m
+
+  # An unlock lasts this long. The signing key is generated at startup, so a
+  # controller restart ends every session regardless; this bounds the other end.
+  session_ttl: 12h
+
+  # Password attempts per client address. v1's /api/verify was an
+  # unauthenticated, unthrottled oracle that answered as fast as it was asked.
+  unlock_attempts: 5
+  unlock_window: 5m
+
 agent:
   # Stamps agent state even when nothing changed, so the controller can tell
   # "quiet" from "wedged".

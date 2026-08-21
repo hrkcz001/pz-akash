@@ -199,11 +199,14 @@ func TestStartPZReportsOnlinePlayersAndExit(t *testing.T) {
 	}
 
 	// A save must be observable, because a backup that cannot tell whether the
-	// world was flushed is the v1 behaviour this replaces.
+	// world was flushed is the v1 behaviour this replaces. Armed before the command
+	// is sent, which is the ordering saveOn uses: the fake acknowledges immediately,
+	// and registering afterwards misses the line perhaps one run in five.
+	wait := pz.expect([]string{"SAVED"})
 	if err := pz.Send("save"); err != nil {
 		t.Fatal(err)
 	}
-	if line, ok := pz.waitFor([]string{"SAVED"}, 5*time.Second); !ok {
+	if line, ok := wait(5 * time.Second); !ok {
 		t.Error("no save confirmation")
 	} else if !strings.Contains(line, "SAVED") {
 		t.Errorf("confirmation line = %q", line)
@@ -226,6 +229,30 @@ func TestStartPZReportsOnlinePlayersAndExit(t *testing.T) {
 	}
 	if !strings.Contains(string(body), testBanner) {
 		t.Errorf("the mirrored log does not contain the banner:\n%s", body)
+	}
+}
+
+// The race this splitting fixed, made deterministic: arm, provoke the line, let it
+// certainly arrive, and only then wait. With the watch registered after the
+// command — which is what saveOn used to do — this fails every time, and in
+// production it failed occasionally and blamed the save.
+func TestExpectCatchesALineThatArrivesBeforeTheWait(t *testing.T) {
+	pz, events := startFakePZ(t, fakePZConfig(), "")
+	waitEvent(t, events, evOnline, 10*time.Second)
+
+	wait := pz.expect([]string{"SAVED"})
+	if err := pz.Send("save"); err != nil {
+		t.Fatal(err)
+	}
+	// Long enough that the fake has certainly echoed the confirmation already.
+	time.Sleep(300 * time.Millisecond)
+
+	line, ok := wait(2 * time.Second)
+	if !ok {
+		t.Fatal("the confirmation was printed before the wait began and was lost")
+	}
+	if !strings.Contains(line, "SAVED") {
+		t.Fatalf("confirmation line = %q", line)
 	}
 }
 

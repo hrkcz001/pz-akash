@@ -1,0 +1,37 @@
+{{define "head"}}<!DOCTYPE html>
+<html lang="{{.Lang}}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{.Title}}</title>
+  <link rel="stylesheet" href="/assets/dashboard.css">
+</head>
+{{end}}
+
+{{/*
+  The nav bar. The locale switcher is anchors, not buttons: v1 switched language
+  by walking the DOM and replacing 60 strings by element id, which meant every
+  page carried both translations and a missing key rendered as "undefined". Here
+  a locale is a request, the page comes back rendered, and the cost is one round
+  trip instead of none.
+*/}}
+{{define "nav"}}
+    <nav class="nav-bar">
+      <div class="brand-title">
+        <span class="brand-icon">☣️</span>
+        <span>{{.T.Brand}}</span>
+      </div>
+      <div class="nav-links">
+        <a href="/" class="nav-item{{if eq .Active "packages"}} active{{end}}">{{.T.NavPackages}}</a>
+        <a href="/backups" class="nav-item{{if eq .Active "backups"}} active{{end}}">{{.T.NavBackups}}</a>
+        <div class="lang-switch">
+          {{range $i, $l := .Switcher}}
+          {{if $i}}<span class="lang-divider">|</span>{{end}}
+          <a href="{{$l.Href}}" class="lang-btn{{if $l.Current}} active{{end}}">{{$l.Label}}</a>
+          {{end}}
+        </div>
+      </div>
+    </nav>
+{{end}}
+
+{{define "download-icon"}}<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>{{end}}

@@ -1,0 +1,102 @@
+{{template "head" .Chrome}}
+<body data-msg-uploading="{{.T.UploadBusy}}"
+      data-msg-uploaded="{{.T.UploadDone}}"
+      data-msg-upload-failed="{{.T.UploadFailed}}"
+      data-msg-upload="{{.T.UploadBtn}}">
+  <div class="container">
+
+    {{template "nav" .Chrome}}
+
+    <div class="card">
+      <div class="backups-head">
+        <div>
+          <h1 class="backups-title">{{.T.BackupsTitle}}</h1>
+          <p class="backups-desc">{{.T.BackupsSubtitle}}</p>
+        </div>
+        {{if .Unlocked}}<span class="backups-count">{{.Count}} · {{.Total}}</span>{{end}}
+      </div>
+
+      {{if .Unlocked}}
+      {{with .Warning}}<div class="disk-warning">⚠️ {{.}}</div>{{end}}
+      <table class="backups-table">
+        <thead>
+          <tr>
+            <th>{{.T.ThName}}</th>
+            <th>{{.T.ThDate}}</th>
+            <th>{{.T.ThSize}}</th>
+            <th class="col-action">{{.T.ThAction}}</th>
+          </tr>
+        </thead>
+        <tbody>
+          {{if .Rows}}
+          {{range .Rows}}
+          <tr>
+            <td class="col-name">
+              {{.Name}}
+              {{if .Restore}}<span class="row-tag restore-tag">↩ {{.RestoreText}}</span>{{end}}
+            </td>
+            <td class="col-muted">{{.Date}}</td>
+            <td class="col-muted">
+              {{.Size}}
+              {{/*
+                The column v1 could not have: with no persistent storage, an
+                archive nobody has fetched exists on one ephemeral disk only.
+              */}}
+              <span class="row-tag {{if .Downloaded}}have-copy{{else}}no-copy{{end}}">{{.DownloadedText}}</span>
+            </td>
+            <td class="col-action">
+              <a href="{{.Href}}" class="copy-btn" download>⬇️ <span>{{$.T.Download}}</span></a>
+            </td>
+          </tr>
+          {{end}}
+          {{else}}
+          <tr><td colspan="4" class="empty-row">{{.T.NoBackups}}</td></tr>
+          {{end}}
+        </tbody>
+      </table>
+      {{else}}
+      {{/*
+        Locked renders no rows at all. v1's lock was also server-side, but it
+        put the password in the query string of the form it submitted — so the
+        unlocked page's URL, and every download link on it, carried the secret.
+      */}}
+      <div class="lock-panel">
+        <div class="lock-icon">🔒</div>
+        <h3>{{.T.PwdRequired}}</h3>
+        <p class="backups-desc">{{.T.PwdDesc}}</p>
+        {{with .Error}}<div class="lock-error">❌ {{.}}</div>{{end}}
+        <form method="POST" action="/api/unlock" class="lock-form">
+          <input type="hidden" name="realm" value="backups">
+          <input type="hidden" name="next" value="/backups">
+          <input type="password" name="password" class="lock-input"
+                 placeholder="{{.T.ModalBackupsPlaceholder}}" autocomplete="current-password" required>
+          <button type="submit" class="copy-btn lock-submit">{{.T.UnlockBtn}}</button>
+        </form>
+      </div>
+      {{end}}
+    </div>
+
+    {{if .Unlocked}}
+    {{/*
+      The upload card is how a downloaded archive gets back in. It is not a
+      convenience: the deployment has no persistent volume by design, so
+      restoring a world means putting the .zip on the controller first.
+
+      v1 POSTed multipart to /upload. This PUTs the file to the same endpoint the
+      agent uses, so there is one upload path in the server rather than two.
+    */}}
+    <div class="card">
+      <h2 class="upload-title">{{.T.UploadTitle}}</h2>
+      <p class="backups-desc">{{.T.UploadDesc}}</p>
+      <form id="upload-form" class="upload-form">
+        <input type="file" name="file" id="upload-file" accept=".zip" required>
+        <button type="submit" class="copy-btn upload-submit" id="upload-submit">{{.T.UploadBtn}}</button>
+        <div class="upload-status" id="upload-status"></div>
+      </form>
+    </div>
+    {{end}}
+  </div>
+
+  <script src="/assets/dashboard.js"></script>
+</body>
+</html>

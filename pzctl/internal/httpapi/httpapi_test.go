@@ -87,6 +87,18 @@ type harnessOptions struct {
 	substitutePatterns []string
 	substituteMax      int64
 	uploadTimeout      time.Duration
+
+	// sessionTTL and the two unlock limits populate config.Dashboard, which is
+	// what turns on the cookie half of the guard. Zero leaves it off, and that is
+	// the default: a controller with no dashboard has no unlock endpoint, and every
+	// other test in this package authenticates with a bearer token.
+	sessionTTL     time.Duration
+	unlockAttempts int
+	unlockWindow   time.Duration
+
+	// torrentFile is dashboard.torrent_file. Empty is the default and means the
+	// route does not exist at all.
+	torrentFile string
 }
 
 func newHarness(t *testing.T, o harnessOptions) *harness {
@@ -143,6 +155,12 @@ func newHarness(t *testing.T, o harnessOptions) *harness {
 		UploadTimeout:      config.Duration(o.uploadTimeout),
 		IdleTimeout:        config.Duration(120 * time.Second),
 		ShutdownGrace:      config.Duration(30 * time.Second),
+	}
+	cfg.Dashboard = config.Dashboard{
+		SessionTTL:     config.Duration(o.sessionTTL),
+		UnlockAttempts: o.unlockAttempts,
+		UnlockWindow:   config.Duration(o.unlockWindow),
+		TorrentFile:    o.torrentFile,
 	}
 	h.cfg = cfg
 

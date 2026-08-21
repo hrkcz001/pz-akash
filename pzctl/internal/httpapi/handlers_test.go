@@ -39,6 +39,62 @@ func TestPublicPackagesNeedNoCredential(t *testing.T) {
 	}
 }
 
+// The torrent is the one served file whose name comes from config, and the one
+// that is not a zip. Both facts are load-bearing: the dashboard's banner links here
+// only when the same setting is present, and a torrent handed to a browser as
+// application/zip is an offer to open it with the wrong program.
+func TestTorrentIsPublicAndServedWithItsOwnType(t *testing.T) {
+	h := newHarness(t, harnessOptions{torrentFile: "game.torrent"})
+	body := []byte("d8:announce3:foo4:infod6:lengthi1eee")
+	if err := writeFixture(filepath.Join(h.packages, "game.torrent"), body); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := h.do(http.MethodGet, PathTorrent, "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("anonymous GET %s = %d, want 200", PathTorrent, resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Type"); got != mimeTorrent {
+		t.Fatalf("Content-Type = %q, want %q", got, mimeTorrent)
+	}
+	got, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("body = %q, want the file on disk", got)
+	}
+	// It goes through the same handler as the zips, so it inherits ServeContent and
+	// the shared method check rather than having its own opinion of both.
+	if resp := h.do(http.MethodPost, PathTorrent, "", nil); resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("POST %s = %d, want 405", PathTorrent, resp.StatusCode)
+	}
+}
+
+// Not configured is not routed. v1 rendered the banner unconditionally and served
+// whatever was at the path, so a deployment that forgot the file gave players a
+// download that failed to open rather than a page without the offer.
+func TestTorrentIsNotRoutedWhenUnconfigured(t *testing.T) {
+	h := newHarness(t, harnessOptions{})
+	if err := writeFixture(filepath.Join(h.packages, "game.torrent"), []byte("d4:infod6:lengthi1eee")); err != nil {
+		t.Fatal(err)
+	}
+	if resp := h.do(http.MethodGet, PathTorrent, "", nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET %s with no torrent_file set = %d, want 404 even though the file exists",
+			PathTorrent, resp.StatusCode)
+	}
+}
+
+// A configured name whose file is absent is a 404, not a 200 with an empty body:
+// the whole served set shares openPackage, and this is the case an image build that
+// forgot to copy the file produces.
+func TestConfiguredTorrentWithNoFileIs404(t *testing.T) {
+	h := newHarness(t, harnessOptions{torrentFile: "game.torrent"})
+	if resp := h.do(http.MethodGet, PathTorrent, "", nil); resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("GET %s with no file on disk = %d, want 404", PathTorrent, resp.StatusCode)
+	}
+}
+
 func TestServerZipRequiresItsRealmAndSubstitutes(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	if err := writeFixture(filepath.Join(h.packages, "server.zip"), serverZipFixture(t)); err != nil {

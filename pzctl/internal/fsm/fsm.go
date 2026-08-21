@@ -723,6 +723,16 @@ type Snapshot struct {
 	Backups []state.Backup
 	Job     string
 	At      time.Time
+
+	// Controller and Agent are copies of the two documents, for the dashboard.
+	//
+	// Copies, and read through here rather than off the disk, because this is the
+	// other half of bug 3: v1's dashboard opened server_info.json out of a git
+	// working tree that the sync loop was checking out underneath it, and spent its
+	// life logging "Expecting value: line 1 column 106". There is no file to race
+	// with here — the loop owns the documents and hands out a snapshot.
+	Controller *state.Controller
+	Agent      *state.Agent
 }
 
 func (m *Machine) snapshot() {
@@ -738,9 +748,48 @@ func (m *Machine) snapshot() {
 	if m.job != nil {
 		s.Job = m.job.what
 	}
+	s.Controller, s.Agent = copyDocs(m.doc, m.agent)
 	m.mu.Lock()
 	m.snap = s
 	m.mu.Unlock()
+}
+
+// copyDocs deep-copies the two documents as far as they are mutable.
+//
+// Every pointer and slice is copied, not shared. A shallow copy would hand the
+// dashboard a *Lease the loop goes on to mutate, and the reader would see a torn
+// document — a status from one transition beside an endpoint from the next, which
+// is the class of bug that shows up as a page that was briefly wrong and cannot be
+// reproduced afterwards.
+func copyDocs(doc *state.Controller, agent *state.Agent) (*state.Controller, *state.Agent) {
+	var c *state.Controller
+	if doc != nil {
+		v := *doc
+		v.ProcessedSHAs = append([]string(nil), doc.ProcessedSHAs...)
+		if doc.Lease != nil {
+			l := *doc.Lease
+			v.Lease = &l
+		}
+		if doc.BackupRequest != nil {
+			b := *doc.BackupRequest
+			v.BackupRequest = &b
+		}
+		if doc.StopAt != nil {
+			t := *doc.StopAt
+			v.StopAt = &t
+		}
+		c = &v
+	}
+	var a *state.Agent
+	if agent != nil {
+		v := *agent
+		if agent.Backup != nil {
+			b := *agent.Backup
+			v.Backup = &b
+		}
+		a = &v
+	}
+	return c, a
 }
 
 // State returns the latest snapshot. Safe from any goroutine.

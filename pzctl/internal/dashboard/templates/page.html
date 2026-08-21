@@ -1,0 +1,183 @@
+{{template "head" .Chrome}}
+{{/*
+  The only values the script receives are these: a poll period and the two
+  strings it shows without a round trip. v1 generated its JavaScript from the same
+  f-string as the page, so a server name with an apostrophe in it broke the script.
+*/}}
+<body data-poll-ms="{{.PollMS}}"
+      data-msg-verifying="{{.T.ModalVerifying}}"
+      data-msg-empty="{{.T.ModalErrEmpty}}">
+  <div class="container">
+
+    {{template "nav" .Chrome}}
+
+    <div class="header-card">
+      <div class="header-top">
+        <div class="server-title-block">
+          <h1><span>{{.T.ServerTitle}}</span></h1>
+          <p>{{.T.ServerSubtitle}}</p>
+        </div>
+        <div class="status-group">
+          {{/*
+            Three player states, where v1 had one. A count it never measured was
+            printed as "0 игроков"; here an unmeasured count says so, and a
+            measurement that has stopped being refreshed says that instead.
+
+            The stale marker and the price badge are always in the document, empty
+            and hidden when they do not apply, so the poll can reveal one without
+            building elements in JavaScript.
+          */}}
+          <div class="players-badge" id="players-badge"{{if not .ShowPlayers}} hidden{{end}}{{if not .Players.Known}} title="{{.T.PlayersUnknown}}"{{end}}>
+            <span>👥</span>
+            <span id="players-text">{{.Players.Text}}</span>
+            <span class="players-stale" id="players-stale"{{if not .Players.Stale}} hidden{{end}}>· {{.Players.StaleText}}</span>
+          </div>
+          <div class="price-badge" id="price-badge"{{if not .ShowPrice}} hidden{{end}}>
+            <span id="price-text">{{.Price}}</span>
+          </div>
+          <div class="status-badge {{.Badge.Class}}" id="status-badge">
+            <span class="status-dot {{.Badge.Dot}}"></span>
+            <span id="status-text">{{.Badge.Text}}</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="address-widget-container" data-stage="{{.Stage}}">
+        {{if .ShowAddress}}
+        <div class="address-grid">
+          {{if .Host}}
+          <div class="address-card">
+            <div class="address-label">{{.T.LabelHost}}</div>
+            <div class="address-value-row">
+              <span class="address-text">{{.Host}}</span>
+            </div>
+          </div>
+          {{else}}
+          <div class="address-card">
+            <div class="address-label">{{.T.LabelIP}}</div>
+            <div class="address-value-row">
+              <span class="address-text">{{.IP}}</span>
+            </div>
+          </div>
+          {{end}}
+          <div class="address-card">
+            <div class="address-label">{{.T.LabelPort}}</div>
+            <div class="address-value-row">
+              <span class="address-text">{{.Port}}</span>
+            </div>
+          </div>
+          {{if .JoinPassword}}
+          <div class="address-card">
+            <div class="address-label">{{.T.LabelPassword}}</div>
+            <div class="address-value-row">
+              <span class="address-text join-password">{{.JoinPassword}}</span>
+            </div>
+          </div>
+          {{end}}
+        </div>
+        {{else}}
+        <div class="status-banner {{.Banner.Class}}">
+          <div class="status-banner-icon">{{.Banner.Icon}}</div>
+          <div class="status-banner-text">
+            <div class="status-banner-title">{{.Banner.Title}}</div>
+            <div class="status-banner-desc">{{.Banner.Desc}}</div>
+          </div>
+        </div>
+        {{end}}
+      </div>
+    </div>
+
+    {{with .Torrent}}
+    <div class="torrent-card">
+      <div class="torrent-info">
+        <div class="torrent-title-row">
+          <div class="torrent-title">{{.Title}}</div>
+          {{with $.Version}}<span class="version-badge">v{{.}}</span>{{end}}
+        </div>
+        <div class="torrent-desc">{{.Desc}}</div>
+      </div>
+      <a href="{{.URL}}" class="torrent-btn" download>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+        <span>{{.Btn}}</span>
+      </a>
+    </div>
+    {{end}}
+
+    <div class="cards-grid">
+      {{range .Cards}}
+      <div class="{{.CardClass}}">
+        <div>
+          <div class="card-header">
+            <div class="card-icon-box {{.IconClass}}">{{.Icon}}</div>
+            <h3 class="card-title">{{.Title}}</h3>
+          </div>
+          <div class="card-stats">{{.Stats}}</div>
+        </div>
+        {{if .Locked}}
+        <button type="button" class="{{.BtnClass}}" data-unlock="server-files">
+          <span>{{.BtnIcon}}</span>
+          <span>{{.Btn}}</span>
+        </button>
+        {{else}}
+        <a href="{{.Href}}" class="{{.BtnClass}}" download>
+          {{if .BtnIcon}}<span>{{.BtnIcon}}</span>{{else}}{{template "download-icon"}}{{end}}
+          <span>{{.Btn}}</span>
+        </a>
+        {{end}}
+      </div>
+      {{end}}
+    </div>
+
+    <div class="backups-footer">
+      <a href="/backups" class="backups-faded-btn">
+        <span>🗄️</span>
+        <span>{{.T.BackupsFooter}}</span>
+      </a>
+    </div>
+
+    {{/*
+      The guide comes from README.<lang>.md in the saves repository. v1 embedded
+      both translations in every page and hid one with CSS, and carried a
+      hardcoded copy of each in the Python source as a fallback — which is where
+      the join password ended up published twice over.
+    */}}
+    {{with .Guide}}
+    <div class="readme-card">
+      <div class="readme-header">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"></path><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"></path></svg>
+        <h2>{{$.T.GuideTitle}}</h2>
+      </div>
+      <div class="readme-body">{{.}}</div>
+    </div>
+    {{end}}
+
+  </div>
+
+  {{/*
+    One modal for both guarded realms; the button that opens it names the realm.
+    Submitting posts to /api/unlock, which verifies the real token and sets a
+    cookie — v1 posted to /api/verify, an unauthenticated and unthrottled
+    endpoint that answered "is this the password" as many times as you asked.
+  */}}
+  <div class="modal-backdrop{{if .ModalOpen}} open{{end}}" id="auth-modal">
+    <div class="modal-box">
+      <h3 id="modal-title">{{.T.ModalServerTitle}}</h3>
+      <p id="modal-desc">{{.T.ModalServerDesc}}</p>
+      <div class="modal-error{{if .UnlockError}} shown{{end}}" id="modal-error">{{.UnlockError}}</div>
+      <form id="unlock-form" method="POST" action="/api/unlock">
+        <input type="hidden" name="next" value="/">
+        <input type="hidden" name="realm" id="modal-realm"
+               value="{{if .ModalRealm}}{{.ModalRealm}}{{else}}server-files{{end}}">
+        <input type="password" class="modal-input" id="modal-password" name="password"
+               placeholder="{{.T.ModalServerPlaceholder}}" autocomplete="current-password" required>
+        <div class="modal-actions">
+          <button type="button" class="modal-btn modal-btn-cancel" id="modal-cancel">{{.T.ModalCancel}}</button>
+          <button type="submit" class="modal-btn modal-btn-submit" id="modal-submit">{{.T.ModalUnlock}}</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script src="/assets/dashboard.js"></script>
+</body>
+</html>

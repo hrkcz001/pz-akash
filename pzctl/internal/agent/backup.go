@@ -204,17 +204,24 @@ func (a *Agent) save() error {
 // "the config's save_confirm list is out of date" than "the save failed".
 func (a *Agent) saveOn(pz *pzProcess) error {
 	z := a.cfg.Agent.PZ
-	if err := pz.Send(z.SaveCommand); err != nil {
-		return fmt.Errorf("write %q to the console: %w", z.SaveCommand, err)
-	}
 	if len(z.SaveConfirm) == 0 {
+		if err := pz.Send(z.SaveCommand); err != nil {
+			return fmt.Errorf("write %q to the console: %w", z.SaveCommand, err)
+		}
 		// No patterns configured: the only honest thing left is to give the save
 		// its full budget before touching the files.
 		a.log("save: no agent.pz.save_confirm patterns — waiting out %v", z.SaveTimeout.D())
 		time.Sleep(z.SaveTimeout.D())
 		return nil
 	}
-	line, ok := pz.waitFor(z.SaveConfirm, z.SaveTimeout.D())
+	// Armed before the command is written. The other order loses a confirmation
+	// that arrives promptly, and reports a completed save as unconfirmed.
+	wait := pz.expect(z.SaveConfirm)
+	if err := pz.Send(z.SaveCommand); err != nil {
+		wait(0)
+		return fmt.Errorf("write %q to the console: %w", z.SaveCommand, err)
+	}
+	line, ok := wait(z.SaveTimeout.D())
 	if !ok {
 		return fmt.Errorf("no save confirmation within %v (watching for %s)",
 			z.SaveTimeout.D(), strings.Join(z.SaveConfirm, ", "))

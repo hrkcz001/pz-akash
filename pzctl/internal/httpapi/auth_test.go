@@ -8,7 +8,7 @@ import (
 )
 
 func TestGuardComparesFixedLengthDigests(t *testing.T) {
-	g := newGuard(testSecs, nil)
+	g := newGuard(testSecs, nil, nil)
 
 	// The tokens are stored as digests so the comparison is fixed-length, which is
 	// what lets the constant-time compare actually be constant time: comparing a
@@ -33,7 +33,7 @@ func TestGuardComparesFixedLengthDigests(t *testing.T) {
 }
 
 func TestGuardAllow(t *testing.T) {
-	g := newGuard(testSecs, nil)
+	g := newGuard(testSecs, nil, nil)
 	cases := []struct {
 		name  string
 		realm Realm
@@ -61,7 +61,7 @@ func TestGuardAllow(t *testing.T) {
 
 func TestGuardWithNoSecretsClosesEveryRealmButPublic(t *testing.T) {
 	for _, sec := range []*secrets.Set{nil, {}} {
-		g := newGuard(sec, nil)
+		g := newGuard(sec, nil, nil)
 		r, _ := http.NewRequest(http.MethodGet, "/", nil)
 		if !g.allow(RealmPublic, r) {
 			t.Fatal("public was closed")

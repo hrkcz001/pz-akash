@@ -19,14 +19,20 @@ import (
 // length through the timing of the length check itself.
 type guard struct {
 	digests map[Realm][32]byte
-	logf    func(string, ...any)
+
+	// sess is the browser's way in: a cookie the unlock endpoint sets, checked as
+	// a second credential below. Nil when no dashboard is configured, in which
+	// case the header is the only credential there is.
+	sess *sessions
+
+	logf func(string, ...any)
 }
 
-func newGuard(sec *secrets.Set, logf func(string, ...any)) *guard {
+func newGuard(sec *secrets.Set, sess *sessions, logf func(string, ...any)) *guard {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	g := &guard{digests: map[Realm][32]byte{}, logf: logf}
+	g := &guard{digests: map[Realm][32]byte{}, sess: sess, logf: logf}
 	if sec == nil {
 		return g
 	}
@@ -41,22 +47,46 @@ func newGuard(sec *secrets.Set, logf func(string, ...any)) *guard {
 	return g
 }
 
-// allow reports whether r carries the credential for realm.
+// allow reports whether r carries a credential for realm — either the bearer
+// token, which is how the agent authenticates, or an unlock cookie, which is how a
+// browser does.
 //
-// A realm with no configured token denies everything. The opposite default —
-// no password means no check — is how v1's storage server ended up serving
-// /server.zip unauthenticated whenever the env var failed to reach the
-// container, which is a state nobody could observe from the outside because a
-// working download looks identical either way.
+// A realm with no configured token denies both. The opposite default — no password
+// means no check — is how v1's storage server ended up serving /server.zip
+// unauthenticated whenever the env var failed to reach the container, which is a
+// state nobody could observe from the outside because a working download looks
+// identical either way. The cookie is checked against the same condition for the
+// same reason: it is signed by this process, but a process with no password for the
+// realm has nothing to have verified before signing.
 func (g *guard) allow(realm Realm, r *http.Request) bool {
 	if realm == RealmPublic {
 		return true
 	}
+	if _, ok := g.digests[realm]; !ok {
+		return false
+	}
+	return g.bearerMatches(realm, r) || g.sess.valid(realm, r)
+}
+
+// bearerMatches is the header credential on its own.
+func (g *guard) bearerMatches(realm Realm, r *http.Request) bool {
 	want, ok := g.digests[realm]
 	if !ok {
 		return false
 	}
 	got := sha256.Sum256([]byte(BearerToken(r.Header)))
+	return subtle.ConstantTimeCompare(got[:], want[:]) == 1
+}
+
+// verify compares a submitted password against realm's, in constant time. It is
+// what the unlock endpoint calls, and it is here rather than there so that the
+// digests never leave this file.
+func (g *guard) verify(realm Realm, password string) bool {
+	want, ok := g.digests[realm]
+	if !ok {
+		return false
+	}
+	got := sha256.Sum256([]byte(password))
 	return subtle.ConstantTimeCompare(got[:], want[:]) == 1
 }
 

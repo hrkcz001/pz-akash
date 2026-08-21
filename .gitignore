@@ -13,5 +13,10 @@ scratch/gate/
 scratch/gate6/
 scratch/gate.txt
 
+# The step 7 gallery is rendered output, not source: gate7.ps1 deletes and
+# rebuilds it, so a page that stopped being produced disappears rather than
+# lingering in a diff.
+scratch/gallery/
+
 # SteamCMD depot downloads.
 depots/

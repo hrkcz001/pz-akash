@@ -10,11 +10,11 @@ import (
 	"strings"
 )
 
-// packageHandler serves one of the three zips.
+// packageHandler serves one file out of packages_dir.
 //
-// The two public ones are served with http.ServeContent, which brings Range
-// support and conditional requests for free — worth having, because client.zip is
-// what players download and a resumable transfer over a bad connection is the
+// The public ones are served with http.ServeContent, which brings Range support
+// and conditional requests for free — worth having, because client.zip is what
+// players download and a resumable transfer over a bad connection is the
 // difference between a player joining and a player giving up.
 //
 // server.zip cannot have any of that. Its bytes are generated per request, so
@@ -22,7 +22,7 @@ import (
 // offset in a body that does not exist yet. It gets a plain 200 and a chunked
 // body, which the agent's downloader already tolerates: it only compares against
 // Content-Length when one was sent.
-func (s *Server) packageHandler(p zipFile) http.HandlerFunc {
+func (s *Server) packageHandler(p staticFile) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet && r.Method != http.MethodHead {
 			methodNotAllowed(w, http.MethodGet, http.MethodHead)
@@ -39,7 +39,7 @@ func (s *Server) packageHandler(p zipFile) http.HandlerFunc {
 		}
 		defer f.Close()
 
-		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Type", p.mime)
 
 		if !p.substitute || !s.sub.Active() {
 			// ServeContent sets Content-Length, handles Range and HEAD, and returns
