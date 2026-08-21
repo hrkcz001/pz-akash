@@ -16,6 +16,7 @@ import (
 	"strings"
 	"text/template"
 
+	"github.com/hrkcz001/pz-akash/pzctl/internal/bootstrap"
 	"github.com/hrkcz001/pz-akash/pzctl/internal/config"
 	"github.com/hrkcz001/pz-akash/pzctl/internal/secrets"
 )
@@ -171,15 +172,32 @@ func RenderServer(in Input) ([]byte, error) {
 }
 
 // bootstrapEnv is the minimum a container needs before it can read config.yaml:
-// which repository to clone, which branch, and which file. Everything else is
-// read from the config once the clone succeeds, which is what keeps the SDL
-// stable across configuration changes.
+// which repository to clone, which branch, which file, and where to keep the
+// mirror. Everything else is read from the config once the clone succeeds, which
+// is what keeps the SDL stable across configuration changes.
+//
+// The names come from internal/bootstrap, the package that reads them, so the two
+// halves of the contract cannot drift apart without a compile error. PZ_ROLE is
+// the exception: nothing reads it. Each image names its role in its own CMD
+// (`pzctl controller`, `pzctl agent`) rather than dispatching on a variable, so
+// this is here to say what a container is when someone reads the manifest or a
+// provider's process list.
+//
+// The mirror directory is role-dependent because the two containers keep their
+// mirrors in different places — and must, since each force-pushes its own state
+// branch through it. Handing both the same path would be a local-run bug that
+// only appears when a laptop runs the pair.
 func bootstrapEnv(c *config.Config, role secrets.Role) []string {
+	mirror := c.Git.CacheDir
+	if role == secrets.RoleAgent {
+		mirror = c.Agent.Paths.RepoCache
+	}
 	return []string{
 		envScalar("PZ_ROLE", string(role)),
-		envScalar("PZ_REPO_URL", c.Git.RepoURL),
-		envScalar("PZ_GIT_BRANCH", c.Git.Branch),
-		envScalar("PZ_CONFIG_PATH", config.DefaultFileName),
+		envScalar(bootstrap.EnvRepoURL, c.Git.RepoURL),
+		envScalar(bootstrap.EnvBranch, c.Git.Branch),
+		envScalar(bootstrap.EnvPath, config.DefaultFileName),
+		envScalar(bootstrap.EnvMirrorDir, mirror),
 	}
 }
 

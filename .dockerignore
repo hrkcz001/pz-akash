@@ -1,0 +1,36 @@
+# The build context is the repository root, because the images need pzctl/ and
+# docker/ and (for the controller) the private saves checked out at ./pz-saves.
+# Everything a build does not read is excluded here, for two reasons: the context
+# is uploaded to the builder in full, and this working tree contains files that
+# must never reach an image layer.
+
+# Live credentials. v1's rendered manifests hold the real deploy key, the Akash
+# key and the game passwords; they are gitignored, so a build context is exactly
+# the sort of place they could leak from.
+**/deployment.yaml
+
+# v1's tree. Deleted at cutover, and nothing in v2 builds from it.
+pz-controller/
+pz-server/
+
+# Local working state: gate scripts and their captured output, the rendered
+# dashboard gallery, SteamCMD depot downloads, logs.
+scratch/
+depots/
+*.log
+*-logs-*.txt
+
+# Git metadata. The version reaches the binary as a build arg, not from a .git
+# directory, and pz-saves' history is larger than pz-saves.
+.git
+**/.git
+
+# Python bytecode, from build_packages.py runs on this machine.
+**/__pycache__/
+*.pyc
+
+# Editor and OS noise.
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

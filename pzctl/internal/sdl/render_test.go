@@ -6,6 +6,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/hrkcz001/pz-akash/pzctl/internal/bootstrap"
 	"github.com/hrkcz001/pz-akash/pzctl/internal/config"
 	"github.com/hrkcz001/pz-akash/pzctl/internal/secrets"
 )
@@ -281,29 +282,73 @@ func TestServerEnvExcludesControllerOnlySecrets(t *testing.T) {
 	}
 }
 
+// TestBootstrapEnvIsPresent covers both roles, because the four variables are the
+// entire contract between a rendered SDL and a container that has no config file:
+// get one of them wrong and the container dies in bootstrap.Fetch with no state
+// published, which from the controller's side looks like a wedged game server.
 func TestBootstrapEnvIsPresent(t *testing.T) {
 	cfg := loadCfg(t)
-	raw, err := RenderServer(Input{Cfg: cfg, ControllerURL: "https://vsrania.online"})
+
+	server, err := RenderServer(Input{Cfg: cfg, ControllerURL: "https://vsrania.online"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	doc := parse(t, raw)
-	want := map[string]string{
-		"PZ_ROLE":           string(secrets.RoleAgent),
-		"PZ_REPO_URL":       cfg.Git.RepoURL,
-		"PZ_GIT_BRANCH":     cfg.Git.Branch,
-		"PZ_CONFIG_PATH":    config.DefaultFileName,
-		"PZ_CONTROLLER_URL": "https://vsrania.online",
+	controller, err := RenderController(Input{Cfg: cfg})
+	if err != nil {
+		t.Fatal(err)
 	}
-	got := map[string]string{}
-	for _, e := range doc.Services[ServerService].Env {
-		k, v, _ := strings.Cut(e, "=")
-		got[k] = v
+
+	for _, tc := range []struct {
+		role string
+		raw  []byte
+		svc  string
+		want map[string]string
+	}{
+		{
+			role: "server",
+			raw:  server,
+			svc:  ServerService,
+			want: map[string]string{
+				"PZ_ROLE":              string(secrets.RoleAgent),
+				bootstrap.EnvRepoURL:   cfg.Git.RepoURL,
+				bootstrap.EnvBranch:    cfg.Git.Branch,
+				bootstrap.EnvPath:      config.DefaultFileName,
+				bootstrap.EnvMirrorDir: cfg.Agent.Paths.RepoCache,
+				"PZ_CONTROLLER_URL":    "https://vsrania.online",
+			},
+		},
+		{
+			role: "controller",
+			raw:  controller,
+			svc:  ControllerService,
+			want: map[string]string{
+				"PZ_ROLE":              string(secrets.RoleController),
+				bootstrap.EnvRepoURL:   cfg.Git.RepoURL,
+				bootstrap.EnvBranch:    cfg.Git.Branch,
+				bootstrap.EnvPath:      config.DefaultFileName,
+				bootstrap.EnvMirrorDir: cfg.Git.CacheDir,
+			},
+		},
+	} {
+		t.Run(tc.role, func(t *testing.T) {
+			doc := parse(t, tc.raw)
+			got := map[string]string{}
+			for _, e := range doc.Services[tc.svc].Env {
+				k, v, _ := strings.Cut(e, "=")
+				got[k] = v
+			}
+			for k, v := range tc.want {
+				if got[k] != v {
+					t.Errorf("%s = %q, want %q", k, got[k], v)
+				}
+			}
+		})
 	}
-	for k, v := range want {
-		if got[k] != v {
-			t.Errorf("%s = %q, want %q", k, got[k], v)
-		}
+
+	// The two mirrors must not be the same path: they hold different state
+	// branches and each is force-pushed through.
+	if cfg.Agent.Paths.RepoCache == cfg.Git.CacheDir {
+		t.Errorf("agent.paths.repo_cache and git.cache_dir are both %q", cfg.Git.CacheDir)
 	}
 }
 

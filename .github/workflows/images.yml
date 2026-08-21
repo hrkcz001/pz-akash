@@ -1,0 +1,221 @@
+name: pzctl
+
+# v2's only workflow. v1 had two (docker-build-controller.yml,
+# docker-build-server.yml) with no test job at all: a controller.sh with a syntax
+# error published an image, and the first thing to notice was a dead deployment.
+#
+# The gate order is deliberate. `check` runs first and both image builds depend on
+# it, so a failing test cannot produce a pushed tag — and since config.yaml is the
+# thing every container reads before it can do anything, `pzctl config validate` is
+# part of that gate rather than something an operator remembers to run.
+
+on:
+  push:
+    branches: [main, master, v2-pzctl]
+    paths:
+      - 'pzctl/**'
+      - 'docker/**'
+      - '.dockerignore'
+      - '.github/workflows/images.yml'
+  pull_request:
+    paths:
+      - 'pzctl/**'
+      - 'docker/**'
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+
+jobs:
+  check:
+    name: build, vet, test, validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: pzctl/go.mod
+          cache-dependency-path: pzctl/go.sum
+
+      # gofmt is a gate rather than a suggestion: the formatting argument is the
+      # one code review should never spend a comment on.
+      - name: gofmt
+        working-directory: pzctl
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "not gofmt'd:"; echo "$unformatted"; exit 1
+          fi
+
+      - name: go vet
+        working-directory: pzctl
+        run: go vet ./...
+
+      # -race because the controller is a set of goroutines around one state
+      # machine, and a data race there corrupts published state rather than
+      # crashing. This is the same command scratch/wsl-test.sh runs locally.
+      - name: go test -race
+        working-directory: pzctl
+        run: go test -race ./...
+
+      # The in-repo copy is the draft that pz-saves/config.yaml is cut over from,
+      # so validating it here catches a schema change that forgot the config. The
+      # controller image job validates the real one.
+      - name: pzctl config validate
+        working-directory: pzctl
+        run: go run ./cmd/pzctl config validate -c config.yaml
+
+  controller:
+    name: controller image
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # The mod lists, the server .ini files and the dashboard's extras. This is
+      # the only step that needs a secret, and it is the same key v1 used.
+      - name: Checkout pz-saves
+        uses: actions/checkout@v4
+        with:
+          repository: hrkcz001/pz-saves
+          ssh-key: ${{ secrets.PZ_SAVES_SSH_KEY }}
+          path: pz-saves
+
+      # The config that ships. Once pz-saves carries config.yaml this is the
+      # authoritative gate; until then the file is absent and the step says so
+      # rather than failing a build for a cutover that has not happened yet.
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: pzctl/go.mod
+          cache-dependency-path: pzctl/go.sum
+      - name: Validate pz-saves/config.yaml
+        run: |
+          if [ -f pz-saves/config.yaml ]; then
+            (cd pzctl && go run ./cmd/pzctl config validate -c ../pz-saves/config.yaml)
+          else
+            echo "pz-saves has no config.yaml yet (pre-cutover); skipping"
+          fi
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}-controller
+          # sha-<short> is what config.yaml's controller.image_tag pins, so every
+          # deployable image has an immutable name. latest is a convenience for
+          # main only; nothing in config refers to it.
+          tags: |
+            type=sha,format=short
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: controller
+          # Always load and never push here. The gate has to run against the image
+          # that would be published, so publishing cannot happen in the same step
+          # that produces it — a `push: true` build has already uploaded the layers
+          # by the time check_image.sh could object.
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.sha }}
+          # The Go stage is identical for both images, so the server job reuses
+          # this build's layers instead of compiling twice.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check the image
+        run: docker/check_image.sh controller "$(echo '${{ steps.meta.outputs.tags }}' | head -n1)"
+
+      # Only now, and only for a real branch push. A pull request from a fork has
+      # no write token anyway; this makes the intent explicit rather than relying
+      # on that.
+      - name: Push
+        if: github.event_name != 'pull_request'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: echo "$TAGS" | xargs -n1 docker push
+
+  server:
+    name: server image
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # The game download is ~3 GB and the runner is not generous. This is v1's
+      # problem too; it is here because a failed build for lack of space reads as
+      # a broken Dockerfile.
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ github.repository }}-server
+          tags: |
+            type=sha,format=short
+            type=ref,event=branch
+            type=raw,value=latest,enable={{is_default_branch}}
+
+      - name: Build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          target: server
+          # Load, check, then push — see the controller job.
+          load: true
+          push: false
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            VERSION=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check the image
+        run: docker/check_image.sh server "$(echo '${{ steps.meta.outputs.tags }}' | head -n1)"
+
+      - name: Push
+        if: github.event_name != 'pull_request'
+        env:
+          TAGS: ${{ steps.meta.outputs.tags }}
+        run: echo "$TAGS" | xargs -n1 docker push

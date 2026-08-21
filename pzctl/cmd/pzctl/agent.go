@@ -33,7 +33,7 @@ func cmdAgent(args []string) error {
 		return err
 	}
 
-	resolved, err := config.Find(*path)
+	resolved, err := bootConfig(*path)
 	if err != nil {
 		return err
 	}

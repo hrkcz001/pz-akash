@@ -204,11 +204,13 @@ Work happens in a new top-level `pzctl/` directory and a `v2` branch of pz-saves
 2. Halt the server through the old system; confirm the lease is closed.
 3. Close the old controller deployment. *(Old and new must never run against pz-saves simultaneously.)*
 4. Merge pz-saves `v2` → `main` (adds `config.yaml`, `triggers/`, templated inis; removes `deployment.yaml`).
-5. Point the GitHub webhook at the new controller.
-6. Deploy the new controller; verify state branches initialise.
-7. Upload the retained backup, set `restore_target`, push `triggers/start`.
-8. Verify: player count nonzero with someone connected; halt does not loop; no JSON errors; backup downloadable.
-9. Delete `pz-controller/` and `pz-server/`.
+5. **Replace the literal passwords in `server/Server/*.ini` with `__RCON_PASSWORD__` and `__JOIN_PASSWORD__`**, and move the two values into the controller's environment (`PZ_RCON_PASSWORD`, `PZ_JOIN_PASSWORD` — `internal/secrets`). The committed ini still carries the real values v1 put there; the substitution happens in the controller as the archive is served, so nothing in the repo or in an image layer needs them. Until this lands, `docker/check_image.sh` emits a `::warning::` for each literal it finds in `server.zip`; **after** it lands, change that `note` to `fail` so a regression is a red build.
+6. Rename the repositories: `pz-akash` → `pz-akash-proto`, `pz-saves` → `pz-saves-proto`, then create the new `pz-akash` / `pz-saves` from the v2 trees. Both image names in `config.yaml` and the workflow's `${{ github.repository }}` follow the slug, and `scratch/gate8.ps1` asserts the two agree — run it after the rename.
+7. Point the GitHub webhook at the new controller.
+8. Deploy the new controller; verify state branches initialise.
+9. Upload the retained backup, set `restore_target`, push `triggers/start`.
+10. Verify: player count nonzero with someone connected; halt does not loop; no JSON errors; backup downloadable.
+11. Delete `pz-controller/` and `pz-server/`.
 
 ---
 
