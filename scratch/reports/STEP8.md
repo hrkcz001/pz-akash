@@ -232,6 +232,18 @@ key, never the value. Making it an error today would mean a red build for a know
 scheduled item; **PLAN step 9 item 5** now says to move the values and flip the `note`
 to `fail`, so the regression becomes red the moment it can be.
 
+**And one check exists because a warning could not fire.** The loop originally looked for
+`RCONPassword` and `Password`, the two literals pz-saves committed. `AdminPassword` was
+absent from it — and could not have been found by it, because the ini has no such key:
+v1 passed that value as `ADMIN_PASSWORD` in the server SDL's environment. That is the
+case worth catching, because a substituted placeholder and a missing key look identical
+to a grep for literals — both produce silence — while a missing key means the controller
+replaces nothing, PZ takes its own default, and the placeholder machinery reports success
+having done nothing. The loop now covers all three keys and separately reports the ones it
+never saw. Exercised under WSL against a synthetic ini in both shapes: a literal is still
+counted, an empty value and a `__TOKEN__` still are not, and the counters survive the
+process substitution the loop reads from (which is why it is `done < <(…)` and not a pipe).
+
 ---
 
 ## 7. What was actually verified, and what was not
@@ -293,6 +305,27 @@ Results:
   controller image 4m47s, server image 29m35s. A second run on the follow-up commit
   (`32531909591`) is also green and much faster — `check` 23s, controller 5m12s, server
   **16m36s**, the difference being the `type=gha` cache holding the game download.
+- **A third run** (`32533345486`, commit `5a95f3f`) is green on the four `docker/*`
+  actions bumped to their Node 24 majors — `setup-buildx@v4`, `login@v4`, `metadata@v6`,
+  `build-push@v7`; `check` 20s, controller 8m12s, server 19m33s (start-to-finish per the
+  API; `gh run watch` reports the server job as 18m33s, which excludes its queue wait).
+  Its annotation list is
+  now exactly the two designed password warnings, with the Node 20 deprecation notice
+  gone. `build-push-action` v7.0.0's only removals are `DOCKER_BUILD_NO_SUMMARY` and
+  `DOCKER_BUILD_EXPORT_RETENTION_DAYS`, neither of which this workflow sets, so the bump
+  was mechanical.
+- **A fourth run** (`32534673374`, commit `bef8263`) proves the widened password check in
+  CI rather than only under WSL — `check` 26s, controller 6m20s, server 17m07s, all green,
+  and the controller job prints the line the old loop could not:
+
+  ```
+  note: 2 literal password(s) in server.zip — a step 9 (cutover) item
+  note: AdminPassword absent from server.zip's ini — nothing for the controller to substitute
+  controller: all checks passed
+  ```
+
+  A note, not a failure: the absence is pz-saves' current state, and step 9 item 5 is
+  what changes it.
 
 Both images built, passed `check_image.sh`, and were pushed:
 
