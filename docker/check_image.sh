@@ -128,8 +128,11 @@ if [ "$role" = controller ]; then
   unzip -o -q -d "$tmp/unz" "$tmp/server.zip" 'Server/*' || true
 
   literal=0
-  for key in RCONPassword Password; do
+  missing=""
+  for key in RCONPassword AdminPassword Password; do
+    found=0
     while IFS= read -r line; do
+      found=1
       value="${line#*=}"
       case "$value" in
       "" | __*__) : ;; # empty or a placeholder
@@ -140,10 +143,19 @@ if [ "$role" = controller ]; then
         ;;
       esac
     done < <(grep -rhE "^$key=" "$tmp/unz" 2>/dev/null || true)
+    [ "$found" -eq 1 ] || missing="$missing $key"
   done
   [ "$literal" -eq 0 ] &&
     ok "server.zip has placeholders, not passwords" ||
     echo "note: $literal literal password(s) in server.zip — a step 9 (cutover) item"
+
+  # An absent key is not a substituted key. The controller can only replace a token
+  # that is there, so a missing AdminPassword line means PZ falls back to its own
+  # default — and the placeholder machinery reports success while doing nothing.
+  # This is the state pz-saves is in today: v1 passed the value as ADMIN_PASSWORD in
+  # the server SDL's environment, so the committed ini never had the key at all.
+  [ -z "$missing" ] ||
+    echo "note:$missing absent from server.zip's ini — nothing for the controller to substitute"
   rm -rf "$tmp"
 fi
 
