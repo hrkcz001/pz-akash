@@ -290,7 +290,9 @@ Results:
 - `wsl -d Debian -u root -- bash scratch/wsl-test.sh 1` — **exit 0, 0 races, 0 failed
   tests** across the whole module.
 - **The workflow is green** (run `32528642006`, commit `26bc221`): `check` 1m49s,
-  controller image 4m47s, server image 29m35s.
+  controller image 4m47s, server image 29m35s. A second run on the follow-up commit
+  (`32531909591`) is also green and much faster — `check` 23s, controller 5m12s, server
+  **16m36s**, the difference being the `type=gha` cache holding the game download.
 
 Both images built, passed `check_image.sh`, and were pushed:
 
