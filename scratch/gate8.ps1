@@ -138,7 +138,8 @@ Assert (([regex]::Matches($wf, 'docker push')).Count -eq 2) 'a separate push ste
 Assert ($wf -notmatch "push: \$\{\{ github\.event_name") 'push is not an expression on the build step'
 
 # The one secret the build needs, and the token it does not have to be given.
-Assert ($wf -match 'secrets\.PZ_SAVES_SSH_KEY') 'pz-saves is checked out with its deploy key'
+Assert ($wf -match 'secrets\.SSH_PRIVATE_KEY') 'pz-saves is checked out with its deploy key'
+Assert ($wf -match '::error::pz-saves is empty') 'an empty checkout says which secret is missing'
 Assert ($wf -notmatch '(?m)secrets\.AKASH') 'no Akash credentials in the build'
 Assert ($wf -notmatch '(?m)secrets\.CLOUDFLARE') 'no Cloudflare credentials in the build'
 

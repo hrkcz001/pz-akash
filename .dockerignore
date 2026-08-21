@@ -1,5 +1,5 @@
 # The build context is the repository root, because the images need pzctl/ and
-# docker/ and (for the controller) the private saves checked out at ./pz-saves.
+# docker/ and (for the controller) the saves checked out at ./pz-saves.
 # Everything a build does not read is excluded here, for two reasons: the context
 # is uploaded to the builder in full, and this working tree contains files that
 # must never reach an image layer.

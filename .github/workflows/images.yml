@@ -31,9 +31,9 @@ jobs:
     name: build, vet, test, validate
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: pzctl/go.mod
           cache-dependency-path: pzctl/go.sum
@@ -74,21 +74,36 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      # The mod lists, the server .ini files and the dashboard's extras. This is
-      # the only step that needs a secret, and it is the same key v1 used.
+      # The mod lists, the server .ini files and the dashboard's extras.
+      #
+      # hrkcz001/pz-saves is public today, so this checkout would work with no
+      # credential at all — the key is here because it costs nothing and the repo
+      # may not stay public. SSH_PRIVATE_KEY is the secret this repository has;
+      # PZ_SAVES_SSH_KEY is the name v1's workflow also accepted.
       - name: Checkout pz-saves
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: hrkcz001/pz-saves
-          ssh-key: ${{ secrets.PZ_SAVES_SSH_KEY }}
+          ssh-key: ${{ secrets.SSH_PRIVATE_KEY || secrets.PZ_SAVES_SSH_KEY }}
           path: pz-saves
+
+      # If the repo goes private and the key is missing, checkout falls back to the
+      # job token, which cannot read it, and the failure reads as a permissions
+      # problem with *this* repository. Say which it is.
+      - name: The saves are actually here
+        run: |
+          test -d pz-saves/common || {
+            echo "::error::pz-saves is empty — set the SSH_PRIVATE_KEY secret to the pz-saves deploy key"
+            exit 1
+          }
+          echo "pz-saves: $(find pz-saves -maxdepth 1 -mindepth 1 | wc -l) entries"
 
       # The config that ships. Once pz-saves carries config.yaml this is the
       # authoritative gate; until then the file is absent and the step says so
       # rather than failing a build for a cutover that has not happened yet.
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v6
         with:
           go-version-file: pzctl/go.mod
           cache-dependency-path: pzctl/go.sum
@@ -164,7 +179,7 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       # The game download is ~3 GB and the runner is not generous. This is v1's
       # problem too; it is here because a failed build for lack of space reads as

@@ -21,7 +21,8 @@ scratch/gallery/
 # SteamCMD depot downloads.
 depots/
 
-# The private saves, when they are checked out into the build context. CI puts
-# them there with a second actions/checkout, and a local
-# `docker build --target controller` needs the same layout.
+# The saves, when they are checked out into the build context. CI puts them there
+# with a second actions/checkout, and a local `docker build --target controller`
+# needs the same layout. Committing that checkout would nest one repository's
+# contents inside another.
 /pz-saves/

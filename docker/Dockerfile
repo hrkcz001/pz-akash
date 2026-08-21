@@ -6,7 +6,7 @@
 #   docker build -f docker/Dockerfile --target server     -t pz-server     .
 #
 # The build context is the repository root, and `--target controller` also needs
-# the private saves checked out at ./pz-saves — that is where the mod lists, the
+# the saves repository checked out at ./pz-saves — that is where the mod lists, the
 # server .ini files and the dashboard's two extras (game.torrent, README.md) come
 # from. The workflow in .github/workflows/images.yml does that with a second
 # actions/checkout. A missing ./pz-saves fails the packages stage by design: an
@@ -89,8 +89,8 @@ RUN apt-get update && \
 # there is a copy here.
 COPY docker/build_packages.py /usr/local/bin/build_packages.py
 
-# The private saves. Fails the build when ./pz-saves is not in the context, which
-# is the intended behaviour — see the header.
+# The saves. Fails the build when ./pz-saves is not in the context, which is the
+# intended behaviour — see the header.
 COPY pz-saves/ /build/pz-saves/
 
 # Both default to false because the committed .ini already lists its mods and map;

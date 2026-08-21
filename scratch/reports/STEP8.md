@@ -3,11 +3,9 @@
 **Deliverable (PLAN §8):** CI: one Go build → two images, `config validate` gate, no
 secrets in layers. **Gate:** green workflow.
 
-**Status:** the code is written and the local half is green. The workflow itself has
-not run yet — pushing this commit is what runs it, and that run is the gate. There is
-no Docker daemon on this machine (see §7), so nothing about the images has been
-built or executed locally; everything below that concerns image *contents* is an
-assertion the CI script makes, not something I have observed.
+**Status:** green. `.github/workflows/images.yml` run `32528642006` passed all three
+jobs on commit `26bc221`, both images were gated and pushed to ghcr, and the local gate
+`scratch/gate8.ps1` passes. Details and the two things the run taught me are in §7.
 
 ---
 
@@ -263,21 +261,76 @@ the workflow invoked `docker/inspect_image.sh` while the file was written as
 Windows checkout is silent until CI tries to run it (`git add --chmod=+x`, and the gate
 now asserts mode `100755`).
 
+The first run found a fourth, and something worse than a defect. The workflow named
+`secrets.PZ_SAVES_SSH_KEY`, which **does not exist** in this repository — `gh secret
+list` has `SSH_PRIVATE_KEY` (v1's, and v1's workflow accepted either name). The
+checkout succeeded anyway, and the reason it succeeded is the finding:
+
+> **`hrkcz001/pz-saves` is a public repository.**
+
+So the literal `RCONPassword` and `Password` in `server/Server/vsrania.ini` are not
+"committed secrets" in the mild sense — they are readable by anyone, right now, and
+have been for as long as they have been there. The deploy key being public was a known
+and accepted cost (the locked decision: reuse, do not rotate). These two are a
+different thing: the join password is what stops strangers connecting, and the RCON
+password is remote administration. **PLAN step 9 item 5 now recommends rotating both
+at cutover**, with the tradeoff spelled out, and asks whether the new pz-saves should
+be public — v2 does not care either way, because with placeholders in the ini there is
+nothing secret left in that repository.
+
+The workflow now uses `${{ secrets.SSH_PRIVATE_KEY || secrets.PZ_SAVES_SSH_KEY }}` and
+follows the checkout with a step that fails saying *which secret is missing*, since an
+empty key makes checkout fall back to the job token and the resulting error blames the
+wrong repository. `gate8.ps1` asserts both. The "private saves" wording in the
+Dockerfile, `.dockerignore` and `.gitignore` was factually wrong and is fixed.
+
 Results:
 
 - `pwsh scratch/gate8.ps1` — **all checks pass** (48 assertions + 5 steps).
 - `wsl -d Debian -u root -- bash scratch/wsl-test.sh 1` — **exit 0, 0 races, 0 failed
   tests** across the whole module.
+- **The workflow is green** (run `32528642006`, commit `26bc221`): `check` 1m49s,
+  controller image 4m47s, server image 29m35s.
 
-Not verified, and I will not claim otherwise: **nothing was built.** The Docker daemon
-on this machine is not running (`npipe:////./pipe/docker_engine` unavailable) and the
-WSL Debian has no container builder, so no image exists, `check_image.sh` has never
-executed against one, and the workflow has never run. Step 8's gate is a green
-workflow; this commit is what asks for it.
+Both images built, passed `check_image.sh`, and were pushed:
 
-Also unverified locally: the workflow YAML has not been parsed by a YAML parser
-(no PyYAML on either side, no `actionlint`). The gate's checks over it are regex over
-text. GitHub reports a syntax error on push, which is a fast and cheap signal.
+```
+ghcr.io/hrkcz001/pz-akash-controller:sha-26bc221  sha256:34d8dc7e…  (also :v2-pzctl)
+ghcr.io/hrkcz001/pz-akash-server:sha-26bc221      sha256:262e0007…  (also :v2-pzctl)
+```
+
+The controller gate printed 16 `ok:` lines — runs as `pzctl`, `CMD [pzctl controller]`,
+no entrypoint, `pzctl` executable, no secret-shaped env, no secret-shaped build args,
+no key-shaped files, all three packages plus both dashboard extras present, all three
+directories writable **by pzctl** — and then the two warnings it was designed to
+produce:
+
+```
+##[warning]server.zip carries a literal RCONPassword
+##[warning]server.zip carries a literal Password
+note: 2 literal password(s) in server.zip — a step 9 (cutover) item
+```
+
+That is the finding of §7 below confirmed from the shipped archive rather than from the
+working tree. The server gate printed 14 `ok:` lines including the five absences — no
+`sshd`, no gosu (either path), no sudo, no `/run/sshd` — `start-server.sh` executable,
+and `HOME=/home/steam`.
+
+So the claim "no secrets in layers" is now measured, not asserted, with one known
+exception that has a scheduled fix and a check that names it every build.
+
+Two costs the run made concrete. The server job is **29m35s**, nearly all of it the
+SteamCMD download and then `load: true` moving a ~4 GB image into the daemon; the
+controller is under five minutes because the Go stage is a cache hit from the other
+job. And `check` at 1m49s means the cheap gate really is cheap, which is the ordering
+argument working.
+
+Not verified locally, and I will not claim otherwise: **nothing was built on this
+machine.** The Docker daemon here is not running (`npipe:////./pipe/docker_engine`
+unavailable) and the WSL Debian has no container builder, so every image fact above
+comes from CI. That is what the gate is for; it is also why the question in §8 about a
+local builder is worth answering — a 30-minute round trip for a one-line Dockerfile
+change is the wrong loop.
 
 ---
 
@@ -294,6 +347,15 @@ Carried from step 7 §11, unchanged, and not blocking:
    into the ini, which no code does. (Step 9 item 5 gives the join and RCON passwords
    that channel; the admin password needs the same treatment or an explicit decision.)
 3. **The downloaded/not-downloaded tag** on the dashboard: keep or drop (step 7 §6.11).
+
+New, noticed while writing this and not urgent: both runtime images are
+`debian:bookworm-slim`, which is oldstable — the IDE's scanner reports 2 critical and 2
+high CVEs in that base. The builder (`golang:1.25-bookworm`, 3 critical / 9 high) does
+not ship: `CGO_ENABLED=0` means nothing from it reaches an image but the binary.
+Moving the runtime to `debian:trixie-slim` would clear most of it, and it is not a
+one-line change to make blind — SteamCMD's i386 libraries and the JRE Project Zomboid
+ships have to work there. Worth doing after cutover, on a branch, with the gate to
+prove it.
 
 New, and worth an answer before step 9 rather than after: **is there a local image
 builder I may use?** Right now every image iteration is a push and a CI round trip,

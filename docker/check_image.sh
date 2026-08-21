@@ -157,12 +157,21 @@ if [ "$role" = server ]; then
       fail "$bad is present; v2 has no ssh or sudo path"
   done
 
-  # The launcher agent.pz.launch_scripts names first. A config that names a script
-  # the image does not have is a boot failure the agent can only report, and this
-  # is the one place the two can be compared before a deployment.
-  inside 'test -x /home/steam/pz-server/start-server.sh' &&
-    ok "start-server.sh is present and executable" ||
-    fail "/home/steam/pz-server/start-server.sh missing; check agent.pz.launch_scripts"
+  # A launcher the agent will actually find. agent.pz.launch_scripts lists these
+  # two names and searches beneath game_dir in order, so either one satisfies it —
+  # requiring a specific one would fail a perfectly good image. A config that names
+  # a script the image does not have is a boot failure the agent can only report,
+  # and this is the one place the two can be compared before a deployment.
+  launcher=""
+  for cand in start-server.sh StartServer64.sh; do
+    if inside "test -x /home/steam/pz-server/$cand"; then
+      launcher="$cand"
+      break
+    fi
+  done
+  [ -n "$launcher" ] &&
+    ok "launcher $launcher is present and executable" ||
+    fail "no launcher under /home/steam/pz-server; check agent.pz.launch_scripts"
 
   # PZ writes its world under $HOME. Docker does not read /etc/passwd for USER, so
   # an unset HOME would send the save to / and fail as a permission error minutes
