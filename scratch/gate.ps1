@@ -13,6 +13,11 @@ $gate   = Join-Path $PSScriptRoot "gate"
 $remote = Join-Path $gate "remote.git"
 $work   = Join-Path $gate "work"
 $agent  = Join-Path $gate "agentwork"
+# The controller's backups.dir. It stands in for the container's mounted volume, and
+# it is what makes the backup half of this gate real: since step 6 the index is
+# generated from this directory, so an archive the agent claims to have uploaded has
+# to actually be here or the controller refuses to follow it.
+$backups = Join-Path $gate "backups"
 $pzctl  = Join-Path $PSScriptRoot "pzctl.exe"
 $src    = Join-Path (Split-Path $PSScriptRoot -Parent) "pzctl\config.yaml"
 $env:PZ_CONFIG = Join-Path $work "config.yaml"
@@ -25,6 +30,7 @@ function Step($msg) { Write-Host "`n=== $msg ===" -ForegroundColor Cyan }
 Step "seed"
 if (Test-Path $gate) { Remove-Item -Recurse -Force $gate }
 New-Item -ItemType Directory -Force $gate | Out-Null
+New-Item -ItemType Directory -Force $backups | Out-Null
 git init -q --bare --initial-branch=main $remote
 git init -q --initial-branch=main $work
 Copy-Item $src (Join-Path $work "config.yaml")
@@ -45,8 +51,32 @@ Write-Host "seeded $remote from $src" -ForegroundColor DarkGray
 function Pass() {
   & $pzctl controller --dry-run --once --repo $remote `
       --cache-dir (Join-Path $gate "mirror.git") `
+      --backups-dir $backups `
       --dry-state (Join-Path $gate "provider.json")
   if ($LASTEXITCODE -ne 0) { throw "controller pass failed with $LASTEXITCODE" }
+}
+
+# Upload writes a real archive into backups.dir, standing in for the agent's HTTP
+# upload, and returns its size and sha256.
+#
+# The file has to exist. The controller generates its index from this directory and
+# refuses to follow a report naming an archive that is not in it, because pointing
+# restore_target at a name the next boot cannot fetch is bug 4 wearing a different
+# hat. A report with no file behind it would therefore leave both the index and
+# restore_target empty — so this is the half of the gate that proves the storage
+# layer and the state machine agree on what exists.
+#
+# The content is not a real zip. Nothing in this path parses it: the store hashes
+# bytes and the restore is the agent's job, which is not stubbed here. Embedding the
+# name keeps the two archives' digests distinct.
+function Upload($name) {
+  $path = Join-Path $backups $name
+  [System.IO.File]::WriteAllText($path, "PK-not-really-a-zip $name`n" + ("x" * 4096))
+  $f = Get-Item $path
+  [ordered]@{
+    size   = $f.Length
+    sha256 = (Get-FileHash -Algorithm SHA256 $path).Hash.ToLower()
+  }
 }
 
 # Trigger writes one trigger file and pushes it, the way an operator does.
@@ -148,12 +178,17 @@ Show "requested"
 $r = Request
 if (-not $r) { throw "no backup request was published" }
 $name = "backup_" + (Get-Date).ToString("yyyyMMdd_HHmmss") + ".zip"
+$up = Upload $name
 AgentSay "online" @{ backup = [ordered]@{
-  request_id = $r.id; state = "done"; name = $name; size = 1048576
-  sha256 = ("ab" * 32); started_at = $r.requested_at
+  request_id = $r.id; state = "done"; name = $name; size = $up.size
+  sha256 = $up.sha256; started_at = $r.requested_at
   ended_at = (Get-Date).ToString("yyyy-MM-ddTHH:mm:sszzz") } }
 Pass
 Show "backup done"
+$d = Doc
+if ($d.restore_target -ne $name) {
+  throw "restore_target is '$($d.restore_target)', want '$name': the controller did not follow the report"
+}
 
 Step "4. halt"
 Trigger "halt" ""
@@ -163,9 +198,16 @@ $h = Request
 if (-not $h) { throw "the halt published no final backup request" }
 if ($h.id -eq $r.id) { throw "the halt reused the operator request id" }
 $final = "backup_" + (Get-Date).ToString("yyyyMMdd_HHmmss") + ".zip"
+# One second of resolution: two archives minted inside the same second are one
+# archive, and the second Upload would silently replace the first.
+while ($final -eq $name) {
+  Start-Sleep -Milliseconds 500
+  $final = "backup_" + (Get-Date).ToString("yyyyMMdd_HHmmss") + ".zip"
+}
+$upf = Upload $final
 AgentSay "stopped" @{ backup = [ordered]@{
-  request_id = $h.id; state = "done"; name = $final; size = 2097152
-  sha256 = ("cd" * 32); started_at = $h.requested_at
+  request_id = $h.id; state = "done"; name = $final; size = $upf.size
+  sha256 = $upf.sha256; started_at = $h.requested_at
   ended_at = (Get-Date).ToString("yyyy-MM-ddTHH:mm:sszzz") } }
 Pass
 Show "after the final backup"
@@ -173,7 +215,36 @@ Pass
 Show "closed"
 
 Step "5. the index and the leftover triggers"
-git -C $remote show "state/controller:backups.json"
+$raw = GitQuiet @("show", "state/controller:backups.json") | Out-String
+if (-not $raw.Trim()) { throw "no backups.json was published" }
+$idx = $raw | ConvertFrom-Json
+$names = @($idx.items | ForEach-Object { $_.name })
+Write-Host "index: $($names -join ', ')"
+foreach ($want in @($name, $final)) {
+  if ($names -notcontains $want) { throw "backups.json does not list $want" }
+}
+# Invariant I10, checked from the outside: every entry describes the file that is
+# there, and every file that is there has an entry. The sizes and digests are the
+# point — they can only be right if the store generated this from the directory,
+# because nothing else in the system knows them.
+foreach ($e in $idx.items) {
+  $p = Join-Path $backups $e.name
+  if (-not (Test-Path $p)) { throw "backups.json lists $($e.name), which is not on disk" }
+  $f = Get-Item $p
+  if ($e.size -ne $f.Length) {
+    throw "$($e.name): the index says $($e.size) bytes, the file is $($f.Length)"
+  }
+  $sum = (Get-FileHash -Algorithm SHA256 $p).Hash.ToLower()
+  if ($e.sha256 -ne $sum) { throw "$($e.name): the index says $($e.sha256), the file hashes to $sum" }
+}
+$onDisk = @(Get-ChildItem $backups -Filter "backup_*.zip" | ForEach-Object { $_.Name })
+if ($onDisk.Count -ne $names.Count) {
+  throw "the directory holds $($onDisk.Count) archive(s), the index lists $($names.Count)"
+}
+$d = Doc
+if ($d.restore_target -ne $final) {
+  throw "restore_target is '$($d.restore_target)', want the halt's archive '$final'"
+}
 # Every trigger consumed removes its file, so the directory itself disappears and
 # ls-tree finds nothing. That is the pass condition, not a failure: a trigger left
 # behind is a trigger that fires again on the next pass.

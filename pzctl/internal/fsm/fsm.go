@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,12 +80,44 @@ type closeOutcome struct {
 	err   error
 }
 
+// BackupStore is the authority on which archives exist. internal/httpapi.Store
+// implements it.
+//
+// The machine publishes backups.json but does not decide its contents. That split
+// is what makes invariant I10 (`backups.json` ≡ `ls backups.dir`) hold end to end:
+// the store regenerates the index from the directory after every mutation, and the
+// machine's only job is to write what it is given to the branch it owns. Without
+// this the machine would be a second writer maintaining a parallel index from
+// agent reports — which is precisely the drift v1's backup_log had against its
+// restore_target, and one of the shapes bug 4 took.
+//
+// It is optional. A machine with no store keeps its own index from agent reports,
+// which is what `--dry-run` and the unit tests need: they have no directory.
+type BackupStore interface {
+	// Index is the current view of the directory.
+	Index() *state.Backups
+
+	// Seed hands the store the last published index and returns the reconciled
+	// view. The disk decides which archives exist; the published index is the only
+	// record of which have been downloaded, so a controller whose process restarted
+	// with its volume intact does not warn again about archives an operator already
+	// has a copy of.
+	Seed(published *state.Backups) *state.Backups
+
+	// Prune applies the retention policy and returns what it deleted.
+	Prune(policy state.RetentionPolicy, protect ...string) ([]string, error)
+}
+
 // Deps are the machine's collaborators. Everything is required except the
 // injection points, which default to the obvious thing.
 type Deps struct {
 	Cfg   *config.Config
 	Bus   *gitbus.ControllerBus
 	Akash Akash
+
+	// Backups is the storage layer that owns backups.dir. Nil means the machine
+	// maintains its own index from agent reports; see BackupStore.
+	Backups BackupStore
 
 	// ControllerURL is the base URL handed to the agent at deploy time. Empty is
 	// legal: the agent then discovers it from the controller's state branch,
@@ -105,6 +138,7 @@ type Machine struct {
 	cfg   *config.Config
 	bus   *gitbus.ControllerBus
 	akash Akash
+	store BackupStore
 	br    gitbus.Branches
 	loc   *time.Location
 
@@ -172,6 +206,7 @@ func New(d Deps) (*Machine, error) {
 		cfg:    d.Cfg,
 		bus:    d.Bus,
 		akash:  d.Akash,
+		store:  d.Backups,
 		br:     d.Bus.Branches(),
 		loc:    d.Cfg.Location(),
 		ctlURL: d.ControllerURL,
@@ -302,6 +337,10 @@ func (m *Machine) Once(ctx context.Context) error {
 	if err := m.load(ctx); err != nil {
 		return err
 	}
+	// Retention, which a long-lived run gets from the tick. A --once controller has
+	// no tick, so without this the housekeeping never happens at all for whoever
+	// drives the loop from cron — and the disk fills.
+	m.pruneBackups()
 	m.handle(ctx, Poll("once", ""))
 	for m.job != nil {
 		select {
@@ -339,10 +378,19 @@ func (m *Machine) pushWait() time.Duration {
 
 // handle dispatches one event and then publishes anything it changed.
 func (m *Machine) handle(ctx context.Context, ev Event) {
+	// Before anything decides. Every read of the index below — the periodic
+	// cadence, a restore target's existence, the snapshot — has to see the
+	// directory as it is now, not as an agent report once described it.
+	m.refreshIndex()
+
 	switch ev.Kind {
 	case KindPoll:
 		m.onPoll(ctx, ev)
 	case KindTick:
+		// Housekeeping, on the housekeeping event. It is here rather than in advance
+		// because advance is a function of the documents and the clock and nothing
+		// else, and this deletes files.
+		m.pruneBackups()
 		m.advance(ctx)
 	case KindDeployResult:
 		m.onDeployResult(ctx, ev.deploy)
@@ -353,6 +401,121 @@ func (m *Machine) handle(ctx context.Context, ev Event) {
 	}
 	m.snapshot()
 	m.flush(ctx)
+}
+
+// --- the backup index ---
+
+// refreshIndex takes the index from the store and marks the document dirty when it
+// has changed.
+//
+// This is the whole of the machine's relationship with backups.json: it publishes
+// what the store says. The comparison exists so that a rescan which found nothing
+// new — the common case, since the store rescans after a download as well as after
+// an upload — does not cost a commit.
+func (m *Machine) refreshIndex() {
+	if m.store == nil {
+		return
+	}
+	next := m.store.Index()
+	if next == nil || sameIndex(m.idx, next) {
+		return
+	}
+	was, now := len(m.idx.Items), len(next.Items)
+	m.idx = next
+	switch {
+	case was != now:
+		m.dirty(fmt.Sprintf("backups index: %d -> %d archive(s)", was, now))
+	default:
+		// Same names, changed stamps: a download was recorded. Worth a commit,
+		// because that stamp is the only evidence a copy exists off this disk.
+		m.dirty("backups index updated")
+	}
+}
+
+// seedIndex reconciles the published index with the directory at startup.
+//
+// The two disagree in both directions and each direction has one right answer. An
+// archive in the index but not on disk is gone — the disk is ephemeral by the
+// locked design, so a controller that came back on a fresh volume must stop
+// claiming backups it cannot serve. An archive on disk but not in the index, or one
+// whose download stamp only git remembers, is the case a bare rescan would lose.
+func (m *Machine) seedIndex() {
+	if m.store == nil {
+		return
+	}
+	published := m.idx
+	next := m.store.Seed(published)
+	if next == nil {
+		return
+	}
+	if lost := missing(published, next); len(lost) > 0 {
+		m.logf("fsm: %d archive(s) named in the published index are not on disk: %s",
+			len(lost), strings.Join(lost, ", "))
+	}
+	if found := missing(next, published); len(found) > 0 {
+		m.logf("fsm: %d archive(s) on disk were not in the published index: %s",
+			len(found), strings.Join(found, ", "))
+	}
+	if !sameIndex(published, next) {
+		m.idx = next
+		m.dirty("backups index reconciled with the directory")
+	}
+}
+
+// pruneBackups applies backups.retention_* and protects the restore target, so a
+// scheduled prune cannot delete the archive the next boot is going to ask for.
+func (m *Machine) pruneBackups() {
+	if m.store == nil {
+		return
+	}
+	deleted, err := m.store.Prune(state.RetentionPolicy{
+		Days:  m.cfg.Backups.RetentionDays,
+		Count: m.cfg.Backups.RetentionCount,
+	}, m.doc.RestoreTarget)
+	if err != nil {
+		// Not fatal. A prune that failed leaves too many archives, which costs disk;
+		// treating it as fatal would cost the world.
+		m.logf("fsm: prune: %v", err)
+	}
+	if len(deleted) > 0 {
+		m.logf("fsm: pruned %d archive(s): %s", len(deleted), strings.Join(deleted, ", "))
+	}
+	// The store has already regenerated the index; this is what publishes it.
+	m.refreshIndex()
+}
+
+// sameIndex compares two indexes by content, ignoring UpdatedAt.
+//
+// UpdatedAt is excluded on purpose: the store stamps it on every rescan, so
+// including it would make every rescan look like a change and every download or
+// upload attempt cost a commit to the state branch.
+func sameIndex(a, b *state.Backups) bool {
+	switch {
+	case a == nil || b == nil:
+		return a == b
+	case len(a.Items) != len(b.Items):
+		return false
+	}
+	for i := range a.Items {
+		x, y := a.Items[i], b.Items[i]
+		if x.Name != y.Name || x.Size != y.Size || x.SHA256 != y.SHA256 ||
+			!x.CreatedAt.Time.Equal(y.CreatedAt.Time) ||
+			!x.DownloadedAt.Time.Equal(y.DownloadedAt.Time) {
+			return false
+		}
+	}
+	return true
+}
+
+// missing lists names in a that b does not have.
+func missing(a, b *state.Backups) []string {
+	var out []string
+	for _, e := range a.Items {
+		if !b.Has(e.Name) {
+			out = append(out, e.Name)
+		}
+	}
+	return out
 }
 
 // onPoll is the git-facing half: fetch, read what the other side says, take any
@@ -411,6 +574,9 @@ func (m *Machine) load(ctx context.Context) error {
 	if !rep.OK() {
 		m.logf("fsm: controller state needed repair: %s", rep)
 	}
+	// Before anything reads the index: what git last said is a claim about a disk
+	// that may since have been replaced.
+	m.seedIndex()
 	if rep.Fatal() {
 		// The document is defaults, which claim no lease. That claim is exactly
 		// the one that costs money if it is wrong, so ask the provider instead of

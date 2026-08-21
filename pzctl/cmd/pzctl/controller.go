@@ -14,7 +14,9 @@ import (
 	"github.com/hrkcz001/pz-akash/pzctl/internal/config"
 	"github.com/hrkcz001/pz-akash/pzctl/internal/fsm"
 	"github.com/hrkcz001/pz-akash/pzctl/internal/gitbus"
+	"github.com/hrkcz001/pz-akash/pzctl/internal/httpapi"
 	"github.com/hrkcz001/pz-akash/pzctl/internal/secrets"
+	"github.com/hrkcz001/pz-akash/pzctl/internal/state"
 	"github.com/hrkcz001/pz-akash/pzctl/internal/webhook"
 )
 
@@ -146,6 +148,8 @@ func cmdController(args []string) error {
 		"file the stub driver keeps its simulated leases in, so --once can be chained")
 	httpAddr := fs.String("webhook-addr", "",
 		"listen address for the GitHub webhook (default: :controller.webhook_port; empty with --dry-run disables it)")
+	backupsDir := fs.String("backups-dir", "",
+		"override backups.dir, which is a container path; use a scratch directory on a laptop")
 	controllerURL := fs.String("controller-url", "",
 		"public base URL handed to the agent (default: the agent discovers it from git)")
 	timeout := fs.Duration("timeout", 0, "exit after this long; 0 runs until interrupted")
@@ -202,8 +206,40 @@ func cmdController(args []string) error {
 	}
 	defer cleanup()
 
-	m, err := fsm.New(fsm.Deps{
+	// The machine does not exist yet, so the store's change hook reaches it through
+	// this variable. Nothing can call the hook before the assignment below: the only
+	// callers are the HTTP handlers and the prune, and the first request cannot
+	// arrive until the server starts, which is further down still.
+	var m *fsm.Machine
+	store, err := openStore(cfg, *backupsDir, logf, func() {
+		// A nudge rather than the index itself. The machine reads the store when it
+		// handles the event, so a burst of uploads costs one publish and not one per
+		// notification — and the machine stays the only thing that writes the branch.
+		if m != nil {
+			m.Send(fsm.Tick("backups"))
+		}
+	})
+	switch {
+	case err != nil && !*dryRun:
+		// Live, this is fatal. A controller that cannot open backups.dir cannot serve
+		// server.zip and cannot accept the halt backup, and one that starts anyway is
+		// v1's failure mode: a healthy-looking controller serving nothing.
+		return err
+	case err != nil:
+		logf("controller: no storage layer (%v) — no HTTP service, and the index will "+
+			"come from agent reports only", err)
+	}
+
+	// A nil *Store must not be handed over as a non-nil interface: the machine tests
+	// `store == nil` to decide whether it owns the index.
+	var backups fsm.BackupStore
+	if store != nil {
+		backups = store
+	}
+
+	m, err = fsm.New(fsm.Deps{
 		Cfg: cfg, Bus: bus, Akash: driver,
+		Backups:       backups,
 		ControllerURL: *controllerURL,
 		Logf:          logf,
 	})
@@ -218,35 +254,131 @@ func cmdController(args []string) error {
 		return m.Once(ctx)
 	}
 
-	// Serving is optional and non-fatal by design: the webhook is a latency
+	// Serving the webhook is optional and non-fatal by design: it is a latency
 	// optimisation, and a controller that refused to run without it would trade a
-	// slower reaction for no reaction at all.
-	srv, err := webhookServer(cfg, m, *httpAddr, *dryRun, logf)
+	// slower reaction for no reaction at all. The file service is not optional, and
+	// is started below.
+	hook, err := webhookHandler(cfg, m, *dryRun, logf)
 	if err != nil {
 		return err
 	}
-	if srv != nil {
+
+	// One port or two. controller.webhook_port: 0 folds the webhook onto http_port,
+	// so Akash exposes one endpoint instead of two — the SDL follows the same
+	// setting, so the two cannot disagree. Folding can only be honoured when there
+	// is a file service to fold into; config.yaml currently names 8080, which is two.
+	var extra http.Handler
+	if hook != nil && cfg.WebhookOnHTTPPort() && store != nil {
+		extra = foldedRoutes(hook, m)
+		hook = nil
+		logf("controller: webhook folded onto http_port %d at %s",
+			cfg.Controller.HTTPPort, webhook.Path)
+	}
+	if hook != nil {
+		srv, err := webhookServer(cfg, hook, m, *httpAddr, *dryRun, logf)
+		if err != nil {
+			return err
+		}
+		if srv != nil {
+			go func() {
+				logf("controller: webhook listening on %s%s", srv.Addr, webhook.Path)
+				if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+					logf("controller: webhook server stopped: %v", err)
+				}
+			}()
+			defer func() {
+				sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = srv.Shutdown(sctx)
+			}()
+		}
+	}
+
+	httpErr := make(chan error, 1)
+	if store != nil {
+		files, err := httpapi.NewServer(httpapi.ServerOptions{
+			Store:   store,
+			Cfg:     cfg,
+			Secrets: secrets.LoadOptional(),
+			Logf:    logf,
+			Extra:   extra,
+		})
+		if err != nil {
+			return err
+		}
+		addr := net.JoinHostPort("", fmt.Sprint(cfg.Controller.HTTPPort))
 		go func() {
-			logf("controller: webhook listening on %s%s", srv.Addr, webhook.Path)
-			if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-				logf("controller: webhook server stopped: %v", err)
+			err := files.ListenAndServe(ctx, addr)
+			httpErr <- err
+			if err != nil {
+				// Not survivable. This is how the agent fetches server.zip and how a
+				// halt backup gets uploaded; without it the lease is running blind, so
+				// the whole process comes down and the supervisor restarts it.
+				logf("controller: HTTP service stopped: %v — shutting down", err)
+				stop()
 			}
-		}()
-		defer func() {
-			sctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-			_ = srv.Shutdown(sctx)
 		}()
 	}
 
 	logf("controller: running against %s (branch %s)", cfg.Git.RepoURL, cfg.Git.Branch)
-	return m.Run(ctx)
+	if err := m.Run(ctx); err != nil {
+		return err
+	}
+	// The HTTP failure, if that is what ended the run. A clean shutdown puts nil
+	// here or nothing at all, depending on which side finished draining first.
+	select {
+	case err := <-httpErr:
+		return err
+	default:
+		return nil
+	}
 }
 
-// webhookServer builds the receiver, or returns nil when it is deliberately not
+// openStore opens the storage layer that owns backups.dir.
+//
+// It is the single generator of backups.json — see httpapi.Store — and onChange is
+// how the controller learns that the directory moved under it.
+func openStore(cfg *config.Config, dirOverride string, logf func(string, ...any),
+	onChange func()) (*httpapi.Store, error) {
+
+	dir := cfg.Backups.Dir
+	if dirOverride != "" {
+		dir = dirOverride
+	}
+	return httpapi.NewStore(httpapi.StoreOptions{
+		Dir: dir,
+		// identity.timezone, never the host's: a backup filename is Prague
+		// wall-clock wherever the container happened to run.
+		Loc:       cfg.Location(),
+		MaxUpload: cfg.Backups.UploadMaxBytes,
+		MinFree:   cfg.Controller.Storage.MinFreeBytes,
+		Logf:      logf,
+		OnChange:  func(*state.Backups) { onChange() },
+	})
+}
+
+// foldedRoutes is what the file service mounts under everything it does not claim,
+// when the webhook shares its port.
+//
+// /healthz is deliberately absent: httpapi owns that path and answers it with
+// liveness, which is what the Akash probe wants. The machine's status line moves to
+// /state, where step 7's dashboard will replace it.
+func foldedRoutes(hook http.Handler, m *fsm.Machine) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle(webhook.Path, hook)
+	mux.HandleFunc("/state", func(w http.ResponseWriter, _ *http.Request) {
+		s := m.State()
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-store")
+		fmt.Fprintf(w, "status=%s intent=%s phase=%s\n", s.Status, s.Intent, s.Phase)
+	})
+	return mux
+}
+
+// webhookHandler builds the receiver, or returns nil when it is deliberately not
 // running.
-func webhookServer(cfg *config.Config, m *fsm.Machine, addr string, dry bool,
-	logf func(string, ...any)) (*http.Server, error) {
+func webhookHandler(cfg *config.Config, m *fsm.Machine, dry bool,
+	logf func(string, ...any)) (http.Handler, error) {
 
 	set := secrets.LoadOptional()
 	if set.WebhookSecret == "" {
@@ -259,16 +391,9 @@ func webhookServer(cfg *config.Config, m *fsm.Machine, addr string, dry bool,
 			cfg.Controller.Poll.Idle)
 		return nil, nil
 	}
-	if addr == "" && dry {
-		logf("controller: no --webhook-addr — webhook disabled; triggers will be picked up by polling")
-		return nil, nil
-	}
-	if addr == "" {
-		addr = net.JoinHostPort("", fmt.Sprint(cfg.EffectiveWebhookPort()))
-	}
 
 	bl := cfg.Git.BranchLayout()
-	h, err := webhook.New(webhook.Options{
+	return webhook.New(webhook.Options{
 		Secret:      set.WebhookSecret,
 		Branch:      bl.Main,
 		TriggersDir: bl.TriggersDir,
@@ -279,12 +404,25 @@ func webhookServer(cfg *config.Config, m *fsm.Machine, addr string, dry bool,
 			m.Send(fsm.Poll("webhook", p.After))
 		},
 	})
-	if err != nil {
-		return nil, err
+}
+
+// webhookServer wraps the handler in a server of its own, for the case where
+// controller.webhook_port names a second port.
+func webhookServer(cfg *config.Config, hook http.Handler, m *fsm.Machine, addr string,
+	dry bool, logf func(string, ...any)) (*http.Server, error) {
+
+	if addr == "" && dry {
+		logf("controller: no --webhook-addr — webhook disabled; triggers will be picked up by polling")
+		return nil, nil
+	}
+	if addr == "" {
+		addr = net.JoinHostPort("", fmt.Sprint(cfg.EffectiveWebhookPort()))
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle(webhook.Path, h)
+	mux.Handle(webhook.Path, hook)
+	// This server's own liveness path. On the folded arrangement httpapi answers
+	// /healthz instead, and the status line lives at /state.
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		s := m.State()
 		fmt.Fprintf(w, "status=%s intent=%s phase=%s\n", s.Status, s.Intent, s.Phase)

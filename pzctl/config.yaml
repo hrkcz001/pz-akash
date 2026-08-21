@@ -85,6 +85,37 @@ controller:
     idle: 5m
     active: 60s
 
+  storage:
+    # Built into the image by build_packages.py; nothing at runtime writes here.
+    packages_dir: /data/packages
+
+    # Entries inside server.zip that get the game passwords substituted as the
+    # archive is served. This is what keeps RCONPassword, Password and the admin
+    # password out of git, out of the image layers and out of the Akash manifest —
+    # they exist as __PLACEHOLDER__ everywhere except in the bytes on the wire.
+    #
+    # Everything not listed here is copied across still compressed, so serving the
+    # mods costs no CPU. Scoped to Server/ deliberately: client.zip carries .ini
+    # files too (mod options, keybinds) and those are public.
+    substitute_entries:
+      - Server/*.ini
+    substitute_max_bytes: 4194304
+
+    # Free space an upload must leave behind, checked against Content-Length
+    # before the first byte is written. 2Gi on a 20Gi disk that also holds the
+    # packages and the backup cache.
+    min_free_bytes: 2147483648
+
+    read_header_timeout: 30s
+    # 0 disables the bound. A halt backup of a large world on a slow provider is
+    # the one request that legitimately runs for a long time, and the cost of
+    # cutting it off is the world.
+    upload_timeout: 30m
+    idle_timeout: 120s
+    # Must exceed a restore download: closing the lease must not tear the archive
+    # away from an agent most of the way through fetching it.
+    shutdown_grace: 30s
+
 server:
   image: ghcr.io/hrkcz001/pz-akash-server
   image_tag: sha-bcba937

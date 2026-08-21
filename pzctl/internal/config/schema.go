@@ -121,6 +121,61 @@ type Controller struct {
 	// controller is deployed by hand, so unlike the server's it is not computed.
 	PricingAmount int            `yaml:"pricing_amount"`
 	Poll          ControllerPoll `yaml:"poll"`
+
+	Storage Storage `yaml:"storage"`
+}
+
+// Storage is the controller's HTTP file service: where the files it serves live,
+// and the limits its handlers enforce.
+//
+// The limits are config rather than constants because every one of them is a
+// judgement about this deployment's disk and this world's size, and v1 had them
+// as literals scattered across storage_server.py — where the only way to find out
+// that a 3 GiB world exceeded one was for the controller to be OOM-killed.
+type Storage struct {
+	// PackagesDir holds common.zip, client.zip and server.zip, built into the
+	// controller image by build_packages.py. Read-only at runtime: nothing the
+	// controller does writes here, which is what lets the whole directory be a
+	// baked image layer instead of state.
+	PackagesDir string `yaml:"packages_dir"`
+
+	// SubstituteEntries names the entries inside server.zip whose text gets the
+	// game secrets substituted as the archive is served, matched with path.Match
+	// against the entry name. Everything else is copied across compressed, so a
+	// 300 MiB archive of mods costs no decompression to serve.
+	//
+	// It is a list rather than "every .ini" because client.zip also contains .ini
+	// files — mod options, keybinds — and the rule that decides what gets rewritten
+	// should be one an operator can read, not one they have to infer.
+	SubstituteEntries []string `yaml:"substitute_entries"`
+
+	// SubstituteMaxBytes bounds a single entry that will be rewritten. An entry
+	// over the bound is passed through untouched rather than rejected: refusing to
+	// serve server.zip because someone committed a large file next to the .ini
+	// would take the server down over a file that has no placeholders in it.
+	SubstituteMaxBytes int64 `yaml:"substitute_max_bytes"`
+
+	// MinFreeBytes is the free space an upload must leave behind. Checked against
+	// the declared Content-Length before a byte is written, because the failure it
+	// prevents — a full disk part-way through a halt backup — costs the world, and
+	// checking costs one statfs.
+	MinFreeBytes int64 `yaml:"min_free_bytes"`
+
+	// ReadHeaderTimeout bounds how long a connection may take to send its request
+	// line and headers. It must not bound the body: a backup upload legitimately
+	// runs for many minutes, which is why there is no server-wide ReadTimeout.
+	ReadHeaderTimeout Duration `yaml:"read_header_timeout"`
+
+	// UploadTimeout bounds one PUT, body included. Zero means no bound.
+	UploadTimeout Duration `yaml:"upload_timeout"`
+
+	// IdleTimeout closes a kept-alive connection nobody is using.
+	IdleTimeout Duration `yaml:"idle_timeout"`
+
+	// ShutdownGrace is how long a redeploy waits for in-flight requests. It should
+	// exceed a restore download, so closing the lease does not tear the archive out
+	// from under an agent that is most of the way through fetching it.
+	ShutdownGrace Duration `yaml:"shutdown_grace"`
 }
 
 type ControllerPoll struct {

@@ -293,10 +293,12 @@ func (m *Machine) settleBackup(now time.Time) bool {
 // over the policy, always; backups.restore_policy decides only what happens when
 // nobody has pinned anything.
 //
-// The index entry comes from the report because the agent has already uploaded the
-// archive by the time it reports done. Step 6's storage layer regenerates the
-// index from the directory it owns, which is what keeps invariant I10 true; this
-// is the provisional entry until it does.
+// The index entry comes from the report only when there is no storage layer to ask.
+// With one, the archive is already on disk — the agent uploads before it reports
+// done — and the store regenerated the index from the directory as part of
+// accepting it. Upserting from the report as well would make this a second writer,
+// and the one that is guessing: the report carries the size the agent measured,
+// while the index carries the size of the file that is there.
 func (m *Machine) recordBackup(rep *state.BackupReport) {
 	if rep == nil || rep.Name == "" {
 		return
@@ -305,9 +307,21 @@ func (m *Machine) recordBackup(rep *state.BackupReport) {
 	if created.Zero() {
 		created = m.stamp()
 	}
-	m.idx.Upsert(state.Backup{
-		Name: rep.Name, Size: rep.Size, SHA256: rep.SHA256, CreatedAt: created,
-	})
+	if m.store == nil {
+		m.idx.Upsert(state.Backup{
+			Name: rep.Name, Size: rep.Size, SHA256: rep.SHA256, CreatedAt: created,
+		})
+	} else {
+		m.refreshIndex()
+	}
+	if !m.idx.Has(rep.Name) {
+		// A report for an archive the store does not hold. The upload failed, or
+		// landed somewhere else, and following it would point restore_target at a
+		// name the next boot cannot fetch — which is bug 4 wearing a different hat.
+		m.logf("fsm: agent reported backup %q but it is not in the index; not following it",
+			rep.Name)
+		return
+	}
 	switch {
 	case m.cfg.Backups.RestorePolicy != config.RestoreLatest:
 		// pinned and none both mean "this is not my decision to make".

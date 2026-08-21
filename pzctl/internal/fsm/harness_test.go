@@ -88,8 +88,11 @@ type harness struct {
 }
 
 // newHarness seeds a remote with config.yaml on main and returns a machine
-// positioned at offline.
-func newHarness(t *testing.T, tune func(*config.Config)) *harness {
+// positioned at offline. The opts adjust Deps for the few tests that need a
+// dependency the default machine deliberately does not have — a storage layer,
+// mostly, since most of the lifecycle tests are about the documents and would only
+// be made harder to read by a directory.
+func newHarness(t *testing.T, tune func(*config.Config), opts ...func(*Deps)) *harness {
 	t.Helper()
 	requireGit(t)
 
@@ -148,10 +151,14 @@ func newHarness(t *testing.T, tune func(*config.Config)) *harness {
 	h.adoc = state.NewAgent(cfg.Location())
 
 	h.dry = &DryRun{Cfg: cfg, Now: h.clk.now, Logf: h.logf}
-	h.m, err = New(Deps{
+	d := Deps{
 		Cfg: cfg, Bus: bus, Akash: h.dry,
 		Now: h.clk.now, NewID: h.nextID, Logf: h.logf,
-	})
+	}
+	for _, o := range opts {
+		o(&d)
+	}
+	h.m, err = New(d)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -3,9 +3,11 @@ package config
 import (
 	"fmt"
 	"net/url"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	// Embed the IANA timezone database so Identity.Timezone resolves
@@ -182,6 +184,75 @@ func (c *Config) validateController(p *problems) {
 	requirePositiveDur(p, "controller.poll.tick", ct.Poll.Tick)
 	requirePositiveDur(p, "controller.poll.idle", ct.Poll.Idle)
 	requirePositiveDur(p, "controller.poll.active", ct.Poll.Active)
+	c.validateStorage(p)
+}
+
+func (c *Config) validateStorage(p *problems) {
+	s := c.Controller.Storage
+	requireAbsPath(p, "controller.storage.packages_dir", s.PackagesDir)
+
+	// An empty list is legal and means "substitute nothing", which is a coherent
+	// configuration for a server with no passwords. A pattern that cannot match is
+	// not: it reads as protection that is not there.
+	for i, pat := range s.SubstituteEntries {
+		where := fmt.Sprintf("controller.storage.substitute_entries[%d]", i)
+		switch {
+		case strings.TrimSpace(pat) == "":
+			p.addf("%s: empty pattern", where)
+		case strings.HasPrefix(pat, "/"):
+			p.addf("%s: %q is absolute; zip entry names are relative, so this can never match", where, pat)
+		default:
+			if _, err := path.Match(pat, "probe"); err != nil {
+				p.addf("%s: %q is not a valid pattern: %v", where, pat, err)
+			}
+		}
+	}
+	if s.SubstituteMaxBytes <= 0 {
+		p.addf("controller.storage.substitute_max_bytes: must be positive, got %d", s.SubstituteMaxBytes)
+	}
+	if s.MinFreeBytes < 0 {
+		p.addf("controller.storage.min_free_bytes: must not be negative, got %d", s.MinFreeBytes)
+	}
+	requirePositiveDur(p, "controller.storage.read_header_timeout", s.ReadHeaderTimeout)
+	requirePositiveDur(p, "controller.storage.idle_timeout", s.IdleTimeout)
+	requirePositiveDur(p, "controller.storage.shutdown_grace", s.ShutdownGrace)
+	// upload_timeout is allowed to be zero, meaning unbounded — a legitimate choice
+	// for a very large world on a slow provider. Negative is a typo.
+	if s.UploadTimeout.D() < 0 {
+		p.addf("controller.storage.upload_timeout: must not be negative, got %s", s.UploadTimeout.D())
+	}
+
+	// A halt backup has to fit through the upload handler or the halt loses the
+	// world. The free-space check subtracts the incoming size from what is
+	// available, so the disk has to be able to hold both the reserve and one
+	// maximum-size upload at once — and those three numbers are set in three
+	// different blocks by three different lines of reasoning.
+	disk, haveDisk := parseAkashSize(c.Controller.Resources.Storage)
+	need := s.MinFreeBytes + c.Backups.UploadMaxBytes
+	if haveDisk && c.Backups.UploadMaxBytes > 0 && need > disk {
+		p.addf("controller.storage.min_free_bytes (%d) + backups.upload_max_bytes (%d) = %d "+
+			"exceeds controller.resources.storage (%s = %d bytes): an upload of the maximum "+
+			"size could never satisfy the free-space check on a disk that big",
+			s.MinFreeBytes, c.Backups.UploadMaxBytes, need,
+			c.Controller.Resources.Storage, disk)
+	}
+}
+
+// parseAkashSize converts an Akash quantity ("20Gi") to bytes. ok is false for
+// anything akashSizeRe would reject, which validateResources reports separately —
+// so a caller doing arithmetic on the result skips the check rather than
+// double-reporting a malformed value.
+func parseAkashSize(s string) (bytes int64, ok bool) {
+	if !akashSizeRe.MatchString(s) {
+		return 0, false
+	}
+	unit := s[len(s)-2:]
+	mult := map[string]float64{"Ki": 1 << 10, "Mi": 1 << 20, "Gi": 1 << 30, "Ti": 1 << 40}[unit]
+	n, err := strconv.ParseFloat(s[:len(s)-2], 64)
+	if err != nil {
+		return 0, false
+	}
+	return int64(n * mult), true
 }
 
 func (c *Config) validateServer(p *problems) {
