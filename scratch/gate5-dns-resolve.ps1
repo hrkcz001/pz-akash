@@ -16,11 +16,11 @@ $pzctl = "$root\scratch\pzctl.exe"
 $ip = "213.58.173.240"
 $name = "pz.vsrania.online"
 
-$yaml = Get-Content "$root\pz-controller\deployment.yaml" -Raw
-if ($yaml -notmatch "(?m)^\s*-\s*CLOUDFLARE_API_TOKEN=(.+)$") {
-    throw "CLOUDFLARE_API_TOKEN not found in pz-controller/deployment.yaml"
+# From secrets.env, not v1's manifest: the cutover deleted pz-controller/.
+foreach ($line in [IO.File]::ReadAllLines("C:\Users\hrkcz001\.pz-akash\secrets.env")) {
+    if ($line -match '^(PZ_CLOUDFLARE_API_TOKEN)=(.+)$') { Set-Item "env:$($Matches[1])" $Matches[2] }
 }
-$env:PZ_CLOUDFLARE_API_TOKEN = $Matches[1].Trim()
+if (-not $env:PZ_CLOUDFLARE_API_TOKEN) { throw "PZ_CLOUDFLARE_API_TOKEN is not in secrets.env" }
 Write-Output ("PZ_CLOUDFLARE_API_TOKEN loaded: {0} chars" -f $env:PZ_CLOUDFLARE_API_TOKEN.Length)
 
 # The authoritative servers for the zone. Whatever these say is the truth; a public

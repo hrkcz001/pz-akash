@@ -27,7 +27,6 @@ $ErrorActionPreference = "Stop"
 $OutDir = "C:\Users\hrkcz001\.pz-akash"
 $EnvFile = Join-Path $OutDir "secrets.env"
 $KeyFile = Join-Path $OutDir "pz-saves-deploy-key"
-$V1Manifest = "C:\Users\hrkcz001\zomboid-akash\pz-controller\deployment.yaml"
 
 if (-not (Test-Path $OutDir)) { New-Item -ItemType Directory -Path $OutDir | Out-Null }
 
@@ -64,11 +63,26 @@ function NewHexSecret {
     return ([BitConverter]::ToString($buffer) -replace '-').ToLower()
 }
 
-function FromV1Manifest {
+# Carried returns a third-party credential this script does not generate.
+#
+# It used to read them out of v1's rendered manifest, pz-controller/deployment.yaml.
+# That file left git at cutover — v1's two workflows are path-filtered to its
+# directory, and a first push to a fresh repository counts every file as added, which
+# would have published v1's images into v2's registry. It is gitignored, so a copy
+# lingers untracked in the working tree, which is exactly why this no longer reads it:
+# a value that survives only in an ignored file one `git clean` from deletion is not a
+# source of truth. $EnvFile is, and the last run that could still read the manifest put
+# both values there.
+#
+# A hard error rather than a regeneration. An Akash API key cannot be minted from here
+# — it comes from the console — and quietly writing a new random string in its place
+# would produce a deployment that fails to authenticate with no indication why.
+function Carried {
     param([string]$Name)
-    $text = Get-Content $V1Manifest -Raw
-    if ($text -match "(?m)^\s*-\s*$Name=(.+)$") { return $Matches[1].Trim() }
-    throw "$Name not found in $V1Manifest"
+    if ($existing.ContainsKey($Name) -and -not [string]::IsNullOrWhiteSpace($existing[$Name])) {
+        return $existing[$Name]
+    }
+    throw "$Name is not in $EnvFile and cannot be generated; copy it from the Akash or Cloudflare console"
 }
 
 # Values already in the file, so a re-run does not invalidate what is deployed.
@@ -130,9 +144,9 @@ $keyB64 = [Convert]::ToBase64String($keyPem)
 # guessing it is pointless. Nothing types the HTTP credentials but the agent.
 $map = [ordered]@{
     PZ_DEPLOY_KEY_B64        = $keyB64
-    PZ_AKASH_API_KEY         = FromV1Manifest "AKASH_API_KEY"
+    PZ_AKASH_API_KEY         = Carried "PZ_AKASH_API_KEY"
     PZ_WEBHOOK_SECRET        = NewHexSecret -Bytes 32
-    PZ_CLOUDFLARE_API_TOKEN  = FromV1Manifest "CLOUDFLARE_API_TOKEN"
+    PZ_CLOUDFLARE_API_TOKEN  = Carried "PZ_CLOUDFLARE_API_TOKEN"
     PZ_STORAGE_PASSWORD      = NewPassword -Length 32
     PZ_SERVER_FILES_PASSWORD = NewPassword -Length 32
     PZ_BACKUPS_PASSWORD      = NewPassword -Length 32

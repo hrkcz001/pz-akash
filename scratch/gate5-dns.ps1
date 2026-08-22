@@ -17,12 +17,13 @@ $root = "C:\Users\hrkcz001\zomboid-akash"
 $cfg = "$root\pzctl\config.yaml"
 $ip = "213.58.173.240"
 
-$yaml = Get-Content "$root\pz-controller\deployment.yaml" -Raw
-if ($yaml -match "(?m)^\s*-\s*CLOUDFLARE_API_TOKEN=(.+)$") {
-    $env:PZ_CLOUDFLARE_API_TOKEN = $Matches[1].Trim()
-} else {
-    throw "CLOUDFLARE_API_TOKEN not found in pz-controller/deployment.yaml"
+# The credential comes from the secrets file, not from v1's rendered manifest: the
+# cutover deleted pz-controller/. Same token either way — Cloudflare's is carried over
+# rather than rotated, because it rotates in Cloudflare's UI and not from here.
+foreach ($line in [IO.File]::ReadAllLines("C:\Users\hrkcz001\.pz-akash\secrets.env")) {
+    if ($line -match '^(PZ_CLOUDFLARE_API_TOKEN)=(.+)$') { Set-Item "env:$($Matches[1])" $Matches[2] }
 }
+if (-not $env:PZ_CLOUDFLARE_API_TOKEN) { throw "PZ_CLOUDFLARE_API_TOKEN is not in secrets.env" }
 Write-Output ("PZ_CLOUDFLARE_API_TOKEN loaded: {0} chars" -f $env:PZ_CLOUDFLARE_API_TOKEN.Length)
 
 $env:PZ_AKASH_API_KEY = "gate-throwaway"

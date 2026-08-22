@@ -9,7 +9,11 @@
 # the sort of place they could leak from.
 **/deployment.yaml
 
-# v1's tree. Deleted at cutover, and nothing in v2 builds from it.
+# v1's tree. Deleted from git at cutover, but not from this working copy: both
+# rendered manifests are gitignored, so `git rm` left them and the __pycache__ behind.
+# That is the whole reason these two lines outlive the directories they name — an
+# untracked pz-controller/deployment.yaml is still v1's live credentials, sitting in
+# the build context's path.
 pz-controller/
 pz-server/
 

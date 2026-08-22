@@ -1,8 +1,14 @@
 name: pzctl
 
-# v2's only workflow. v1 had two (docker-build-controller.yml,
-# docker-build-server.yml) with no test job at all: a controller.sh with a syntax
-# error published an image, and the first thing to notice was a dead deployment.
+# v2's only workflow. v1 had two — docker-build-controller.yml and
+# docker-build-server.yml, deleted at cutover — with no test job at all: a
+# controller.sh with a syntax error published an image, and the first thing to notice
+# was a dead deployment.
+#
+# They were deleted before the first push to the new repository rather than after.
+# Both were path-filtered to pz-controller/** and pz-server/**, and a push that
+# creates a repository's first branch counts every file as added, so leaving them
+# would have built v1's bash images and published them as this repository's packages.
 #
 # The gate order is deliberate. `check` runs first and both image builds depend on
 # it, so a failing test cannot produce a pushed tag — and since config.yaml is the
@@ -11,7 +17,11 @@ name: pzctl
 
 on:
   push:
-    branches: [main, master, v2-pzctl]
+    # main only. The list used to carry master and v2-pzctl: v2 was developed on a
+    # branch because main was v1's live code, and CI watching main would have rebuilt
+    # v1 on every v2 commit. The new repository has no v1 on main to protect, so the
+    # branch and the extra filters went with the cutover.
+    branches: [main]
     paths:
       - 'pzctl/**'
       - 'docker/**'
@@ -78,10 +88,10 @@ jobs:
 
       # The mod lists, the server .ini files and the dashboard's extras.
       #
-      # hrkcz001/pz-saves is public today, so this checkout would work with no
-      # credential at all — the key is here because it costs nothing and the repo
-      # may not stay public. SSH_PRIVATE_KEY is the secret this repository has;
-      # PZ_SAVES_SSH_KEY is the name v1's workflow also accepted.
+      # hrkcz001/pz-saves is private as of the v2 cutover, so this checkout cannot
+      # work without a credential: SSH_PRIVATE_KEY is the pz-saves deploy key, and the
+      # job token cannot read another repository. PZ_SAVES_SSH_KEY is the name v1's
+      # workflow also accepted, kept so a half-configured repository still builds.
       - name: Checkout pz-saves
         uses: actions/checkout@v5
         with:
@@ -89,9 +99,9 @@ jobs:
           ssh-key: ${{ secrets.SSH_PRIVATE_KEY || secrets.PZ_SAVES_SSH_KEY }}
           path: pz-saves
 
-      # If the repo goes private and the key is missing, checkout falls back to the
-      # job token, which cannot read it, and the failure reads as a permissions
-      # problem with *this* repository. Say which it is.
+      # A private repository and a missing key is now the likely failure rather than a
+      # theoretical one, and checkout's own error for it reads as a permissions problem
+      # with *this* repository. Say which it is.
       - name: The saves are actually here
         run: |
           test -d pz-saves/common || {
@@ -100,20 +110,22 @@ jobs:
           }
           echo "pz-saves: $(find pz-saves -maxdepth 1 -mindepth 1 | wc -l) entries"
 
-      # The config that ships. Once pz-saves carries config.yaml this is the
-      # authoritative gate; until then the file is absent and the step says so
-      # rather than failing a build for a cutover that has not happened yet.
+      # The config that ships. This is the authoritative gate now: pz-saves carries
+      # config.yaml as of the cutover, and a controller with no config.yaml to read
+      # cannot start at all. It used to skip when the file was absent, which was right
+      # while the cutover had not happened — and wrong the moment it had, because then
+      # "absent" stops meaning "not yet" and starts meaning "someone deleted it".
       - uses: actions/setup-go@v6
         with:
           go-version-file: pzctl/go.mod
           cache-dependency-path: pzctl/go.sum
       - name: Validate pz-saves/config.yaml
         run: |
-          if [ -f pz-saves/config.yaml ]; then
-            (cd pzctl && go run ./cmd/pzctl config validate -c ../pz-saves/config.yaml)
-          else
-            echo "pz-saves has no config.yaml yet (pre-cutover); skipping"
-          fi
+          test -f pz-saves/config.yaml || {
+            echo "::error::pz-saves has no config.yaml — the controller reads it at boot and cannot start without it"
+            exit 1
+          }
+          cd pzctl && go run ./cmd/pzctl config validate -c ../pz-saves/config.yaml
 
       - uses: docker/setup-buildx-action@v4
 

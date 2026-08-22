@@ -200,11 +200,15 @@ Work happens in a new top-level `pzctl/` directory and a `v2` branch of pz-saves
 | **9** | Cutover | see below |
 
 ### Step 9 — cutover checklist
-1. **Download all backups from the current controller first** — they are ephemeral and the old lease is about to close.
-2. Halt the server through the old system; confirm the lease is closed.
-3. Close the old controller deployment. *(Old and new must never run against pz-saves simultaneously.)*
+1. ~~**Download all backups from the current controller first**~~ — **not done, by decision.** The user's instruction was "Don't download old backups, forget about them, just kill old deployments and deploy new", and, asked directly whether the live world should be rescued, "Kill it, start a fresh world". v2 therefore starts on an empty map and item 9 below pushes `triggers/start` with no `restore_target`.
+2. ~~Halt the server through the old system~~ — skipped for the same reason. A graceful halt exists to produce a final backup nobody is keeping.
+3. **Close both v1 deployments — the controller first.** Done 2026-08-22: `dseq 1787078661931` (service `controller`, $0.24 unspent) then `dseq 1787103872228` (service `pz-server`, the live world, $2.15 unspent). ~$2.39 settles back to the wallet.
+   - The order is not cosmetic. v1's controller reconciles `desired_state: running` by creating a server deployment, so closing the server while the controller lived would have spent the refund on a replacement.
+   - `pzctl akash leases` finds only the server: `Adopt` identifies a deployment by service name and deliberately never claims the controller's own. The controller's dseq came from the console API directly — `scratch/v1-identify.ps1`, which also proves which is which by service name rather than by creation order.
+   - **This gates the renames.** GitHub redirects pushes for a renamed repository, so a v1 controller that outlived the rename would push its bus files into whatever repository next occupied the old name — the clean v2 one.
 4. Merge pz-saves `v2` → `main` (adds `config.yaml`, `triggers/`, templated inis; removes `deployment.yaml`).
    - **There is no `v2` branch of pz-saves yet** — `git branch -a` shows `main` and nothing else, and `main` has neither `config.yaml` nor `triggers/`. The v2 config lives in this repository as `pzctl/config.yaml`, the draft the CI gate validates. So this item begins by *creating* that branch from today's `main` and adding the three things to it; there is nothing to merge until then.
+   - Done as an **orphan** branch (`c1a2f04`, 20 files), not a branch off `main`: `main`'s history is 167 commits of v1 bus traffic and four published passwords, and the new repository is the one place that history can be left behind rather than rewritten.
 5. **Replace the literal passwords in `server/Server/*.ini` with `__RCON_PASSWORD__` and `__JOIN_PASSWORD__`**, and move the two values into the controller's environment (`PZ_RCON_PASSWORD`, `PZ_JOIN_PASSWORD` — `internal/secrets`). The committed ini still carries the real values v1 put there; the substitution happens in the controller as the archive is served, so nothing in the repo or in an image layer needs them. Until this lands, `docker/check_image.sh` emits a `::warning::` for each literal it finds in `server.zip`; **after** it lands, change that `note` to `fail` so a regression is a red build.
    - **`AdminPassword` is not in the ini at all** — `server/Server/vsrania.ini` has
      `RCONPassword` (line 167) and `Password` (line 188) and no admin key, because v1
@@ -234,12 +238,14 @@ Work happens in a new top-level `pzctl/` directory and a `v2` branch of pz-saves
      now also sit in a terminal scrollback and a session transcript, and it removes any
      remaining argument for reuse. **Rotate all three distinct values at cutover.**
    - Decide whether the new `pz-saves` is public or private. v2 needs neither: with placeholders in the ini, nothing secret is in the repository, and the workflow's `ssh-key:` line works either way.
-6. Rename the repositories: `pz-akash` → `pz-akash-proto`, `pz-saves` → `pz-saves-proto`, then create the new `pz-akash` / `pz-saves` from the v2 trees. Both image names in `config.yaml` and the workflow's `${{ github.repository }}` follow the slug, and `scratch/gate8.ps1` asserts the two agree — run it after the rename.
-7. Point the GitHub webhook at the new controller.
-8. Deploy the new controller; verify state branches initialise.
-9. Upload the retained backup, set `restore_target`, push `triggers/start`.
-10. Verify: player count nonzero with someone connected; halt does not loop; no JSON errors; backup downloadable.
-11. Delete `pz-controller/` and `pz-server/`.
+6. **Delete `pz-controller/` and `pz-server/`** — moved here from item 11, and it has to be here. Both v1 workflows are path-filtered to those directories, and a push that creates a repository's first branch counts every file as added, so a new repository containing v1's tree would have built v1's bash images and published them as its own packages before anything else ran. The two `deployment.yaml` files are gitignored and survive in the working copy, which is why `.dockerignore` still excludes both directories.
+7. Rename the repositories: `pz-akash` → `pz-akash-proto`, `pz-saves` → `pz-saves-proto`, then create the new `pz-akash` (public) / `pz-saves` (**private**) from the v2 trees. Both image names in `config.yaml` and the workflow's `${{ github.repository }}` follow the slug, and `scratch/gate8.ps1` asserts the two agree — run it after the rename.
+   - GHCR packages are linked to a repository by id, not by name, so the rename may leave `pz-akash-controller` and `pz-akash-server` attached to `pz-akash-proto` and the first push from the new repository 403s. The `gh` token has neither `delete_repo` nor `delete:packages`; ask rather than work around it.
+8. Install the new deploy key on the new pz-saves (**write-enabled** — the controller pushes state), then set `SSH_PRIVATE_KEY` and the ten `PZ_*` secrets on the new pz-akash.
+9. Run CI. **Only after the new pz-saves exists**: `docker/check_image.sh` now *fails* on a literal password in `server.zip`, and the old repository still has four of them. Then pin `controller.image_tag` / `server.image_tag` to the new shas in both copies of `config.yaml` and re-run `scratch/gate8.ps1`.
+10. Point the GitHub webhook at the new controller.
+11. Deploy the new controller; verify the state branches initialise; push `triggers/start` for a **fresh world** (no `restore_target` — see item 1).
+12. Verify: player count nonzero with someone connected; halt does not loop; no JSON errors; backup downloadable.
 
 ---
 

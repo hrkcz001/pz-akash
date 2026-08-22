@@ -9,12 +9,13 @@
 $ErrorActionPreference = "Stop"
 $root = "C:\Users\hrkcz001\zomboid-akash"
 
-$yaml = Get-Content "$root\pz-controller\deployment.yaml" -Raw
-if ($yaml -match "(?m)^\s*-\s*AKASH_API_KEY=(.+)$") {
-    $env:PZ_AKASH_API_KEY = $Matches[1].Trim()
-} else {
-    throw "AKASH_API_KEY not found in pz-controller/deployment.yaml"
+# From secrets.env, not v1's manifest: the cutover deleted pz-controller/. The Akash
+# key is the one credential here that has to be real — everything below is a throwaway
+# because this gate only renders and submits an SDL.
+foreach ($line in [IO.File]::ReadAllLines("C:\Users\hrkcz001\.pz-akash\secrets.env")) {
+    if ($line -match '^(PZ_AKASH_API_KEY)=(.+)$') { Set-Item "env:$($Matches[1])" $Matches[2] }
 }
+if (-not $env:PZ_AKASH_API_KEY) { throw "PZ_AKASH_API_KEY is not in secrets.env" }
 
 $env:PZ_DEPLOY_KEY_B64 = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes("gate-throwaway-not-a-key"))
 $env:PZ_WEBHOOK_SECRET = "gate-throwaway"
