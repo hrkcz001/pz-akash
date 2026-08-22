@@ -67,7 +67,7 @@ func cmdAkash(args []string) error {
 	case "providers":
 		return akashProviders(ctx, d, cfg, *role)
 	case "deploy":
-		return akashDeploy(ctx, d, *role, *controllerURL, *closeAfter, logf)
+		return akashDeploy(ctx, d, cfg, *role, *controllerURL, *closeAfter, logf)
 	case "leases":
 		return akashLeases(ctx, d)
 	case "escrow":
@@ -236,6 +236,19 @@ func akashClose(ctx context.Context, d *akash.Driver, dseq string, logf func(str
 	return nil
 }
 
+// deployer is the slice of *akash.Driver that akashDeploy uses.
+//
+// Narrow on purpose. The retry loop below decides when real money is committed and
+// when it is released, and those decisions are worth testing against a fake that can
+// be made to fail on demand — a provider that refuses a lease, or a close that does
+// not take — rather than only against the live API, where reproducing either costs a
+// deposit and some waiting. *akash.Driver satisfies it as it stands.
+type deployer interface {
+	DeployServer(context.Context, akash.DeployOptions) (akash.Result, error)
+	DeployController(context.Context) (akash.Result, error)
+	Close(context.Context, state.Lease) error
+}
+
 // akashDeploy creates one deployment and reports what it got.
 //
 // The dseq is printed before the error is returned, and that ordering is the whole
@@ -247,20 +260,67 @@ func akashClose(ctx context.Context, d *akash.Driver, dseq string, logf func(str
 // --close makes it a round trip: create, lease, wait, close. That is the shape of a
 // first live run — it proves every wire format in the package against the real API
 // and leaves nothing behind but the seconds of billing it took.
-func akashDeploy(ctx context.Context, d *akash.Driver, role, controllerURL string,
+//
+// A failed attempt is retried, up to akash.max_deploy_attempts, and the reason that
+// helps is the driver's skip list. A provider that takes our deposit and then
+// refuses the lease — or leases and never becomes routable — is skip-listed on `d`
+// for akash.placement.skip_ttl, so the next attempt cannot choose it again. That
+// list lives in memory only, which is a sound trade for the controller (it retries
+// inside one process) and was a hole here: a one-shot CLI deploy forgot the bad
+// provider the instant it exited, so re-running by hand picked the cheapest bid —
+// the same one that had just failed — every time. The live controller deploy hit
+// exactly that and could not have got past it by being run again.
+//
+// Each failed attempt is closed before the next begins, which is not optional.
+// Retrying on top of an open deployment would leave two funded escrows and, if both
+// ever became routable, two servers writing one world through one DNS name —
+// invariant I1. A close that itself fails therefore stops the loop: the dseq is
+// named in the error and no further money is committed.
+func akashDeploy(ctx context.Context, d deployer, cfg *config.Config, role, controllerURL string,
 	closeAfter bool, logf func(string, ...any)) error {
 
-	if _, _, err := resourcesFor(d.Cfg, role); err != nil {
+	if _, _, err := resourcesFor(cfg, role); err != nil {
 		return err
 	}
 
-	var (
-		res akash.Result
-		err error
-	)
+	attempts := cfg.Akash.MaxDeployAttempts
+	if attempts < 1 {
+		attempts = 1
+	}
+
+	var lastErr error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		if attempt > 1 {
+			logf("akash: deploy attempt %d of %d", attempt, attempts)
+		}
+		retryable, err := akashDeployOnce(ctx, d, role, controllerURL, closeAfter, attempt, logf)
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		// retryable reports that the failure was cleaned up and another attempt is
+		// allowed. Anything else — a close that failed, a deploy that never got as
+		// far as an escrow — ends the loop with the error as it stands.
+		if !retryable {
+			return err
+		}
+		if attempt == attempts {
+			return fmt.Errorf("akash: %d deploy attempts all failed; last: %w", attempts, err)
+		}
+		logf("akash: %v — retrying with a different provider", err)
+	}
+	return lastErr
+}
+
+// akashDeployOnce is one deploy attempt. It reports retryable=true only when it
+// leaves nothing behind: no open deployment, and a provider now skip-listed.
+func akashDeployOnce(ctx context.Context, d deployer, role, controllerURL string,
+	closeAfter bool, attempt int, logf func(string, ...any)) (retryable bool, err error) {
+
+	var res akash.Result
 	switch role {
 	case "server":
-		res, err = d.DeployServer(ctx, akash.DeployOptions{ControllerURL: controllerURL, Attempt: 1})
+		res, err = d.DeployServer(ctx, akash.DeployOptions{ControllerURL: controllerURL, Attempt: attempt})
 	case "controller":
 		res, err = d.DeployController(ctx)
 	}
@@ -284,19 +344,31 @@ func akashDeploy(ctx context.Context, d *akash.Driver, role, controllerURL strin
 	}
 
 	if err != nil {
-		if res.Lease.DSeq != "" {
-			// Named on the error line as well as above it: whatever swallows the output,
-			// the number needed to stop the billing travels with the failure.
-			return fmt.Errorf("%w — dseq %s exists and is billing; close it with "+
-				"`pzctl akash close --dseq %s`", err, res.Lease.DSeq, res.Lease.DSeq)
+		if res.Lease.DSeq == "" {
+			// Nothing was created, so nothing is billing and nothing is skip-listed:
+			// a retry would repeat the same request with the same outcome.
+			return false, err
 		}
-		return err
+		// From here there is a funded escrow. Named on the error line as well as
+		// above it: whatever swallows the output, the number needed to stop the
+		// billing travels with the failure.
+		failed := fmt.Errorf("%w — dseq %s", err, res.Lease.DSeq)
+		logf("akash: closing dseq %s after a failed attempt", res.Lease.DSeq)
+		if cerr := d.Close(ctx, res.Lease); cerr != nil {
+			// The one path that must not retry. A second deployment on top of an
+			// open one leaves two escrows funded and, if both ever became routable,
+			// two servers writing one world behind one DNS name.
+			return false, fmt.Errorf("%w; and closing it failed: %v — dseq %s is still "+
+				"billing, close it with `pzctl akash close --dseq %s`",
+				failed, cerr, res.Lease.DSeq, res.Lease.DSeq)
+		}
+		return true, failed
 	}
 
 	if !closeAfter {
 		fmt.Printf("\nstill open — close it with `pzctl akash close --dseq %s`\n", res.Lease.DSeq)
-		return nil
+		return false, nil
 	}
 	logf("akash: closing dseq %s again, as asked", res.Lease.DSeq)
-	return d.Close(ctx, res.Lease)
+	return false, d.Close(ctx, res.Lease)
 }
