@@ -235,7 +235,24 @@ akash:
   # ready replica and forwarded ports on a shared host, which players cannot use.
   # Seen live on the nearest eligible provider. The driver skip-lists it, so a retry
   # lands somewhere else; usually the eligible providers run out before this does.
-  max_deploy_attempts: 4
+  #
+  # "Run out" is not hyperbole, and it is worth writing down what the market
+  # actually is, because the number below is sized against it rather than guessed.
+  # Of 1815 providers, 60 are online and only 8 advertise a leasable IP; 4 of those
+  # are in akash.placement.countries. Measured 2026-08-22:
+  #
+  #   akash1aaul837…  BG  digitalfrontier  49 free IPs  — does not bid: its 6 nodes
+  #                       are individually too committed to fit 8cpu/16Gi/30Gi
+  #   akash18ga02…    HR  europlots        17 free IPs  — bids ~57 uact, 3 nodes fit
+  #   akash1hgulk6…   PT                                — bids ~68 uact
+  #   akash1cvcfya…   UA  proxyua           0 free IPs  — advertises featEndpointIp
+  #                       to Console and cannot actually serve one; never bids
+  #
+  # So the real pool is two or three providers, and a run of transient failures
+  # exhausts it. 5 rather than 4 buys one more pass over that pool once the
+  # skip-list has moved us past a bad one, without letting a hopeless start
+  # trigger grind for an hour.
+  max_deploy_attempts: 5
 
   blocks_per_day: 14400
 
@@ -288,7 +305,23 @@ akash:
     bid_poll: 5s
     bid_wait: 90s
     lease_poll: 10s
-    lease_ready: 10m
+    # How long a leased deployment gets to become routable. This is dominated by
+    # one thing: the server image is 2.15Gi in a *single* layer (the PZ install),
+    # so the provider gets no cross-layer download parallelism and must finish
+    # decompressing the whole thing before the container starts.
+    #
+    # 10m was too short. On the nearest eligible provider it produced ten
+    # identical "service pz-server has no ready replica" polls and then a
+    # timeout, on a provider that had three nodes able to fit the reservation and
+    # 17 free lease IPs — i.e. nothing was wrong except the clock. A pull that
+    # slow is ~3MB/s, which is unremarkable for a provider with a cold cache.
+    #
+    # The cost of raising it is that a genuinely broken provider holds a deploy
+    # for 20m instead of 10m before the skip-list moves us on. That is the right
+    # trade while the market for a dedicated IP in these countries is four
+    # providers wide: giving up on a working provider is far more expensive than
+    # waiting out a broken one.
+    lease_ready: 20m
     deposit_settle: 15s
 
   # Ask the provider directly for a lease IP when the Console API's lease status
@@ -451,9 +484,12 @@ dashboard:
   poll_interval: 10s
 
   # How old a player count may be before the page says so. Must exceed
-  # agent.players_push_min_interval, or an idle server — no count change, so
-  # nothing to push — would read as a broken agent on every page load.
-  players_stale_after: 5m
+  # agent.liveness_push + agent.pz.players_interval: the agent re-stamps the count
+  # on every measurement but only pushes an unchanged one when liveness comes due,
+  # so that sum is how old the controller's newest stamp legitimately gets. Set it
+  # below that and every idle world reads as a broken agent. config.validate
+  # enforces the relationship.
+  players_stale_after: 6m
 
   # An unlock lasts this long. The signing key is generated at startup, so a
   # controller restart ends every session regardless; this bounds the other end.
@@ -466,8 +502,10 @@ dashboard:
 
 agent:
   # Stamps agent state even when nothing changed, so the controller can tell
-  # "quiet" from "wedged".
-  liveness_push: 10m
+  # "quiet" from "wedged". It also carries the player count's freshness: an
+  # unchanged count is re-stamped in memory on every poll and rides out on this
+  # push, which is why dashboard.players_stale_after is sized against it.
+  liveness_push: 4m
   # Rate-limits player-count pushes. With git as the bus, this is what stops
   # join/leave churn becoming commit churn.
   players_push_min_interval: 2m

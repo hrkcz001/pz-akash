@@ -234,3 +234,39 @@ func TestAgentReportsPlayersUnknownRatherThanZero(t *testing.T) {
 
 	h.stop()
 }
+
+// A count that never changes must still be published as current.
+//
+// players_at is the dashboard's only evidence of freshness, and an idle world
+// measures the same count forever, so a stamp written once and never again reads as
+// stale while the agent is in fact polling every interval and getting an answer
+// every time. That was the live symptom: a correct zero the page had been calling
+// out of date since five minutes after the world came up. The stamp has to move
+// even when the number does not — no value of dashboard.players_stale_after can
+// substitute, because the frozen stamp's age grows without bound.
+func TestAgentRestampsAnUnchangedPlayerCount(t *testing.T) {
+	h := newHarness(t)
+	players := filepath.Join(h.dir, "players.txt")
+	writeFile(t, players, "5")
+	t.Setenv(fakePlayersFile, players)
+	h.start()
+
+	h.waitPhase(state.PhaseOnline, 60*time.Second)
+	h.waitFor("the measured count", 30*time.Second, func() bool {
+		return h.agentDoc().PlayersCount == 5
+	})
+	first := h.agentDoc().PlayersAt
+	if first.Zero() {
+		t.Fatal("players_at is unset on a measured count")
+	}
+
+	// Nothing about the world changes from here: every poll measures the same 5, so
+	// no count change marks the document and only the liveness push carries it. What
+	// must advance is the stamp that push carries.
+	h.waitFor("players_at to advance on an unchanged count", 30*time.Second, func() bool {
+		doc := h.agentDoc()
+		return doc.PlayersCount == 5 && doc.PlayersAt.Time.After(first.Time)
+	})
+
+	h.stop()
+}

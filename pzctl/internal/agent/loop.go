@@ -99,10 +99,25 @@ func (a *Agent) observePlayers(n int) {
 	}
 	a.lastPlayersSeen = time.Now()
 	a.unanswered = 0
-	if a.doc.PlayersCount == n {
+
+	// Re-stamped on every measurement, including one that did not change the
+	// count. PlayersAt means "when was this last known to be true" and the
+	// dashboard judges freshness from it, so returning early on an unchanged
+	// count froze the stamp at the first measurement: an idle world measures
+	// 0 == 0 forever, so the stamp aged without bound and the page called a count
+	// taken thirty seconds ago stale. No value of dashboard.players_stale_after
+	// could fix that from config — the stamp has to move. The write is free:
+	// publish pushes only when something marked the document, and an unchanged
+	// count marks nothing.
+	changed := a.doc.PlayersCount != n
+	a.doc.SetPlayers(n, a.now())
+	if !changed {
+		// The fresh stamp still reaches the controller, carried by the liveness
+		// push that exists for exactly this — proving an unchanged document is
+		// current. config.validateDashboard keeps players_stale_after above that
+		// cadence, so a quiet world never reads as a broken one.
 		return
 	}
-	a.doc.SetPlayers(n, a.now())
 	// Rate-limited on purpose: with git as the bus, a busy evening of joins and
 	// leaves would otherwise be a commit per event.
 	if time.Since(a.lastPlayersPush) < a.cfg.Agent.PlayersPushMinInterval.D() {

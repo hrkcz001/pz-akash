@@ -599,13 +599,23 @@ func (c *Config) validateDashboard(p *problems) {
 	if d.PlayersStaleAfter < 0 {
 		p.addf("dashboard.players_stale_after: must not be negative")
 	}
-	// The agent only pushes a count when it changed or when liveness comes due, so
-	// a quiet server's newest count is one push interval old at best. A shorter
-	// staleness threshold than that renders every idle server as a broken agent —
-	// the false alarm nobody can act on, which is how real alarms stop being read.
-	if pi := c.Agent.PlayersPushMinInterval; d.PlayersStaleAfter > 0 && pi > 0 && d.PlayersStaleAfter <= pi {
-		p.addf("dashboard.players_stale_after (%v) must exceed agent.players_push_min_interval (%v) — a quiet server's count is always at least that old",
-			d.PlayersStaleAfter.D(), pi.D())
+	// A quiet world's count is only as fresh as the push that carries it. The agent
+	// re-stamps players_at on every measurement, but an unchanged count marks
+	// nothing to publish, so the newest stamp the controller has seen is one
+	// liveness push plus one poll interval old at worst. A staleness threshold below
+	// that renders every idle server as a broken agent — the false alarm nobody can
+	// act on, which is how real alarms stop being read.
+	//
+	// This used to compare against agent.players_push_min_interval, which was the
+	// wrong cadence twice over: that knob is a floor on how often a *changed* count
+	// may be pushed, not a ceiling on how old an unchanged one gets, and nothing
+	// re-stamped the count on the liveness path at all — so the stamp aged without
+	// bound and no threshold here could have held. See agent.observePlayers.
+	if lp, pi := c.Agent.LivenessPush, c.Agent.PZ.PlayersInterval; d.PlayersStaleAfter > 0 && lp > 0 {
+		if floor := lp + pi; d.PlayersStaleAfter <= floor {
+			p.addf("dashboard.players_stale_after (%v) must exceed agent.liveness_push + agent.pz.players_interval (%v) — that is how old a quiet world's newest count can legitimately be",
+				d.PlayersStaleAfter.D(), floor.D())
+		}
 	}
 
 	requirePositiveDur(p, "dashboard.session_ttl", d.SessionTTL)
