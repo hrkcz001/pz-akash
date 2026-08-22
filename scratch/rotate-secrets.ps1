@@ -71,6 +71,30 @@ function FromV1Manifest {
     throw "$Name not found in $V1Manifest"
 }
 
+# Values already in the file, so a re-run does not invalidate what is deployed.
+$existing = @{}
+if (Test-Path $EnvFile) {
+    foreach ($line in [IO.File]::ReadAllLines($EnvFile)) {
+        if ($line -match '^([A-Z0-9_]+)=(.*)$') { $existing[$Matches[1]] = $Matches[2] }
+    }
+}
+
+# KeepOrNew is for the one password a human types. The join password is kept across
+# a rotation on purpose: every player has it, it lives in a pinned chat message, and
+# rotating it locks out everyone who is not reading chat that day. The others are
+# typed by nothing but the agent, so rotating them costs no one anything.
+#
+# Kept by reading the file rather than by a literal in this script: a value written
+# here would be a password committed to a public repository, which is the thing v2
+# exists to stop. Delete the line from secrets.env to force a new one.
+function KeepOrNew {
+    param([string]$Name, [int]$Length)
+    if ($existing.ContainsKey($Name) -and -not [string]::IsNullOrWhiteSpace($existing[$Name])) {
+        return $existing[$Name]
+    }
+    return NewPassword -Length $Length
+}
+
 # --- the pz-saves deploy key ------------------------------------------------
 #
 # New, not reused. v1's key is in the history of two repositories, one of which was
@@ -114,7 +138,7 @@ $map = [ordered]@{
     PZ_BACKUPS_PASSWORD      = NewPassword -Length 32
     PZ_RCON_PASSWORD         = NewPassword -Length 24
     PZ_ADMIN_PASSWORD        = NewPassword -Length 24
-    PZ_JOIN_PASSWORD         = NewPassword -Length 14
+    PZ_JOIN_PASSWORD         = KeepOrNew "PZ_JOIN_PASSWORD" 14
 }
 
 # v1 used one string for both RCON and storage. Two variables now hold two values,
@@ -135,6 +159,7 @@ Write-Output "wrote $EnvFile"
 foreach ($name in $map.Keys) {
     $rotated = "rotated"
     if ($name -in 'PZ_AKASH_API_KEY', 'PZ_CLOUDFLARE_API_TOKEN') { $rotated = "carried over from v1" }
+    if ($existing.ContainsKey($name) -and $existing[$name] -ceq $map[$name]) { $rotated = "kept" }
     Write-Output ("  {0,-26} {1,4} chars  {2}" -f $name, $map[$name].Length, $rotated)
 }
 Write-Output ""

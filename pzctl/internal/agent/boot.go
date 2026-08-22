@@ -240,6 +240,24 @@ func (a *Agent) renderConfig() error {
 		a.log("config: %s updated %d key(s): %v", filepath.Base(ini), len(changed), changed)
 	}
 
+	// The admin password rides in the .ini but is not consumed from it. PZ has no
+	// AdminPassword key — the admin account lives in the world's user database, and
+	// the only way in is -adminpassword — so the key is a private channel between
+	// the controller's substituter and this line. It is read here and handed to
+	// startGame; renderServerINI leaves it alone because config.yaml does not own it.
+	admin, err := readINIKey(ini, "AdminPassword")
+	if err != nil {
+		return fmt.Errorf("read AdminPassword from %s: %w", ini, err)
+	}
+	a.adminPassword = admin
+	if admin == "" {
+		// Not fatal, and not always wrong: a world whose database already has the
+		// admin account boots fine without it. Worth a line in the log because the
+		// alternative — a brand-new world with no admin password — makes PZ prompt on
+		// stdin, which is the pipe the agent sends `save` and `quit` down.
+		a.log("config: no AdminPassword in %s; PZ starts without -adminpassword", filepath.Base(ini))
+	}
+
 	// pzexe silently drops CLI options it does not recognise, -Xmx among them, so
 	// the heap has to go in the launcher's own vmArgs. A 16Gi container running on
 	// the JVM's default heap is how v1 spent months OOM-killing itself.
@@ -287,10 +305,18 @@ func (a *Agent) startGame(ctx context.Context) error {
 		"-servername", a.cfg.Identity.ServerName,
 		"-cachedir=" + p.DataDir,
 	}
-	// No -adminpassword: the agent holds no admin secret, on purpose. The password
-	// is substituted into the .ini by the controller, which means it never appears
-	// in this container's process list — where v1 put it, and where any shell in
-	// the container could read it out of /proc.
+	// -adminpassword, when there is one. This is the one game secret that cannot be
+	// left in a file for PZ to read: there is no AdminPassword .ini key, so the
+	// password reaches the admin account through argv or not at all. It is therefore
+	// visible in this container's process list — but not in the Akash manifest,
+	// which is the exposure that mattered: the manifest is readable by the provider,
+	// /proc is readable by a shell this image does not ship. The value arrived inside
+	// server.zip over TLS behind the server-files credential and was substituted by
+	// the controller; see renderConfig. Never logged: startPZ prints the launcher and
+	// the pid, never argv.
+	if a.adminPassword != "" {
+		args = append(args, "-adminpassword", a.adminPassword)
+	}
 	args = append(args, a.cfg.Agent.PZ.ExtraArgs...)
 
 	pz, err := startPZ(a.procCtx, a.launcher, args, a.cfg.Agent.PZ, a.logPath(), a.events, a.log)

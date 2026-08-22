@@ -71,7 +71,13 @@ controller:
   resources:
     cpu: "1"
     memory: 2Gi
-    storage: 20Gi
+    # 50Gi so the retention rules can actually bind. At 20Gi the disk held the
+    # packages (~2Gi), had to keep min_free_bytes free, and left room for roughly
+    # eight 2Gi backups — while retention_count said 24, a number the disk could
+    # never let it reach. Backups are the thing this volume exists for and they are
+    # not durable across a lease, so the cache is worth more than the difference in
+    # price.
+    storage: 50Gi
   # Per-block bid ceiling in akash.price.denom. The controller is hand-deployed,
   # so unlike the server's this is not computed at deploy time.
   #
@@ -102,8 +108,14 @@ controller:
     substitute_max_bytes: 4194304
 
     # Free space an upload must leave behind, checked against Content-Length
-    # before the first byte is written. 2Gi on a 20Gi disk that also holds the
+    # before the first byte is written. 2Gi on the 50Gi disk that also holds the
     # packages and the backup cache.
+    #
+    # The arithmetic that motivated 50Gi: packages are ~2Gi, this reserve is 2Gi,
+    # so ~46Gi is left for backups. retention_count of 24 fits at any realistic
+    # world size; only a run of worlds at the full 2Gi upload_max_bytes ceiling
+    # (48Gi) would still hit the disk first. At 20Gi the count rule was decorative
+    # — the disk stopped it at roughly eight, whatever the number said.
     min_free_bytes: 2147483648
 
     read_header_timeout: 30s
@@ -349,7 +361,9 @@ dns:
 # PZ .ini values the agent renders at boot. RCONPassword, Password and
 # AdminPassword are absent by design: they arrive as placeholders inside
 # server.zip and are substituted by the controller as it serves that file, so
-# they never reach an image layer or an Akash manifest.
+# they never reach an image layer or an Akash manifest. AdminPassword is the odd
+# one — PZ has no such .ini key, so the agent reads the substituted value back out
+# of the file and passes it as -adminpassword.
 game:
   map: Muldraugh, KY
   public_name: My PZ Server

@@ -71,6 +71,7 @@ type harness struct {
 	cfg    *config.Config
 	remote string
 	touch  string
+	argv   string
 
 	// The controller's side of the bus. The test plays the controller by mutating
 	// doc/idx and publishing, which is exactly what internal/fsm will do in step 6.
@@ -127,12 +128,14 @@ func newHarness(t *testing.T) *harness {
 		dir:    dir,
 		remote: filepath.Join(dir, "remote.git"),
 		touch:  filepath.Join(dir, "launches.txt"),
+		argv:   filepath.Join(dir, "argv.txt"),
 		served: map[string][]byte{},
 		denied: map[string]bool{},
 		runErr: make(chan error, 1),
 	}
 	runGit(t, "", "init", "--bare", "--initial-branch=main", h.remote)
 	t.Setenv(fakeTouchEnv, h.touch)
+	t.Setenv(fakeArgvEnv, h.argv)
 
 	h.srv = httptest.NewServer(http.HandlerFunc(h.handle))
 	t.Cleanup(h.srv.Close)
@@ -348,6 +351,15 @@ func (h *harness) launches() int {
 		return 0
 	}
 	return len(strings.Fields(string(body)))
+}
+
+// launchArgs is the command line the most recent PZ process was given.
+func (h *harness) launchArgs() []string {
+	body, err := os.ReadFile(h.argv)
+	if err != nil {
+		return nil
+	}
+	return strings.Split(strings.TrimRight(string(body), "\n"), "\n")
 }
 
 func (h *harness) savesDir() string { return filepath.Join(h.cfg.Agent.Paths.DataDir, "Saves") }

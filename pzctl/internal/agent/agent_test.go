@@ -46,6 +46,23 @@ func TestAgentLifecycle(t *testing.T) {
 	if !strings.Contains(string(ini), "MaxPlayers=24") {
 		t.Errorf("MaxPlayers was not taken from config.yaml:\n%s", ini)
 	}
+	// AdminPassword is in that file for the agent, not for PZ: PZ has no such .ini
+	// key and keeps the admin account in the world's user database, reachable only
+	// through -adminpassword. So the value has to make one more hop, from the .ini
+	// onto the command line, or the world boots with no admin password — which is
+	// what v1 shipped and what the substituted placeholder alone would still do.
+	args := h.launchArgs()
+	adminFlag := -1
+	for i, a := range args {
+		if a == "-adminpassword" {
+			adminFlag = i
+		}
+	}
+	if adminFlag < 0 || adminFlag+1 >= len(args) {
+		t.Errorf("PZ was launched without -adminpassword and a value: %v", args)
+	} else if got := args[adminFlag+1]; got != "adminword" {
+		t.Errorf("-adminpassword got %q, want the value substituted into the .ini", got)
+	}
 	// common.zip 404'd, and boot continued anyway.
 	if !h.sawLog("/common.zip is absent") {
 		t.Error("boot did not report the absent common.zip; it must be optional, not fatal")

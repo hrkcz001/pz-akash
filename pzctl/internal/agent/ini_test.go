@@ -123,6 +123,43 @@ func TestRenderServerINIIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestReadINIKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "vsrania.ini")
+	writeFile(t, path, strings.Join([]string{
+		"# a comment",
+		"AdminPassword = spaced out ",
+		"RCONPassword=__RCON_PASSWORD__",
+		"Password=",
+		"NotAPair",
+	}, "\n")+"\n")
+
+	for _, tc := range []struct {
+		key, want, why string
+	}{
+		{"AdminPassword", "spaced out", "surrounding whitespace is not part of the value"},
+		{"RCONPassword", "", "an unsubstituted placeholder is not a password"},
+		{"Password", "", "an empty value reads as absent"},
+		{"NotAPair", "", "a line with no = has no value"},
+		{"Missing", "", "a key the file does not have"},
+	} {
+		got, err := readINIKey(path, tc.key)
+		if err != nil {
+			t.Fatalf("%s: %v", tc.key, err)
+		}
+		if got != tc.want {
+			t.Errorf("%s = %q, want %q (%s)", tc.key, got, tc.want, tc.why)
+		}
+	}
+
+	// A missing file is how the very first boot looks. Not an error: the caller logs
+	// that PZ starts without the flag and carries on.
+	got, err := readINIKey(filepath.Join(dir, "absent.ini"), "AdminPassword")
+	if err != nil || got != "" {
+		t.Errorf("absent file: got %q, %v; want an empty value and no error", got, err)
+	}
+}
+
 func TestRenderServerINIWritesRCONPortOnlyWhenEnabled(t *testing.T) {
 	cfg := testConfig(t)
 	if _, ok := ownedINI(cfg)["RCONPort"]; ok {

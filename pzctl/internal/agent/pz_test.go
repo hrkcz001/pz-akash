@@ -35,6 +35,10 @@ const (
 	// how a test proves a negative — that the agent did not start the game — which
 	// is the whole of the bug 2 fix.
 	fakeTouchEnv = "PZ_FAKE_TOUCH"
+	// fakeArgvEnv names a file the fake writes its command line to, one argument per
+	// line. PZ takes the admin password on the command line and nowhere else, so
+	// argv is the only place a test can see whether the password actually arrived.
+	fakeArgvEnv = "PZ_FAKE_ARGV"
 )
 
 const testBanner = "*** SERVER STARTED ***"
@@ -55,6 +59,14 @@ func fakePZMain() {
 	if path := os.Getenv(fakeTouchEnv); path != "" {
 		if f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
 			fmt.Fprintf(f, "%d\n", os.Getpid())
+			f.Close()
+		}
+	}
+	if path := os.Getenv(fakeArgvEnv); path != "" {
+		if f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); err == nil {
+			for _, a := range os.Args[1:] {
+				fmt.Fprintln(f, a)
+			}
 			f.Close()
 		}
 	}

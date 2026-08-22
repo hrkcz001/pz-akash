@@ -149,6 +149,37 @@ func splitINI(line string) (key, value string, ok bool) {
 	return strings.TrimSpace(t[:i]), strings.TrimSpace(t[i+1:]), true
 }
 
+// readINIKey returns the value of one key, or "" when the file has no such key.
+//
+// A placeholder value counts as absent. The controller substitutes secrets into
+// the .ini as it serves server.zip, and when it has no value for one the token is
+// still in the file; treating `__ADMIN_PASSWORD__` as a password would set the
+// admin account to that literal string. Same `__*__` rule the image gate uses.
+func readINIKey(path, key string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	defer f.Close()
+
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	for sc.Scan() {
+		k, v, ok := splitINI(sc.Text())
+		if !ok || k != key {
+			continue
+		}
+		if strings.HasPrefix(v, "__") && strings.HasSuffix(v, "__") && len(v) > 4 {
+			return "", nil
+		}
+		return v, nil
+	}
+	return "", sc.Err()
+}
+
 // launchJSON is the part of ProjectZomboid64.json the agent touches. The file has
 // other keys (classpath, mainClass) that must survive, so it is decoded into a
 // generic map rather than a struct.

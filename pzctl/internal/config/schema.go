@@ -534,7 +534,9 @@ func (d DNS) ControllerHosts() []string {
 // Game holds the PZ server .ini values that the agent renders at boot. Secret
 // .ini fields (RCONPassword, Password, AdminPassword) are deliberately absent:
 // they arrive as placeholders in server.zip and are substituted by the
-// controller when it serves that file.
+// controller when it serves that file. AdminPassword is not really an .ini field
+// at all — PZ keeps the admin account in the world's user database — so the agent
+// reads the substituted value back out and passes it as -adminpassword.
 type Game struct {
 	Map        string `yaml:"map"`
 	PublicName string `yaml:"public_name"`

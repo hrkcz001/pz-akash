@@ -117,10 +117,6 @@ if [ "$role" = controller ]; then
 
   # The game passwords must reach the .ini as placeholders and be substituted as
   # the archive is served. Real values here would be a secret in a public layer.
-  #
-  # Pre-cutover this is a warning: pz-saves still holds the literals v1 committed,
-  # and moving them is a step 9 item. It becomes a hard failure the moment that
-  # lands — change the `note` below to `fail`.
   tmp="$(mktemp -d)"
   cid="$(docker create "$image")"
   docker cp "$cid:/data/packages/server.zip" "$tmp/server.zip" >/dev/null
@@ -139,23 +135,27 @@ if [ "$role" = controller ]; then
       *)
         literal=$((literal + 1))
         # The key and the entry, never the value.
-        echo "::warning::server.zip carries a literal $key" >&2
+        fail "server.zip carries a literal $key"
         ;;
       esac
     done < <(grep -rhE "^$key=" "$tmp/unz" 2>/dev/null || true)
     [ "$found" -eq 1 ] || missing="$missing $key"
   done
-  [ "$literal" -eq 0 ] &&
-    ok "server.zip has placeholders, not passwords" ||
-    echo "note: $literal literal password(s) in server.zip — a step 9 (cutover) item"
+  # An `if`, not `A && B`: under `set -e` a false one-liner with no `||` would exit
+  # the script here and skip every check below it.
+  if [ "$literal" -eq 0 ]; then
+    ok "server.zip has placeholders, not passwords"
+  fi
 
   # An absent key is not a substituted key. The controller can only replace a token
-  # that is there, so a missing AdminPassword line means PZ falls back to its own
-  # default — and the placeholder machinery reports success while doing nothing.
-  # This is the state pz-saves is in today: v1 passed the value as ADMIN_PASSWORD in
-  # the server SDL's environment, so the committed ini never had the key at all.
-  [ -z "$missing" ] ||
-    echo "note:$missing absent from server.zip's ini — nothing for the controller to substitute"
+  # that is there, so a missing line means the placeholder machinery reports success
+  # while doing nothing — and PZ takes its own default. That is the state pz-saves
+  # was in before the cutover: v1 passed the admin password as ADMIN_PASSWORD in the
+  # server SDL's environment, so the committed .ini never had the key at all, and a
+  # grep for literals could not tell the difference.
+  [ -z "$missing" ] &&
+    ok "server.zip's ini has all three password keys" ||
+    fail "$missing absent from server.zip's ini — nothing for the controller to substitute"
   rm -rf "$tmp"
 fi
 

@@ -69,6 +69,10 @@ type Agent struct {
 	pz         *pzProcess
 	launcher   string
 
+	// adminPassword is read out of the .ini at boot and handed to PZ on the command
+	// line. It is held here so a relaunch after a crash still has it.
+	adminPassword string
+
 	intent        state.Intent
 	restoreTarget string
 	controllerURL string
