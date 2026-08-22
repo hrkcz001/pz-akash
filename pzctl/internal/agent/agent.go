@@ -77,6 +77,11 @@ type Agent struct {
 	restoreTarget string
 	controllerURL string
 
+	// leaseDSeq is the lease the controller says it holds, echoed into every
+	// document we publish so the controller can tell our reports from those of a
+	// container that is already gone. See state.Agent.DSeq and invariant I16.
+	leaseDSeq string
+
 	restarts int
 	parked   bool
 	parkWhy  string
@@ -212,6 +217,12 @@ func (a *Agent) applyController(c *state.Controller) {
 	if a.controllerURL == "" && c.URLs.Base() != "" {
 		a.controllerURL = c.URLs.Base()
 	}
+	// Kept rather than cleared when the controller reports no lease: it clears the
+	// field while closing, and a report published in that window is about the lease
+	// that is being closed, which is what it should still say.
+	if c.Lease != nil && c.Lease.DSeq != "" {
+		a.leaseDSeq = c.Lease.DSeq
+	}
 }
 
 // client returns the controller HTTP client, building it once the URL is known.
@@ -277,6 +288,13 @@ func (a *Agent) publish(ctx context.Context, force bool) {
 		return
 	}
 	a.doc.Restarts = a.restarts
+	// Stamped here rather than at each setPhase for the same reason as the players
+	// count below: this is the one place every document passes through, so there is
+	// no publish that can forget to say which lease it is talking about. Assigned
+	// unconditionally, so a document inherited from our own previous run (see
+	// resume) cannot carry that run's dseq into this one — an empty value is read as
+	// "unattributable", which is the safe direction.
+	a.doc.DSeq = a.leaseDSeq
 	// A count belongs to a running process, and this is the one choke point every
 	// document passes through. Without it the reconcile ticker and the exit event
 	// race: whichever moves the phase to stopped first wins, and if it is the

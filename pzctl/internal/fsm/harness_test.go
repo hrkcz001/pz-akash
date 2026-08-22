@@ -452,12 +452,48 @@ func (h *harness) agentBackupID(id string, st state.BackupState, name string, si
 	h.publishAgent("backup " + id + " " + string(st))
 }
 
+// publishAgent writes the simulated agent's document, attributed to whichever
+// lease the controller has published — which is what the real agent does at its
+// own publish choke point, reading the controller's branch for it.
+//
+// Attribution belongs here rather than in each caller because it is not optional
+// in the real agent either: invariant I16 has the controller ignore any report it
+// cannot tie to the lease it holds, so a harness that published unattributed
+// documents would have every test about the agent silently stop exercising the
+// agent. Use publishAgentAs for the reports this one cannot produce: a document
+// left behind by a previous lease, or by an agent that never read the controller's.
 func (h *harness) publishAgent(reason string) {
 	h.t.Helper()
+	h.publishAgentAs(h.publishedLeaseDSeq(), reason)
+}
+
+// publishAgentAs publishes under an explicit dseq. "" is the stale document of an
+// agent that published before it could read the controller's.
+func (h *harness) publishAgentAs(dseq, reason string) {
+	h.t.Helper()
+	h.adoc.DSeq = dseq
 	h.adoc.Touch(h.stamp())
 	if _, err := h.agent.Publish(h.t.Context(), h.adoc, reason); err != nil {
 		h.t.Fatalf("agent publish (%s): %v", reason, err)
 	}
+}
+
+// publishedLeaseDSeq is the lease the controller has told the world about, read
+// from git rather than from m.doc: a real agent can only echo what was published,
+// and the difference is exactly the window this harness should be able to model.
+func (h *harness) publishedLeaseDSeq() string {
+	h.t.Helper()
+	if err := h.agent.Fetch(h.t.Context()); err != nil {
+		h.t.Fatalf("agent fetch: %v", err)
+	}
+	doc, _, _, err := h.agent.ReadController()
+	if err != nil {
+		h.t.Fatalf("agent read controller: %v", err)
+	}
+	if doc.Lease == nil {
+		return ""
+	}
+	return doc.Lease.DSeq
 }
 
 // --- assertions ---

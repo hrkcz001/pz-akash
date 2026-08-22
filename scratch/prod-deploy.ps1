@@ -96,7 +96,12 @@ if ($Phase -eq "controller") {
     if ($LASTEXITCODE -ne 0) { throw "config validate failed — not deploying" }
 
     "--- deploying the controller (real money from here) ---"
-    $out = & $pzctl akash deploy -c $config --role controller 2>&1
+    # Tee'd rather than captured, because this call runs for minutes: bids, lease,
+    # then an image pull of the better part of a gigabyte. `$out = & pzctl ...` alone
+    # shows nothing until it returns, so a run watched from another window cannot tell
+    # a slow pull from a hung one — and the dseq is in that output.
+    $log = "$root\scratch\prod-controller.log"
+    $out = & $pzctl akash deploy -c $config --role controller 2>&1 | Tee-Object -FilePath $log
     $code = $LASTEXITCODE
     $out | ForEach-Object { "  $_" }
 

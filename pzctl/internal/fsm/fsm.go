@@ -151,9 +151,13 @@ type Machine struct {
 	events chan Event
 
 	// Owned by the loop goroutine. Nothing else may touch these.
-	doc   *state.Controller
-	idx   *state.Backups
-	agent *state.Agent
+	doc *state.Controller
+	idx *state.Backups
+
+	// agentRaw is the agent branch exactly as it was last read, which may be the
+	// report of a lease we no longer hold. Read it through agentReport rather than
+	// directly; the difference is invariant I16 and it is load-bearing.
+	agentRaw *state.Agent
 
 	job *job
 
@@ -171,6 +175,15 @@ type Machine struct {
 	// a controller with no URL is the case where nothing ever changes — so without
 	// this it would be logged on every pass.
 	noURLWarned bool
+
+	// agentIgnored identifies the report readAgent last complained about — keyed by
+	// the report and not by the lease it failed to match, so the document a dead
+	// world left behind is mentioned once rather than again for every lease that
+	// then fails to match it. See readAgent.
+	agentIgnored string
+
+	// noAgent is the shared "no report" document agentReport hands back. See there.
+	noAgent *state.Agent
 
 	// deployAttempts counts deploys made for the start trigger currently being
 	// served, and is nonzero only while a failed one is being cleaned up. It is
@@ -234,7 +247,7 @@ func New(d Deps) (*Machine, error) {
 	}
 	m.doc = state.NewController(m.loc)
 	m.idx = state.NewBackups()
-	m.agent = state.NewAgent(m.loc)
+	m.agentRaw = state.NewAgent(m.loc)
 	return m, nil
 }
 
@@ -558,6 +571,10 @@ func (m *Machine) onPoll(ctx context.Context, ev Event) {
 
 // readAgent refreshes the agent's document. A branch that does not exist yet is
 // not an error: it means the agent has never reported.
+//
+// What it stores is the branch verbatim, including a report about a lease that is
+// long gone. Whether that report is one this controller may act on is decided at
+// every use, in agentReport, and deliberately not here.
 func (m *Machine) readAgent() {
 	doc, rep, err := m.bus.ReadAgent()
 	if err != nil {
@@ -567,10 +584,87 @@ func (m *Machine) readAgent() {
 	if !rep.OK() {
 		m.logf("fsm: agent state needed repair: %s", rep)
 	}
-	if doc.Phase != m.agent.Phase {
-		m.logf("fsm: agent phase %s -> %s", m.agent.Phase, doc.Phase)
+	if doc.Phase != m.agentRaw.Phase {
+		m.logf("fsm: agent phase %s -> %s", m.agentRaw.Phase, doc.Phase)
 	}
-	m.agent = doc
+	m.agentRaw = doc
+}
+
+// agentReport is the agent's document as the controller is entitled to read it:
+// the report of the lease it holds, or the document of an agent that has never
+// spoken. It is the enforcement of invariant I16 — an agent report belongs to
+// exactly one lease — and every decision that consults the agent goes through it.
+//
+// The gate is here, at the use, rather than at the read, and that is the whole
+// point. The agent branch is one document that outlives the container which wrote
+// it, so the report of a world that is gone is still sitting there when the next
+// one boots. Gating the value as it is read would answer the question against
+// whichever lease existed at that instant — and the lease changes between reads: a
+// deploy result arrives as an event, records the new lease, and evaluates the
+// booting branch in the same pass, against a document that was read while there was
+// no lease at all. That window is not hypothetical. It is where the second live
+// world died, two seconds after becoming routable, on a "crashed" from a world
+// closed ninety minutes earlier. Deciding at every use closes it, because there is
+// no moment at which the pair (report, lease) is not being compared.
+//
+// Attribution is a positive match, so a report that names no lease is no report
+// either: an agent that could not read the controller's document cannot be steering
+// it. The cost of that is a boot which ends in a timeout instead of an immediate
+// halt, which is the safe direction, and the reason still reaches the log.
+func (m *Machine) agentReport() *state.Agent {
+	if m.agentRaw.DSeq != "" && m.agentRaw.DSeq == leaseDSeq(m.doc.Lease) {
+		return m.agentRaw
+	}
+	m.noteIgnored()
+	return m.noReport()
+}
+
+// noteIgnored logs an unattributable report once per report — not once per pass. A
+// mismatch persists until the agent of this lease publishes, which is a poll or
+// two, or forever if it cannot reach git, and a line per pass would bury the boot
+// it is describing. A document that says nothing is not worth a line at all: that
+// is the ordinary case of a branch nobody has written yet.
+func (m *Machine) noteIgnored() {
+	d := m.agentRaw
+	if d.Phase == state.PhaseStarting && d.LastError == "" && d.Backup == nil {
+		return
+	}
+	key := d.DSeq + "/" + string(d.Phase) + "/" + d.LastError
+	if key == m.agentIgnored {
+		return
+	}
+	m.agentIgnored = key
+	m.logf("fsm: ignoring an agent report for dseq %q while we hold %s "+
+		"(phase %s%s) — treating it as no report",
+		d.DSeq, leaseName(m.doc.Lease), d.Phase, errSuffix(d.LastError))
+}
+
+// noReport is the document of an agent that has never spoken, which is what an
+// unattributable report is worth. Built once and shared: it is read-only, and a
+// fresh one per access would hand the dashboard a liveness stamp that keeps
+// advancing on behalf of an agent that is not there.
+func (m *Machine) noReport() *state.Agent {
+	if m.noAgent == nil {
+		m.noAgent = state.NewAgent(m.loc)
+	}
+	return m.noAgent
+}
+
+// leaseDSeq is the dseq of a lease that may not be there at all.
+func leaseDSeq(l *state.Lease) string {
+	if l == nil {
+		return ""
+	}
+	return l.DSeq
+}
+
+// errSuffix renders an optional error for a log line, so the operator sees the
+// reason a report was ignored even though the reason is not being acted on.
+func errSuffix(s string) string {
+	if s == "" {
+		return ""
+	}
+	return ", last_error: " + s
 }
 
 // load establishes the starting position, and is the one place allowed to fail
@@ -609,7 +703,7 @@ func (m *Machine) load(ctx context.Context) error {
 	m.reconcileLease(ctx)
 	m.resolveURLs()
 	m.logf("fsm: start at status=%s intent=%s lease=%s agent=%s",
-		m.doc.Status, m.doc.Intent, leaseName(m.doc.Lease), m.agent.Phase)
+		m.doc.Status, m.doc.Intent, leaseName(m.doc.Lease), m.agentReport().Phase)
 	m.snapshot()
 	return nil
 }
@@ -823,8 +917,12 @@ type Snapshot struct {
 }
 
 func (m *Machine) snapshot() {
+	// The gated report, not the branch: a dashboard that renders a phase the machine
+	// is refusing to act on is a dashboard that disagrees with the controller, and
+	// the operator would have no way to tell which of the two to believe.
+	rep := m.agentReport()
 	s := Snapshot{
-		Status: m.doc.Status, Intent: m.doc.Intent, Phase: m.agent.Phase,
+		Status: m.doc.Status, Intent: m.doc.Intent, Phase: rep.Phase,
 		At: m.now(),
 	}
 	if m.doc.Lease != nil {
@@ -835,7 +933,7 @@ func (m *Machine) snapshot() {
 	if m.job != nil {
 		s.Job = m.job.what
 	}
-	s.Controller, s.Agent = copyDocs(m.doc, m.agent)
+	s.Controller, s.Agent = copyDocs(m.doc, rep)
 	m.mu.Lock()
 	m.snap = s
 	m.mu.Unlock()

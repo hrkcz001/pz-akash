@@ -40,31 +40,33 @@ func (m *Machine) advance(ctx context.Context) {
 		}
 
 	case state.StatusBooting:
+		rep := m.agentReport()
 		switch {
 		case m.doc.Intent == state.IntentStopped:
 			m.beginHalt(ctx, "halt requested while booting")
-		case m.agent.Phase == state.PhaseOnline:
+		case rep.Phase == state.PhaseOnline:
 			m.toStatus(state.StatusOnline, "agent reports the server is accepting connections")
-		case m.agent.Phase == state.PhaseRestoreFailed:
+		case rep.Phase == state.PhaseRestoreFailed:
 			// The agent has parked rather than boot a fresh world over a restore
 			// the operator asked for. Do not close the lease from under it: an
 			// operator may want to look. Fail, and let them decide.
 			m.fail(fmt.Errorf("agent could not restore %q: %s",
-				m.doc.RestoreTarget, m.agent.LastError))
-		case m.agent.Phase.Parked():
-			m.beginHalt(ctx, "agent parked during boot: "+string(m.agent.Phase))
+				m.doc.RestoreTarget, rep.LastError))
+		case rep.Phase.Parked():
+			m.beginHalt(ctx, "agent parked during boot: "+string(rep.Phase))
 		case m.since(now) > m.cfg.Server.OnlineTimeout.D():
 			m.beginHalt(ctx, fmt.Sprintf("no ready banner within %s", m.cfg.Server.OnlineTimeout))
 		}
 
 	case state.StatusOnline:
+		rep := m.agentReport()
 		switch {
 		case m.doc.Intent == state.IntentStopped:
 			m.beginHalt(ctx, "halt requested")
 		case m.doc.StopDue(now):
 			m.beginHalt(ctx, "scheduled stop reached")
-		case m.agent.Phase.Parked():
-			m.beginHalt(ctx, "agent parked: "+string(m.agent.Phase))
+		case rep.Phase.Parked():
+			m.beginHalt(ctx, "agent parked: "+string(rep.Phase))
 		case m.doc.BackupRequest != nil:
 			// A request published while online but not yet acknowledged: reflect
 			// it in the status so the dashboard and the timeout logic agree.
@@ -93,9 +95,9 @@ func (m *Machine) advance(ctx context.Context) {
 		// The agent parks after PZ exits; that is the signal that the world is
 		// safely down. A timeout closes anyway, because a lease left open costs
 		// money and the backup — the thing worth protecting — is already done.
-		switch {
-		case m.agent.Phase.Parked():
-			m.beginClose(ctx, "agent parked: "+string(m.agent.Phase))
+		switch rep := m.agentReport(); {
+		case rep.Phase.Parked():
+			m.beginClose(ctx, "agent parked: "+string(rep.Phase))
 		case m.since(now) > m.stoppingBudget():
 			m.beginClose(ctx, fmt.Sprintf("agent did not confirm the stop within %s", m.stoppingBudget()))
 		}
@@ -253,17 +255,18 @@ func (m *Machine) settleBackup(now time.Time) bool {
 	if req == nil {
 		return true
 	}
-	switch st, matched := m.doc.BackupAnswer(m.agent); {
+	rep := m.agentReport()
+	switch st, matched := m.doc.BackupAnswer(rep); {
 	case matched && st == state.BackupDone:
-		m.recordBackup(m.agent.Backup)
-		m.logf("fsm: backup %s done: %s", req.ID, m.agent.Backup.Name)
+		m.recordBackup(rep.Backup)
+		m.logf("fsm: backup %s done: %s", req.ID, rep.Backup.Name)
 		m.doc.ClearBackupRequest(m.stamp())
 		m.dirty("backup " + req.ID + " done")
 		return true
 	case matched && st == state.BackupFailed:
-		m.logf("fsm: backup %s failed: %s", req.ID, m.agent.Backup.Error)
+		m.logf("fsm: backup %s failed: %s", req.ID, rep.Backup.Error)
 		m.doc.ClearBackupRequest(m.stamp())
-		m.doc.LastError = "backup failed: " + m.agent.Backup.Error
+		m.doc.LastError = "backup failed: " + rep.Backup.Error
 		m.dirty("backup " + req.ID + " failed")
 		return true
 	case req.Age(now) > m.cfg.Backups.HaltTimeout.D():
@@ -384,11 +387,11 @@ func (m *Machine) beginHalt(ctx context.Context, reason string) {
 		return // the transition was refused and logged
 	}
 
-	switch {
+	switch rep := m.agentReport(); {
 	case !m.cfg.Backups.OnHalt:
 		m.logf("fsm: halt without a final backup (backups.on_halt is false)")
-	case m.agent.Phase.Parked():
-		m.logf("fsm: halt without a final backup: the agent is already parked (%s)", m.agent.Phase)
+	case rep.Phase.Parked():
+		m.logf("fsm: halt without a final backup: the agent is already parked (%s)", rep.Phase)
 	case m.doc.BackupRequest != nil:
 		m.logf("fsm: halt adopting the backup already in flight (%s)", m.doc.BackupRequest.ID)
 	default:

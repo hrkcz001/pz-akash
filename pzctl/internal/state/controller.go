@@ -291,6 +291,19 @@ type Agent struct {
 	Version   int   `json:"version"`
 	UpdatedAt Stamp `json:"updated_at"`
 
+	// DSeq names the lease this agent is serving, copied from the controller's
+	// own document on every publish. It is what makes a report attributable
+	// (invariant I16): the branch is one document that outlives the container
+	// that wrote it, so a report left behind by a dead lease is still sitting
+	// there when the next world boots. The controller acted on one — a "crashed"
+	// from a world closed 90 minutes earlier — and halted a server that had been
+	// running for two seconds.
+	//
+	// Empty means the agent had not read the controller's document when it
+	// published, which the controller must treat as no report at all rather than
+	// as a report about the lease it happens to hold.
+	DSeq string `json:"dseq,omitempty"`
+
 	Phase Phase `json:"phase"`
 	Since Stamp `json:"since"`
 
