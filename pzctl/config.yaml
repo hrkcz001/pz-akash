@@ -67,17 +67,25 @@ controller:
   # The first image this repository published rather than inherited: every earlier tag
   # in the package was pushed by pz-akash-proto, which still owns the package by id.
   #
-  # sha-c90cc57 is HEAD of pz-akash main and carries I16: an agent report is only
-  # acted on if it names the lease the controller holds. Without it a healthy world
-  # is halted by the report of a dead one — which is exactly what the previous pin,
-  # sha-51c3e68, did two seconds after the second fresh world became routable. The
-  # pin before that, sha-5f4d122, lacked I15 and killed the first one.
+  # sha-2fd34d2 is HEAD of pz-akash main. Over the previous pin it carries two fixes
+  # the live deployment needed. The escrow top-up loop is the one that matters here: a
+  # deploy funds the deposit for a fraction of the lease's life and nothing used to add
+  # to it, so the provider closes the lease on a schedule the controller never saw
+  # coming — the live world's deadline was three days out from its deploy. The other is
+  # the player count, which was computed correctly and then published under a
+  # months-old freshness stamp, so every reader discarded it as stale and showed zero.
   #
-  # It also carries pz-saves at c6c60a2 — the Snowy Wheels removal is in it — because
+  # It inherits I16 from sha-c90cc57: an agent report is only acted on if it names the
+  # lease the controller holds. Without it a healthy world is halted by the report of a
+  # dead one — which is exactly what the previous pin, sha-51c3e68, did two seconds
+  # after the second fresh world became routable. The pin before that, sha-5f4d122,
+  # lacked I15 and killed the first one.
+  #
+  # It also carries pz-saves at 21fc73d — the Snowy Wheels removal is in it — because
   # the packages stage copies the saves in at build time. The tag names a pz-akash
   # commit but the image content depends on both repositories, which is why the digest,
   # not the tag, is the only truly immutable name here.
-  image_tag: sha-c90cc57
+  image_tag: sha-2fd34d2
   http_port: 8000
   # 0 folds the webhook onto http_port instead of exposing a second one.
   #
@@ -167,8 +175,10 @@ server:
   #
   # It moves in step with the controller for I16 all the same: the invariant needs
   # both halves, and the agent's half — echoing the lease it is serving into every
-  # document it publishes — ships in here.
-  image_tag: sha-c90cc57
+  # document it publishes — ships in here. The player-count fix is likewise on this
+  # side of the wire: the agent is what stamps the count, so the count stays zero
+  # until this tag moves, controller redeploy or no.
+  image_tag: sha-2fd34d2
   resources:
     cpu: "8"
     memory: 16Gi
