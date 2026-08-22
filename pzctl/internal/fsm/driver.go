@@ -44,6 +44,24 @@ type Akash interface {
 	// for invariant I1: if the state document is unreadable, this is the only way
 	// to discover a lease that is still billing.
 	Adopt(ctx context.Context) ([]state.Lease, error)
+
+	// Escrow reports what a deployment's deposit has left to spend, in USD.
+	//
+	// known is false when the escrow holds only denominations the provider client
+	// cannot price. That is emphatically not the same as a remaining balance of
+	// zero: a top-up decided from a wrong zero spends real money on a deployment
+	// that needed nothing, and a horizon computed from one would be nonsense. The
+	// funds loop treats unknown as "do not act".
+	//
+	// Three plain values rather than a struct on purpose. internal/akash has a
+	// perfectly good Escrow type, and naming it here would be the import this
+	// interface exists to avoid — see cmd/pzctl/driver.go.
+	Escrow(ctx context.Context, dseq string) (remainingUSD float64, known bool, err error)
+
+	// TopUp adds usd to a deployment's escrow and reports what was actually
+	// deposited, which may be more than asked: the provider has a minimum deposit,
+	// and rounding up to it is the safe direction.
+	TopUp(ctx context.Context, dseq string, usd float64) (float64, error)
 }
 
 // DeployRequest is what the FSM knows at deploy time. The driver renders the SDL
@@ -102,16 +120,20 @@ type DryRun struct {
 	// that writes to disk between subtests is a fake that leaks between them.
 	StateFile string
 
-	mu     sync.Mutex
-	seq    int
-	live   map[string]state.Lease
-	loaded bool
+	mu       sync.Mutex
+	seq      int
+	live     map[string]state.Lease
+	deposits map[string]float64
+	loaded   bool
 }
 
 // dryState is the durable form of the simulated provider.
 type dryState struct {
 	Seq  int                    `json:"seq"`
 	Live map[string]state.Lease `json:"live"`
+	// Deposits is what has been paid into each escrow. What is left is that minus
+	// the burn since the lease was created, computed on read — see Escrow.
+	Deposits map[string]float64 `json:"deposits,omitempty"`
 }
 
 // ensureLoaded reads the registry once, and must be called with mu held.
@@ -127,6 +149,9 @@ func (d *DryRun) ensureLoaded() {
 	d.loaded = true
 	if d.live == nil {
 		d.live = map[string]state.Lease{}
+	}
+	if d.deposits == nil {
+		d.deposits = map[string]float64{}
 	}
 	if d.StateFile == "" {
 		return
@@ -144,6 +169,9 @@ func (d *DryRun) ensureLoaded() {
 	for k, v := range on.Live {
 		d.live[k] = v
 	}
+	for k, v := range on.Deposits {
+		d.deposits[k] = v
+	}
 	if len(d.live) > 0 {
 		d.logf("dry-run: %d lease(s) carried over from %s", len(d.live), d.StateFile)
 	}
@@ -157,7 +185,7 @@ func (d *DryRun) save() {
 	if d.StateFile == "" {
 		return
 	}
-	raw, err := state.Marshal(dryState{Seq: d.seq, Live: d.live})
+	raw, err := state.Marshal(dryState{Seq: d.seq, Live: d.live, Deposits: d.deposits})
 	if err == nil {
 		err = state.WriteFile(d.StateFile, raw)
 	}
@@ -208,8 +236,8 @@ func (d *DryRun) Deploy(ctx context.Context, req DeployRequest) (DeployResult, e
 			AmountPerBlock: d.Cfg.Server.PricingAmount,
 			Denom:          d.Cfg.Akash.Price.Denom,
 			AKTUSD:         d.Cfg.Akash.Price.AKTUSDFallback,
-			USDPerDay:      d.Cfg.Akash.Price.MaxUSDPerDay / 2,
-			USDPerHour:     d.Cfg.Akash.Price.MaxUSDPerDay / 48,
+			USDPerDay:      d.pricePerDay(),
+			USDPerHour:     d.pricePerDay() / 24,
 			QuotedAt:       state.At(now),
 		},
 	}
@@ -222,6 +250,10 @@ func (d *DryRun) Deploy(ctx context.Context, req DeployRequest) (DeployResult, e
 	d.mu.Lock()
 	d.ensureLoaded()
 	d.live[lease.DSeq] = lease
+	// Funded the way a real deploy funds it: initial_deposit_days at the *ceiling*
+	// price, not at the price the lease was won for. That gap is the whole reason the
+	// funds loop exists, and a stub that seeded the full horizon would hide it.
+	d.deposits[lease.DSeq] = float64(d.Cfg.Akash.InitialDepositDays) * d.Cfg.Akash.Price.MaxUSDPerDay
 	d.save()
 	d.mu.Unlock()
 
@@ -245,6 +277,7 @@ func (d *DryRun) Close(ctx context.Context, l state.Lease) error {
 	d.ensureLoaded()
 	_, existed := d.live[l.DSeq]
 	delete(d.live, l.DSeq)
+	delete(d.deposits, l.DSeq)
 	d.save()
 	d.mu.Unlock()
 	if !existed {
@@ -274,6 +307,68 @@ func (d *DryRun) Adopt(context.Context) ([]state.Lease, error) {
 		out = append(out, l)
 	}
 	return out, nil
+}
+
+// pricePerDay is what a simulated lease costs. Deploy quotes it and Escrow drains
+// at it, from one place on purpose: a stub whose quoted price and burn rate disagree
+// would let the funds loop compute a horizon that is never reached, or one that is
+// reached and never left.
+func (d *DryRun) pricePerDay() float64 { return d.Cfg.Akash.Price.MaxUSDPerDay / 2 }
+
+// Escrow reports the simulated deposit, drained at the price Deploy quoted.
+//
+// It drains on purpose. A stub that answered with a constant would let the funds
+// loop pass a whole dry run without ever deciding to top up, and deciding to top up
+// is the only thing it does.
+func (d *DryRun) Escrow(_ context.Context, dseq string) (float64, bool, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.ensureLoaded()
+	l, ok := d.live[dseq]
+	if !ok {
+		// A closed deployment has no escrow to read. Unknown rather than zero: zero
+		// is a number the caller would act on, and a top-up against a lease that no
+		// longer exists is money in a stranger's escrow.
+		return 0, false, nil
+	}
+	var spent float64
+	if !l.CreatedAt.Zero() {
+		if age := d.now().Sub(l.CreatedAt.Time); age > 0 {
+			spent = d.pricePerDay() * age.Hours() / 24
+		}
+	}
+	remaining := d.deposits[dseq] - spent
+	if remaining < 0 {
+		// A real escrow does not go negative; it hits zero and the provider closes
+		// the lease. Reporting a negative balance would make every caller's
+		// arithmetic ask for a top-up bigger than the horizon it wants.
+		remaining = 0
+	}
+	return remaining, true, nil
+}
+
+// TopUp adds to the simulated escrow, with the same minimum the real API enforces so
+// that a caller relying on the floor behaves identically here.
+func (d *DryRun) TopUp(_ context.Context, dseq string, usd float64) (float64, error) {
+	if usd <= 0 {
+		return 0, nil
+	}
+	if floor := d.Cfg.Akash.Funds.MinTopupUSD; usd < floor {
+		usd = floor
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.ensureLoaded()
+	if _, ok := d.live[dseq]; !ok {
+		// Refused rather than recorded. Silently accepting a deposit into a closed
+		// deployment is precisely the mistake worth failing loudly on, because the
+		// real API would take the money.
+		return 0, fmt.Errorf("dry-run: dseq %s is not open; nothing to top up", dseq)
+	}
+	d.deposits[dseq] += usd
+	d.save()
+	d.logf("dry-run: added $%.2f to the escrow on dseq %s", usd, dseq)
+	return usd, nil
 }
 
 // sleep waits Delay, or returns early if the context is cancelled — which is what

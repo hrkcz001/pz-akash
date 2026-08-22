@@ -27,13 +27,14 @@ import (
 // akashDriver adapts *akash.Driver to fsm.Akash, and hangs the zone off the same
 // seam.
 //
-// Alive and Adopt have the signatures the interface asks for and are promoted from
-// the embedded driver — deliberately, so that the two calls that decide whether a
-// lease is still billing have no translation layer to get wrong. Deploy and Close
-// are translated: Deploy because the FSM's request and the driver's options are
-// different types on purpose, so the FSM cannot reach the parts of a deploy that
-// config owns, and Close because the game record has to outlive neither the lease
-// nor a controller restart. Both wrappers hand the driver's own error back
+// Alive, Adopt and TopUp have the signatures the interface asks for and are promoted
+// from the embedded driver — deliberately, so that the calls deciding whether a lease
+// is still billing, and the one that pays for it, have no translation layer to get
+// wrong. Deploy, Close and Escrow are translated: Deploy because the FSM's request and
+// the driver's options are different types on purpose, so the FSM cannot reach the
+// parts of a deploy that config owns; Close because the game record has to outlive
+// neither the lease nor a controller restart; and Escrow because akash.Escrow is a
+// type the FSM must not be able to name. All three hand the driver's own error back
 // unchanged; DNS is never allowed to change what the FSM believes about a lease.
 type akashDriver struct {
 	*akash.Driver
@@ -88,6 +89,21 @@ func (a akashDriver) Close(ctx context.Context, l state.Lease) error {
 		a.logf("dns: %s", ch)
 	}
 	return nil
+}
+
+// Escrow flattens the driver's reading into the three values the FSM asked for.
+//
+// Known is carried through untouched, and that is the whole reason this wrapper is
+// worth reading: it is the difference between "the deposit is empty" and "we could
+// not tell what the deposit holds", and only the first is a reason to spend money.
+// Collapsing the two here — by returning 0 with a nil error on an unpriceable
+// balance, say — would move that decision into a place nobody looks at it.
+func (a akashDriver) Escrow(ctx context.Context, dseq string) (float64, bool, error) {
+	e, err := a.Driver.Escrow(ctx, dseq)
+	if err != nil {
+		return 0, false, err
+	}
+	return e.RemainingUSD, e.Known, nil
 }
 
 // syncGameRecord points the game name at a fresh lease. Log-only by construction:

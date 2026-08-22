@@ -166,6 +166,12 @@ type Machine struct {
 	pending  string
 	lastPush time.Time
 
+	// lastFunds is when the escrow was last read. Rate-limits the one loop in here
+	// that spends money — see funds.go. Zero means never, so the first tick after a
+	// start checks immediately rather than waiting out an interval on a deployment
+	// that was funded for a fraction of its horizon.
+	lastFunds time.Time
+
 	// closeAttempts bounds retries of a failing close, so a provider that always
 	// errors does not turn into an infinite push loop.
 	closeAttempts int
@@ -361,6 +367,9 @@ func (m *Machine) Once(ctx context.Context) error {
 	// no tick, so without this the housekeeping never happens at all for whoever
 	// drives the loop from cron — and the disk fills.
 	m.pruneBackups()
+	// Same argument, with a worse failure: a cron-driven controller that never checks
+	// the escrow is one whose lease the provider closes on schedule.
+	m.topUpEscrow(ctx)
 	m.handle(ctx, Poll("once", ""))
 	for m.job != nil {
 		select {
@@ -413,10 +422,11 @@ func (m *Machine) handle(ctx context.Context, ev Event) {
 	case KindPoll:
 		m.onPoll(ctx, ev)
 	case KindTick:
-		// Housekeeping, on the housekeeping event. It is here rather than in advance
+		// Housekeeping, on the housekeeping event. Both are here rather than in advance
 		// because advance is a function of the documents and the clock and nothing
-		// else, and this deletes files.
+		// else, and these two are not: one deletes files, the other spends money.
 		m.pruneBackups()
+		m.topUpEscrow(ctx)
 		m.advance(ctx)
 	case KindDeployResult:
 		m.onDeployResult(ctx, ev.deploy)
