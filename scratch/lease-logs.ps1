@@ -23,6 +23,17 @@ param(
     # not running (image pull, eviction, OOM).
     [ValidateSet("logs", "kubeevents")][string]$Endpoint = "logs",
     [int]$Tail = 3000,
+    # Stream new output as it arrives instead of taking a snapshot and exiting.
+    #
+    # This is not a convenience for `logs`, it is the only way to read
+    # `kubeevents` at all: kubeevents is a live Kubernetes watch, so with
+    # follow=false the provider replays nothing and answers with an empty frame —
+    # which reads exactly like "the pod is fine, no events", the opposite of what
+    # it means. `logs` does honour tail, so a snapshot there is real.
+    [switch]$Follow,
+    # How long to keep streaming under -Follow before giving up and printing what
+    # arrived. An image pull is the thing worth watching and it takes minutes.
+    [int]$FollowSeconds = 180,
     # Regex; only matching lines are printed. Default keeps the controller's own
     # narration and drops nothing else of interest.
     [string]$Match = ""
@@ -67,11 +78,22 @@ $hostUri = $hostUri.TrimEnd("/")
 if ($hostUri -notmatch "://") { $hostUri = "https://$hostUri" }
 "hostUri  $hostUri"
 
-# A token scoped to logs and nothing else, minutes-lived: what an interceptor on an
-# unverified connection could get is the right to read this container's stdout.
+# A token scoped to what this run actually reads and nothing else, minutes-lived:
+# what an interceptor on an unverified connection could get is the right to read this
+# container's stdout.
+#
+# The scope has to name the endpoint, and the scope vocabulary is not the URL
+# vocabulary: /kubeevents is served under the scope `events`. Get it wrong in either
+# direction and you get an error that points somewhere else — a scope of `logs` against
+# /kubeevents fails at the WebSocket handshake as "status code '401' when '101' was
+# expected" (reads as auth, is actually scope), and a scope of `kubeevents` is rejected
+# by the token endpoint itself. The full vocabulary it accepts: send-manifest,
+# get-manifest, logs, shell, events, status, restart, hostname-migrate, ip-migrate,
+# attestation.
+$scope = if ($Endpoint -eq "kubeevents") { "events" } else { $Endpoint }
 $jwt = Invoke-RestMethod -Uri "$api/v1/create-jwt-token" -Headers $hdr -Method POST `
     -ContentType "application/json" -TimeoutSec 60 `
-    -Body (@{ data = @{ ttl = 600; leases = @{ access = "scoped"; scope = @("logs") } } } | ConvertTo-Json -Depth 6)
+    -Body (@{ data = @{ ttl = 600; leases = @{ access = "scoped"; scope = @($scope) } } } | ConvertTo-Json -Depth 6)
 $token = @($jwt.data.token, $jwt.token | Where-Object { $_ })[0]
 if (-not $token) { throw "the API returned no logs token" }
 "token minted: $($token.Length) chars"
@@ -84,8 +106,9 @@ if (-not $token) { throw "the API returned no logs token" }
 # "OOMKilled" appear, i.e. the reason a replica never becomes ready — which the state
 # branch never records and the closed-lease API no longer remembers.
 $scheme = $hostUri -replace '^https://', 'wss://' -replace '^http://', 'ws://'
+$followFlag = if ($Follow) { "true" } else { "false" }
 $url = "$scheme/lease/$DSeq/$gseq/$oseq/$Endpoint" +
-       "?follow=false&tail=$Tail" + $(if ($Service) { "&service=$Service" } else { "" })
+       "?follow=$followFlag&tail=$Tail" + $(if ($Service) { "&service=$Service" } else { "" })
 "connecting $url"
 
 $ws = [System.Net.WebSockets.ClientWebSocket]::new()
@@ -108,7 +131,8 @@ public static class PzCertAny {
 "@
 }
 $ws.Options.RemoteCertificateValidationCallback = [PzCertAny]::Cb
-$cts = [Threading.CancellationTokenSource]::new([TimeSpan]::FromSeconds(120))
+$cts = [Threading.CancellationTokenSource]::new(
+    [TimeSpan]::FromSeconds($(if ($Follow) { $FollowSeconds } else { 120 })))
 try {
     $ws.ConnectAsync([Uri]$url, $cts.Token).GetAwaiter().GetResult()
 } catch {
