@@ -67,17 +67,16 @@ controller:
   # The first image this repository published rather than inherited: every earlier tag
   # in the package was pushed by pz-akash-proto, which still owns the package by id.
   #
-  # sha-5f4d122 lags HEAD by one commit, and deliberately. The CI run was dispatched
-  # when main was 5f4d122; the commit after it touches only scratch/PLAN.md, so
-  # `git diff 5f4d122 HEAD -- pzctl docker .dockerignore` is empty and this tag is the
-  # image built from the code that is checked in. Pinning HEAD instead would name a
-  # tag that does not exist.
+  # sha-51c3e68 is HEAD of pz-akash main and carries the I15 fix: the controller
+  # publishing its own public URL to its state branch. Without it a leased server
+  # boots, finds no storage address, and dies — which is exactly what the previous
+  # pin, sha-5f4d122, did to the first fresh world on this stack.
   #
-  # It also carries pz-saves at fb493e4 — the Snowy Wheels removal — because the
-  # packages stage copies the saves in at build time. The tag names a pz-akash commit
-  # but the image content depends on both repositories, which is why the digest, not
-  # the tag, is the only truly immutable name here.
-  image_tag: sha-5f4d122
+  # It also carries pz-saves at c96dfc3 — the Snowy Wheels removal is in it — because
+  # the packages stage copies the saves in at build time. The tag names a pz-akash
+  # commit but the image content depends on both repositories, which is why the digest,
+  # not the tag, is the only truly immutable name here.
+  image_tag: sha-51c3e68
   http_port: 8000
   # 0 folds the webhook onto http_port instead of exposing a second one.
   #
@@ -164,7 +163,7 @@ server:
   # no saves at all — the packages stage feeds only the controller target, and this
   # image is the game files plus pzctl — so the mod change reaches the game through
   # the zip the agent downloads, not through this tag.
-  image_tag: sha-5f4d122
+  image_tag: sha-51c3e68
   resources:
     cpu: "8"
     memory: 16Gi
