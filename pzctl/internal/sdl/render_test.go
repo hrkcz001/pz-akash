@@ -83,6 +83,14 @@ func parse(t *testing.T, raw []byte) sdlDoc {
 
 func TestRenderControllerShape(t *testing.T) {
 	cfg := loadCfg(t)
+	// Pinned rather than inherited from the config. This test is about the
+	// two-port arrangement, and it used to get that arrangement by accident —
+	// config.yaml happened to name a webhook_port, so the assertion below read
+	// "2" and passed. Folding the webhook onto http_port in the shipped config
+	// then failed a test that was never about the shipped value, while
+	// TestRenderControllerFoldsWebhookOntoHTTPPort — which sets the field
+	// explicitly — kept working. Both inputs are now stated where they are used.
+	cfg.Controller.WebhookPort = 8080
 	raw, err := RenderController(Input{Cfg: cfg})
 	if err != nil {
 		t.Fatal(err)
