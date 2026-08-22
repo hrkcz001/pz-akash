@@ -151,11 +151,34 @@ if ($Phase -eq "dns") {
 # The hook is what makes a trigger take effect in seconds instead of at the next
 # idle poll. Installed with `gh`, so the secret travels as a JSON body field on a
 # local HTTPS call and never as an argv element.
+#
+# The target is the apex, not the provider's host:port, and that is a correction to
+# what step 10 assumed. `pzctl dns sync` does not install a redirect — it writes a
+# Cloudflare origin rule that routes vsrania.online to the lease's port, so the
+# hostname proxies straight through to the controller. The earlier reasoning ruled
+# the apex out because GitHub reports a 301 as the delivery response instead of
+# following it; with an origin rule there is no 301 to follow. Verified rather than
+# assumed: /healthz answers 200 through the apex before the hook is created.
+#
+# It matters because this address outlives the lease. A hook pointed at
+# provider.<...>:31293 has to be re-pointed by hand every time the controller is
+# redeployed onto a different provider or port; a hook pointed at the apex is fixed
+# for good, because the redeploy path already updates the CNAME and the origin rule.
+# It is also real HTTPS at the edge, so insecure_ssl=0 is honest rather than nominal.
 if ($Phase -eq "webhook") {
     Import-Secrets
-    $url = Get-SavedUrl
-    $hookUrl = ($url.TrimEnd("/")) + "/webhook"
+    $hookHost = if ($ControllerUrl) { $ControllerUrl.TrimEnd("/") } else { "https://vsrania.online" }
+    $hookUrl  = "$hookHost/webhook"
     "hook target: $hookUrl"
+
+    # The controller has to be answering through this hostname before GitHub is told
+    # to deliver here, or the first push silently fails its delivery and the trigger
+    # waits for the idle poll instead.
+    $probe = Invoke-WebRequest -Uri "$hookHost/healthz" -TimeoutSec 40 -SkipHttpErrorCheck
+    if ($probe.StatusCode -ne 200) {
+        throw "$hookHost/healthz answered $($probe.StatusCode); not installing a hook that cannot be delivered"
+    }
+    "healthz through the hook host: 200"
 
     $existing = gh api repos/hrkcz001/pz-saves/hooks --jq '.[] | (.id|tostring) + " " + .config.url' 2>&1
     if ($LASTEXITCODE -ne 0) { throw "could not list hooks: $existing" }

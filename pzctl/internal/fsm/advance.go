@@ -510,7 +510,7 @@ func (m *Machine) beginDeploy(ctx context.Context, reason string) {
 
 	m.deployAttempts++
 	req := DeployRequest{
-		ControllerURL: m.ctlURL,
+		ControllerURL: m.controllerURL(),
 		RestoreTarget: m.doc.RestoreTarget,
 		Attempt:       m.deployAttempts,
 	}

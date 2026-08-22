@@ -33,6 +33,7 @@ import (
 	"github.com/hrkcz001/pz-akash/pzctl/internal/config"
 	"github.com/hrkcz001/pz-akash/pzctl/internal/gitbus"
 	"github.com/hrkcz001/pz-akash/pzctl/internal/state"
+	"github.com/hrkcz001/pz-akash/pzctl/internal/webhook"
 )
 
 // Kind is an event type.
@@ -164,6 +165,12 @@ type Machine struct {
 	// closeAttempts bounds retries of a failing close, so a provider that always
 	// errors does not turn into an infinite push loop.
 	closeAttempts int
+
+	// noURLWarned records that resolveURLs has already complained about having no
+	// address to publish. The complaint has to survive the no-change early return —
+	// a controller with no URL is the case where nothing ever changes — so without
+	// this it would be logged on every pass.
+	noURLWarned bool
 
 	// deployAttempts counts deploys made for the start trigger currently being
 	// served, and is nonzero only while a failed one is being cleaned up. It is
@@ -383,6 +390,12 @@ func (m *Machine) handle(ctx context.Context, ev Event) {
 	// directory as it is now, not as an agent report once described it.
 	m.refreshIndex()
 
+	// Same reason, and the deploy below is the one that matters: advance bakes
+	// controllerURL() into the server's environment, so the address has to be
+	// resolved before that decision rather than only at startup. It is a comparison
+	// of config against the document — no I/O, and no commit unless it changed.
+	m.resolveURLs()
+
 	switch ev.Kind {
 	case KindPoll:
 		m.onPoll(ctx, ev)
@@ -594,6 +607,7 @@ func (m *Machine) load(ctx context.Context) error {
 	}
 	m.readAgent()
 	m.reconcileLease(ctx)
+	m.resolveURLs()
 	m.logf("fsm: start at status=%s intent=%s lease=%s agent=%s",
 		m.doc.Status, m.doc.Intent, leaseName(m.doc.Lease), m.agent.Phase)
 	m.snapshot()
@@ -661,6 +675,79 @@ func (m *Machine) dirty(reason string) {
 	if m.pending != reason {
 		m.pending += "; " + reason
 	}
+}
+
+// resolveURLs records where this controller answers, which is invariant I15.
+//
+// The invariant reads: the controller writes its public URL to its state branch, and
+// the agent reads it from git — no `http://controller:8000` placeholder lie. It was
+// specified and not implemented, and the gap was not visible from inside the
+// controller: every state document it published carried three empty URLs, which
+// looks like "not discovered yet" rather than "never discovered". The first fresh
+// world on the v2 stack died of it, with the agent reporting exactly what it saw —
+// "PZ_CONTROLLER_URL is unset and the controller has not published its URLs yet" —
+// after the deploy had already been paid for.
+//
+// Public comes from the DNS zone, because that is the only address this process can
+// know about itself; see config.ControllerPublicURL. Raw is the --controller-url
+// override when there is one: an operator who passes the provider's own host:port
+// gets a route that does not depend on Cloudflare being up, and Base() prefers
+// Public so the stable name wins whenever both exist.
+//
+// Cheap and idempotent, because it is pure config: safe to call on every pass, and
+// it only marks the document dirty when the answer actually changed.
+func (m *Machine) resolveURLs() {
+	want := state.URLs{
+		Public: m.cfg.ControllerPublicURL(),
+		Raw:    m.ctlURL,
+	}
+	// A flag and no DNS still has to yield a usable Base(), so promote the override
+	// rather than leaving Public empty and Raw carrying the only answer.
+	if want.Public == "" {
+		want.Public, want.Raw = want.Raw, ""
+	}
+	if want.Public != "" {
+		want.Webhook = strings.TrimSuffix(want.Public, "/") + webhook.Path
+	}
+
+	// Before the no-change return below, deliberately. Having no address at all is
+	// the one case where the answer never changes, so a warning placed after that
+	// return is a warning that can only fire for a controller which had a URL and
+	// lost one — never for the misconfiguration it was written for. That is the same
+	// silence this whole function exists to end, one level up.
+	if want.Base() == "" && !m.noURLWarned {
+		m.noURLWarned = true
+		m.logf("fsm: WARNING no controller URL to publish (dns.enabled=%v, --controller-url unset) "+
+			"— an agent will not be able to find storage", m.cfg.DNS.Enabled)
+	}
+	if want.Base() != "" {
+		m.noURLWarned = false
+	}
+
+	if want == m.doc.URLs {
+		return
+	}
+	m.doc.URLs = want
+	// A clear is published like any other change: a document that keeps advertising
+	// an address this controller no longer has is worse than one that admits it has
+	// none, because the agent would spend its retries on a dead host.
+	if want.Base() == "" {
+		m.dirty("clearing the controller url")
+		return
+	}
+	m.dirty("recording controller url " + want.Base())
+}
+
+// controllerURL is what gets baked into a server deploy's environment.
+//
+// The published document is preferred over the flag because resolveURLs has already
+// reconciled the two, and taking the answer from one place keeps the SDL and the
+// state branch from disagreeing about where the controller is.
+func (m *Machine) controllerURL() string {
+	if u := m.doc.URLs.Base(); u != "" {
+		return u
+	}
+	return m.ctlURL
 }
 
 // flush publishes the document if it is dirty and the coalescing window has

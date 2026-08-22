@@ -726,6 +726,31 @@ func (c *Config) ControllerImageRef() string {
 	return c.Controller.Image + ":" + c.Controller.ImageTag
 }
 
+// ControllerPublicURL is the controller's own base URL, derived from the DNS zone.
+//
+// This is the answer to a question the controller cannot answer any other way. A
+// container has no way to learn the address Akash gave its own lease — the same
+// reason the controller record is the one DNS entry pzctl cannot write for itself —
+// so the controller cannot report where it is reachable by looking at itself.
+//
+// The DNS zone can, because `pzctl dns sync` is what makes the answer true: it
+// points the apex at the lease's hostname and adds a Cloudflare origin rule for the
+// lease's port, so https://<domain> proxies straight through to this process. Empty
+// when DNS is off, which leaves --controller-url as the only source.
+//
+// Deriving it rather than discovering it also makes it survive a redeploy. The
+// provider hostname and port change every time the controller moves; the apex does
+// not, so anything holding this URL — the agent, a GitHub webhook — keeps working
+// across a redeploy that only `dns sync` had to know about.
+func (c *Config) ControllerPublicURL() string {
+	if !c.DNS.Enabled || c.DNS.Domain == "" {
+		return ""
+	}
+	// https:// even when ssl_mode is flexible: that setting describes Cloudflare's
+	// connection to us, not a client's to Cloudflare. Matches dns.PublicURL.
+	return "https://" + c.DNS.Domain
+}
+
 // ServerImageRef is the fully qualified server image.
 func (c *Config) ServerImageRef() string {
 	return c.Server.Image + ":" + c.Server.ImageTag
