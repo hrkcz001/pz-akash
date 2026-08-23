@@ -25,10 +25,33 @@ import (
 // time, and then the message carries the rejection reasons: "every bid was 12
 // USD/day against a 3 USD/day limit" and "the only bidder is skip-listed" are
 // different problems with the same symptom.
+//
+// It does not stop at the first acceptable bid, and that is the whole shape of the
+// function. SelectBid returns the cheapest bid it has been shown, so returning as
+// soon as one is acceptable means taking the cheapest of however few happened to
+// have arrived five seconds in — which is one. The live server was leased that way:
+// it went to a provider at $0.96/day while another eligible provider bid $0.81 for
+// the same spec, a difference of $55 a year decided by whose bid engine answered
+// first. So the first acceptable bid opens a window of akash.timeouts.bid_settle
+// during which the loop keeps looking, and then takes the best of the field.
+//
+// The window runs from that first bid rather than from loop entry, because entry is
+// not when the market starts answering. A round where the first bid lands at 100s
+// would otherwise get 20 seconds of shopping out of a 120-second budget — and slow
+// bidders are the exact thing being waited for.
+//
+// Settling can only improve the outcome, never fail a deploy that would otherwise
+// have worked: a bid held through the settle window is still there at the end of it
+// — bids do not expire in minutes — and if bid_wait runs out first, whatever was
+// acceptable is taken rather than discarded.
 func (d *Driver) waitForBid(ctx context.Context, dseq string, cr Criteria, providers []Provider) (*Choice, error) {
 	var (
 		poll     = time.Duration(d.Cfg.Akash.Timeouts.BidPoll)
+		settle   = time.Duration(d.Cfg.Akash.Timeouts.BidSettle)
 		deadline = d.Now().Add(time.Duration(d.Cfg.Akash.Timeouts.BidWait))
+		// Zero until something acceptable has been seen; see the doc comment.
+		settled  time.Time
+		best     *Choice
 		lastBids int
 		lastWhy  string
 	)
@@ -46,17 +69,46 @@ func (d *Driver) waitForBid(ctx context.Context, dseq string, cr Criteria, provi
 			return nil, err
 		}
 		if choice != nil {
-			return choice, nil
+			// Overwritten rather than compared, because the bid list only grows and
+			// SelectBid is given all of it every time: the newest answer is by
+			// construction the best of everything seen so far.
+			if best != nil && choice.Bid.ID.Provider != best.Bid.ID.Provider {
+				d.Logf("akash: dseq %s: %s bid %.4f USD/day, undercutting %s at %.4f",
+					dseq, choice.Provider.Owner, choice.USDPerDay,
+					best.Provider.Owner, best.USDPerDay)
+			}
+			best = choice
+			if settled.IsZero() {
+				settled = d.Now().Add(settle)
+			}
 		}
 		if len(bad) > 0 {
 			lastWhy = Reasons(bad)
 		}
-		if !d.Now().Before(deadline) {
+
+		now := d.Now()
+		if best != nil && !settled.IsZero() && !now.Before(settled) {
+			return best, nil
+		}
+		if !now.Before(deadline) {
+			if best != nil {
+				// The settle window did not finish, but a usable bid is in hand. Taking
+				// it beats failing a deploy over a preference for a cheaper one that
+				// may not exist.
+				d.Logf("akash: dseq %s: taking %s at %.4f USD/day without a full settle window",
+					dseq, best.Provider.Owner, best.USDPerDay)
+				return best, nil
+			}
 			return nil, fmt.Errorf("no acceptable bid on dseq %s after %s (%d bid(s) seen; %s)",
 				dseq, time.Duration(d.Cfg.Akash.Timeouts.BidWait), lastBids, orNoBids(lastWhy, lastBids))
 		}
 		if attempt == 1 || attempt%4 == 0 {
-			d.Logf("akash: dseq %s: %d bid(s), none acceptable yet (%s)", dseq, lastBids, orNoBids(lastWhy, lastBids))
+			if best != nil {
+				d.Logf("akash: dseq %s: %d bid(s), best so far %s at %.4f USD/day; still settling for %s",
+					dseq, lastBids, best.Provider.Owner, best.USDPerDay, settled.Sub(now).Round(time.Second))
+			} else {
+				d.Logf("akash: dseq %s: %d bid(s), none acceptable yet (%s)", dseq, lastBids, orNoBids(lastWhy, lastBids))
+			}
 		}
 		if err := d.sleep(ctx, poll); err != nil {
 			return nil, err

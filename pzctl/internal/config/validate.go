@@ -417,6 +417,19 @@ func (c *Config) validateAkash(p *problems) {
 
 	requirePositiveDur(p, "akash.timeouts.bid_poll", a.Timeouts.BidPoll)
 	requirePositiveDur(p, "akash.timeouts.bid_wait", a.Timeouts.BidWait)
+	// Zero is allowed and means "take the first acceptable bid", which is what the
+	// deploy did before the settle window existed. What is not allowed is a settle
+	// window at or past the deadline that bounds it: the loop would spend the whole
+	// bid_wait refusing to choose and then choose anyway, so every deploy would pay
+	// the full window and the two values would describe one behaviour between them.
+	if a.Timeouts.BidSettle < 0 {
+		p.addf("akash.timeouts.bid_settle: must not be negative (0 takes the first acceptable bid)")
+	}
+	if a.Timeouts.BidSettle > 0 && a.Timeouts.BidWait > 0 && a.Timeouts.BidSettle >= a.Timeouts.BidWait {
+		p.addf("akash.timeouts.bid_settle (%v) must be less than akash.timeouts.bid_wait (%v) — "+
+			"a settle window that outlasts the deadline makes every deploy wait the whole window",
+			a.Timeouts.BidSettle.D(), a.Timeouts.BidWait.D())
+	}
 	requirePositiveDur(p, "akash.timeouts.lease_poll", a.Timeouts.LeasePoll)
 	requirePositiveDur(p, "akash.timeouts.lease_ready", a.Timeouts.LeaseReady)
 	requirePositiveDur(p, "akash.timeouts.deposit_settle", a.Timeouts.DepositSettle)

@@ -369,6 +369,50 @@ func TestValidateSeparatesTheTwoAttemptBudgets(t *testing.T) {
 	}
 }
 
+// TestValidateBoundsTheBidSettleWindow: bid_settle is a preference and bid_wait is
+// the ceiling that bounds it. A window at or past the ceiling makes every deploy pay
+// the whole of bid_wait — the loop spends it refusing to choose and then chooses
+// anyway — so the two values would describe one behaviour between them, badly.
+func TestValidateBoundsTheBidSettleWindow(t *testing.T) {
+	for _, tc := range []struct {
+		what  string
+		spoil func(*Config)
+	}{
+		{"negative", func(c *Config) { c.Akash.Timeouts.BidSettle = Duration(-time.Second) }},
+		{"equal to bid_wait", func(c *Config) { c.Akash.Timeouts.BidSettle = c.Akash.Timeouts.BidWait }},
+		{"past bid_wait", func(c *Config) {
+			c.Akash.Timeouts.BidSettle = Duration(time.Duration(c.Akash.Timeouts.BidWait) + time.Minute)
+		}},
+	} {
+		c := mustLoadReal(t)
+		tc.spoil(c)
+		err := c.Validate()
+		if err == nil {
+			t.Errorf("%s: a bid_settle %s was accepted", tc.what, tc.what)
+			continue
+		}
+		if !strings.Contains(err.Error(), "akash.timeouts.bid_settle") {
+			t.Errorf("%s: error does not name akash.timeouts.bid_settle:\n%v", tc.what, err)
+		}
+	}
+
+	// Zero is legal and means "take the first acceptable bid" — the behaviour before
+	// the window existed, kept reachable for a market that has to be leased now.
+	c := mustLoadReal(t)
+	c.Akash.Timeouts.BidSettle = 0
+	if err := c.Validate(); err != nil {
+		t.Errorf("bid_settle: 0 was rejected: %v", err)
+	}
+
+	// And the shipped config has to actually shop around: this is the setting that
+	// leased the live world $55/year above the cheapest eligible bid.
+	c = mustLoadReal(t)
+	if time.Duration(c.Akash.Timeouts.BidSettle) < 30*time.Second {
+		t.Errorf("shipped bid_settle is %v; too short to see a market that answers over tens of seconds",
+			time.Duration(c.Akash.Timeouts.BidSettle))
+	}
+}
+
 func TestGameHost(t *testing.T) {
 	c := mustLoadReal(t)
 	want := c.DNS.GameRecord + "." + c.DNS.Domain

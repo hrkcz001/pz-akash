@@ -388,8 +388,18 @@ type Placement struct {
 }
 
 type AkashTimeouts struct {
-	BidPoll       Duration `yaml:"bid_poll"`       // BID_POLL_SEC
-	BidWait       Duration `yaml:"bid_wait"`       // BID_TIMEOUT_SEC
+	BidPoll Duration `yaml:"bid_poll"` // BID_POLL_SEC
+	BidWait Duration `yaml:"bid_wait"` // BID_TIMEOUT_SEC
+	// BidSettle is how long to keep collecting bids before choosing, even once an
+	// acceptable one is in hand. Bids arrive over tens of seconds and the cheapest is
+	// not the first, so without it a deploy takes whichever bid engine answered
+	// quickest — which leased the live server at $0.96/day against another eligible
+	// provider's $0.81 for the same spec.
+	//
+	// It costs exactly itself on every deploy, and buys the difference between the
+	// first acceptable price and the best one. Against lease_ready, measured in
+	// minutes because a 2GiB single-layer image has to be pulled, it is noise.
+	BidSettle     Duration `yaml:"bid_settle"`
 	LeasePoll     Duration `yaml:"lease_poll"`     // LEASE_POLL_SEC
 	LeaseReady    Duration `yaml:"lease_ready"`    // LEASE_READY_TIMEOUT_SEC
 	DepositSettle Duration `yaml:"deposit_settle"` // DEPOSIT_SETTLE_SEC

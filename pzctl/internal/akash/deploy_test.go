@@ -230,9 +230,13 @@ func TestDeployServerHappyPath(t *testing.T) {
 	if n := f.countCalls("POST", "/v1/deployments"); n != 1 {
 		t.Errorf("created %d deployments, want 1", n)
 	}
-	// Two bid polls slept, one detail poll slept: 2×5s + 1×10s.
-	if want := 20 * time.Second; clk.slept != want {
-		t.Errorf("slept %s, want %s", clk.slept, want)
+	// Two bid polls slept before any bid was acceptable (2×5s), then the settle
+	// window runs from that first bid, then one detail poll (10s). The settle window
+	// is on every deploy on purpose — see waitForBid — so it is named here rather
+	// than folded into a total, and a config change moves the expectation with it.
+	settle := time.Duration(d.Cfg.Akash.Timeouts.BidSettle)
+	if want := 10*time.Second + settle + 10*time.Second; clk.slept != want {
+		t.Errorf("slept %s, want %s (2 bid polls + %s settle + 1 detail poll)", clk.slept, want, settle)
 	}
 	if d.Skipped(testProvider) {
 		t.Error("the provider we successfully leased from was skip-listed")
@@ -428,8 +432,12 @@ func TestDeployServerLeasedButNeverRoutable(t *testing.T) {
 	if !d.Skipped(testProvider) {
 		t.Errorf("%s leased and never became routable and was not skip-listed", testProvider)
 	}
-	if want := time.Duration(d.Cfg.Akash.Timeouts.LeaseReady); clk.slept != want {
-		t.Errorf("slept %s waiting for an address, want %s", clk.slept, want)
+	// The bid settle window, then the whole lease_ready budget spent waiting for an
+	// address that never arrives. Both halves matter: the deploy is not allowed to
+	// give up early, and it is not allowed to run past its budget either.
+	settle := time.Duration(d.Cfg.Akash.Timeouts.BidSettle)
+	if want := settle + time.Duration(d.Cfg.Akash.Timeouts.LeaseReady); clk.slept != want {
+		t.Errorf("slept %s waiting for an address, want %s (%s settle + lease_ready)", clk.slept, want, settle)
 	}
 	// The provider was consulted, and its token was minted on its own cadence
 	// rather than once per poll.
@@ -467,10 +475,14 @@ func TestDeployServerProviderAnswersFirst(t *testing.T) {
 		t.Errorf("endpoint = %+v, want %s:16261 from the provider", res.Endpoint, testIP)
 	}
 	// It returned at the first provider query rather than at the deadline: that is
-	// the whole point of the second opinion.
+	// the whole point of the second opinion. The bid settle window is separate and
+	// comes first; subtracting it is what keeps this assertion about the endpoint.
 	every := d.Cfg.Akash.ProviderStatus.Every
-	if want := time.Duration(every-1) * time.Duration(d.Cfg.Akash.Timeouts.LeasePoll); clk.slept != want {
-		t.Errorf("slept %s, want %s (%d polls before the provider is asked)", clk.slept, want, every)
+	settle := time.Duration(d.Cfg.Akash.Timeouts.BidSettle)
+	endpointWait := clk.slept - settle
+	if want := time.Duration(every-1) * time.Duration(d.Cfg.Akash.Timeouts.LeasePoll); endpointWait != want {
+		t.Errorf("slept %s waiting for the endpoint, want %s (%d polls before the provider is asked)",
+			endpointWait, want, every)
 	}
 	if n := f.countCalls("POST", "/v1/create-jwt-token"); n != 1 {
 		t.Errorf("minted %d status tokens, want 1", n)
@@ -548,8 +560,12 @@ func TestDeployControllerHTTPIngress(t *testing.T) {
 	if want := "http://xyz.ingress.provider.example.com"; res.URL != want {
 		t.Errorf("URL = %q, want %q", res.URL, want)
 	}
-	if clk.slept != 0 {
-		t.Errorf("slept %s although the address was available on the first poll", clk.slept)
+	// The address was there on the first poll, so the only thing slept is the bid
+	// settle window. The controller pays it too: it is leased on the same market and
+	// its price is decided the same way.
+	if want := time.Duration(d.Cfg.Akash.Timeouts.BidSettle); clk.slept != want {
+		t.Errorf("slept %s, want just the %s settle window — the address was available on the first poll",
+			clk.slept, want)
 	}
 }
 

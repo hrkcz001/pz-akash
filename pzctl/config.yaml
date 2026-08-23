@@ -313,7 +313,21 @@ akash:
 
   timeouts:
     bid_poll: 5s
-    bid_wait: 90s
+    # 90s was not enough to see the whole field. A priced round with a dedicated IP
+    # drew three bids inside it out of four eligible providers, and the one that
+    # stayed silent was provider.h6i-dedicated.eu-se-1.digitalfrontier.so — 100%
+    # uptime, IP capacity to spare, and the provider this system has been happily
+    # running its controller on. A bidder we never hear from is a price we never get.
+    bid_wait: 240s
+    # Do not choose before this much of the field has answered. SelectBid returns the
+    # cheapest bid it has been shown, so choosing at the first acceptable one means
+    # choosing the cheapest of the one bid that arrived five seconds in. That is how
+    # the live server came to be leased at $0.96/day while another eligible provider
+    # bid $0.81 for the same spec — $55/year decided by whose bid engine was quickest.
+    #
+    # 120s against a lease_ready measured in minutes is noise, and the whole of what
+    # it costs is itself. It must stay below bid_wait; see validate.
+    bid_settle: 120s
     lease_poll: 10s
     # How long a leased deployment gets to become routable. This is dominated by
     # one thing: the server image is 2.15Gi in a *single* layer (the PZ install),

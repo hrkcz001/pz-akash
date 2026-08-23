@@ -86,8 +86,14 @@ func Defaults() *Config {
 				MinUptime30d: 0.95,
 			},
 			Timeouts: AkashTimeouts{
-				BidPoll:       Duration(5 * time.Second),
-				BidWait:       Duration(90 * time.Second),
+				BidPoll: Duration(5 * time.Second),
+				// 90s was v1's window and it demonstrably closed before the field had
+				// answered: a priced round drew 3 bids from 4 eligible providers, and the
+				// silent one had 100% uptime and spare capacity. The window is only a
+				// ceiling — a settled choice returns early — so widening it costs nothing
+				// on a market that answers quickly.
+				BidWait:       Duration(240 * time.Second),
+				BidSettle:     Duration(120 * time.Second),
 				LeasePoll:     Duration(10 * time.Second),
 				LeaseReady:    Duration(10 * time.Minute),
 				DepositSettle: Duration(15 * time.Second),
