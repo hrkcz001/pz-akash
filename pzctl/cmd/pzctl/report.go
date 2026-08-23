@@ -44,7 +44,12 @@ func printReport(out io.Writer, in reportInput) {
 		row("lease", "none")
 	}
 	if c.Endpoint.Ready() {
-		row("endpoint", fmt.Sprintf("%s:%d", c.Endpoint.IP, c.Endpoint.GamePort))
+		// Addr(), not IP. A shared-endpoint lease has no IP at all — the address is
+		// the provider's hostname — so printing the IP field rendered the live world
+		// as ":30975", which reads like a broken endpoint rather than a working one
+		// on a borrowed name. Ready() had already said otherwise; only this line
+		// disagreed.
+		row("endpoint", fmt.Sprintf("%s:%d", c.Endpoint.Addr(), c.Endpoint.GamePort))
 	} else {
 		row("endpoint", "not ready")
 	}

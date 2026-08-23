@@ -95,6 +95,51 @@ func TestReportShowsTheAgentIsAbsentRatherThanDefault(t *testing.T) {
 	}
 }
 
+// TestReportPrintsTheAddressAnEndpointActuallyHas covers both shapes a lease can
+// take, because the report line was written when only one of them existed. On a
+// shared endpoint there is no IP at all — the address is the provider's hostname —
+// and printing the IP field rendered the live world as ":30975", which reads like a
+// broken endpoint rather than a working one on a borrowed name.
+//
+// Ready() already distinguished the two, so nothing else in the program was wrong;
+// this is the one place that asked the endpoint for the wrong field, and only an
+// operator reading the output would have noticed.
+func TestReportPrintsTheAddressAnEndpointActuallyHas(t *testing.T) {
+	loc := prague(t)
+	for name, tc := range map[string]struct {
+		ep   state.Endpoint
+		want string
+	}{
+		"shared endpoint": {
+			state.Endpoint{Host: "provider.akash.metz.live", GamePort: 30975},
+			"provider.akash.metz.live:30975",
+		},
+		"dedicated ip": {
+			state.Endpoint{IP: "194.107.163.7", GamePort: 16261},
+			"194.107.163.7:16261",
+		},
+	} {
+		doc := state.NewController(loc)
+		doc.Endpoint = tc.ep
+
+		var buf bytes.Buffer
+		printReport(&buf, reportInput{
+			Loc: loc, Source: "test",
+			Controller: doc, Backups: state.NewBackups(),
+			Repairs: &state.Repairs{}, AgentRepairs: &state.Repairs{},
+		})
+		got := buf.String()
+		if !strings.Contains(got, tc.want) {
+			t.Errorf("%s: report does not contain %q:\n%s", name, tc.want, got)
+		}
+		// A port with nothing in front of it is the failure mode, not just a
+		// missing name: it is what the operator saw.
+		if strings.Contains(got, "endpoint  :") {
+			t.Errorf("%s: report printed a bare port with no address:\n%s", name, got)
+		}
+	}
+}
+
 func TestBytesHuman(t *testing.T) {
 	for in, want := range map[int64]string{
 		0: "0 B", -1: "0 B", 512: "512 B",
