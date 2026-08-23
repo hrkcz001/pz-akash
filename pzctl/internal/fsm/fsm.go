@@ -427,6 +427,7 @@ func (m *Machine) handle(ctx context.Context, ev Event) {
 	// cadence, a restore target's existence, the snapshot — has to see the
 	// directory as it is now, not as an agent report once described it.
 	m.refreshIndex()
+	m.dropMissingRestoreTarget()
 
 	// Same reason, and the deploy below is the one that matters: advance bakes
 	// controllerURL() into the server's environment, so the address has to be
@@ -514,6 +515,49 @@ func (m *Machine) seedIndex() {
 		m.idx = next
 		m.dirty("backups index reconciled with the directory")
 	}
+	m.dropMissingRestoreTarget()
+}
+
+// dropMissingRestoreTarget clears a restore target whose archive is no longer in
+// the reconciled index.
+//
+// This is the other half of seedIndex, and without it the reconciliation makes
+// things worse rather than better. A replaced controller comes back on a fresh
+// volume: seedIndex correctly stops claiming archives it cannot serve, and the
+// document it publishes alongside that empty index still names one of them as the
+// world's restore target. Nothing else in the system ever revisits that name — the
+// existence check in consumeRestore guards the moment a target is *chosen*, and on
+// rejection it deliberately keeps whatever was already there.
+//
+// What follows from leaving it is not a degraded restore, it is a world that cannot
+// start. The agent downloads the named archive, the store answers 404 because the
+// file is genuinely gone, a 404 is permanent so the client does not retry, the boot
+// fails with errRestore and the agent parks in restore_failed. The controller reads
+// that and goes to failed, which is sticky. The next start trigger clears the
+// failure and sends the identical dead name, so the loop is start -> 404 -> failed,
+// indefinitely, until an operator pushes a restore trigger by hand. That is the
+// halt/restart loop this rewrite exists to kill, arriving through the one path that
+// survives a redeploy: git.
+//
+// The pin goes with it. A pin is a statement about a specific archive, and once
+// that archive does not exist the statement cannot be honoured — keeping it would
+// also suppress the automatic follow that is the only way back to a working target.
+func (m *Machine) dropMissingRestoreTarget() {
+	want := m.doc.RestoreTarget
+	if want == "" || m.idx == nil || m.idx.Has(want) {
+		return
+	}
+	m.doc.RestoreTarget = ""
+	pinned := m.doc.RestorePinned
+	m.doc.RestorePinned = false
+	if pinned {
+		m.logf("fsm: restore target %q is gone from the index (%d archive(s) left); cleared it and the pin — a world cannot boot from an archive that does not exist",
+			want, len(m.idx.Items))
+	} else {
+		m.logf("fsm: restore target %q is gone from the index (%d archive(s) left); cleared it — the next world starts fresh rather than failing to restore",
+			want, len(m.idx.Items))
+	}
+	m.dirty("restore target cleared: " + want + " is gone")
 }
 
 // pruneBackups applies backups.retention_* and protects the restore target, so a
