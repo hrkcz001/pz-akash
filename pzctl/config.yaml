@@ -331,7 +331,20 @@ akash:
     ref_lat: 52.2297
     ref_lon: 21.0122
     skip_ttl: 24h
-    deny_providers: []
+    # akash18ga02… is provider.europlots.com, and it is here because it is the
+    # cheapest bidder in a four-provider market: it wins every priced round with a
+    # dedicated IP and then does not deliver one. On 2026-08-23 it took the lease at
+    # 0.8139 USD/day, pulled the image for seventeen minutes, reported a ready
+    # replica at 03:23:50, and never allocated an address — the deploy timed out on
+    # "no dedicated IP assigned to pz-server yet" and the world was unreachable for
+    # the whole twenty minutes it billed.
+    #
+    # Provisional, and worth re-testing rather than believing forever: the slow pull
+    # left only ~2m30s of the lease_ready budget with a ready replica to allocate in,
+    # which is thin evidence for a permanent fault. But the skip list cannot carry
+    # this, because a skip expires and the next round hands it the lease again on
+    # price. Denying it is what makes the second-cheapest bidder reachable at all.
+    deny_providers: [akash18ga02jzaq8cw52anyhzkwta5wygufgu6zsz6xc]
     # Providers below this 30-day uptime are never bid on. A provider that drops
     # the lease costs a redeploy and rolls the world back to the last backup.
     min_uptime_30d: 0.95
