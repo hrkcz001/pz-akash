@@ -67,21 +67,36 @@ controller:
   # The first image this repository published rather than inherited: every earlier tag
   # in the package was pushed by pz-akash-proto, which still owns the package by id.
   #
-  # sha-056e83f is HEAD of pz-akash main. Over sha-2fd34d2 — which carried the escrow
-  # top-up loop and the player-count fix, and was never deployed — it adds the two
-  # things the first live month cost money to learn.
+  # sha-4a8d1e8 is HEAD of pz-akash main. Over sha-056e83f it adds the half of the
+  # deployment that stopped being true: the address. Nothing in the uact market will
+  # honour a dedicated IP — europlots wins every round and then delivers an empty one —
+  # so a lease now resolves to the provider's own hostname plus whatever external UDP
+  # port it drew from its pool, and sha-056e83f cannot read that shape. Deploying the
+  # new config against the old image would send the game down the old no-IP path, which
+  # reported a shared *URL* and no game port at all.
   #
-  # The bid settle window is the first. waitForBid used to take the first acceptable
-  # bid, and on Akash the first bid to arrive is not the cheapest: the live world leased
-  # at $0.9648/day against a $0.8139/day bid that landed seconds later, which is $55 a
-  # year for being in a hurry. It now collects for akash.timeouts.bid_settle after the
-  # first acceptable bid and takes the cheapest of the window.
+  # It carries what players see about that address, because an address that moves is
+  # only usable if the page says so: a copy button beside the host and the port, the
+  # provider's location as a badge, and the price and player-count badges hidden until
+  # there is a number in them rather than rendering as zero. The main page is at
+  # /connect now, and the tab above it says so.
   #
-  # The second is the Cloudflare bypass. The controller discovers its own provider
-  # host:port and publishes it as URLs.Raw, and the agent's client prefers that route
-  # for uploads, because Cloudflare's free plan answers 413 to any request body over
-  # 100 MB and a world backup is one large body. Without it, backups above 100 MB could
-  # not be uploaded at all — the proxied name is for end users, not for bulk transfer.
+  # It also drops PZ's second UDP socket. Build 42 binds only DefaultPort, and on a
+  # shared endpoint every expose costs another arbitrary external port a player would
+  # have to be told about, so server.ports.udp is 0 — see the note there.
+  #
+  # It inherits the bid settle window from sha-056e83f. waitForBid used to take the
+  # first acceptable bid, and on Akash the first bid to arrive is not the cheapest: the
+  # live world leased at $0.9648/day against a $0.8139/day bid that landed seconds
+  # later, which is $55 a year for being in a hurry. It now collects for
+  # akash.timeouts.bid_settle after the first acceptable bid and takes the cheapest of
+  # the window.
+  #
+  # And the Cloudflare bypass. The controller discovers its own provider host:port and
+  # publishes it as URLs.Raw, and the agent's client prefers that route for uploads,
+  # because Cloudflare's free plan answers 413 to any request body over 100 MB and a
+  # world backup is one large body. Without it, backups above 100 MB could not be
+  # uploaded at all — the proxied name is for end users, not for bulk transfer.
   #
   # It inherits the escrow top-up loop: a deploy funds the deposit for a fraction of the
   # lease's life and nothing used to add to it, so the provider closes the lease on a
@@ -104,7 +119,7 @@ controller:
   # The saves copy is a build input only. The running controller fetches this file from
   # the state repository at every boot (see bootConfig), so a pin pushed to pz-saves
   # reaches it on restart with no rebuild — the tag below is not circular.
-  image_tag: sha-056e83f
+  image_tag: sha-4a8d1e8
   http_port: 8000
   # 0 folds the webhook onto http_port instead of exposing a second one.
   #
@@ -198,12 +213,17 @@ server:
   # side of the wire: the agent is what stamps the count, so the count stays zero
   # until this tag moves, controller redeploy or no.
   #
-  # sha-056e83f adds the agent's half of the Cloudflare bypass: the upload client takes
+  # sha-4a8d1e8 is the agent's half of the one-port change: the .ini it writes leaves
+  # UDPPort alone when server.ports.udp is 0, rather than setting it to 0 — which PZ
+  # would either reject or use to bind something arbitrary. Nothing exposes that port
+  # in the SDL either, so the unwritten key and the unexposed port agree.
+  #
+  # It inherits sha-056e83f's half of the Cloudflare bypass: the upload client takes
   # the direct provider address the controller publishes before it tries the proxied
   # name, and treats a 413 as the wrong route rather than a bad request. Both halves
   # have to ship together — a controller that publishes a route to an agent that will
   # not use it changes nothing.
-  image_tag: sha-056e83f
+  image_tag: sha-4a8d1e8
   resources:
     cpu: "8"
     memory: 16Gi
