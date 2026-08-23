@@ -413,6 +413,67 @@ func TestValidateBoundsTheBidSettleWindow(t *testing.T) {
 	}
 }
 
+// TestValidateFloorsTheStalenessThreshold guards the second half of the fix for the
+// player count that read 0 forever. The count itself is now re-stamped on every
+// measurement, but a quiet world publishes nothing: an unchanged count is not worth a
+// push, so the newest stamp the controller holds is one liveness push plus one
+// measurement interval old at worst. A threshold at or below that floor paints every
+// idle server as a broken agent — and a badge that is wrong whenever nobody is playing
+// is a badge nobody reads when it finally matters.
+func TestValidateFloorsTheStalenessThreshold(t *testing.T) {
+	floor := func(c *Config) time.Duration {
+		return time.Duration(c.Agent.LivenessPush) + time.Duration(c.Agent.PZ.PlayersInterval)
+	}
+
+	for _, tc := range []struct {
+		what  string
+		spoil func(*Config)
+	}{
+		{"negative", func(c *Config) { c.Dashboard.PlayersStaleAfter = Duration(-time.Second) }},
+		{"exactly the floor", func(c *Config) { c.Dashboard.PlayersStaleAfter = Duration(floor(c)) }},
+		// The v1 mistake in one line: sized against the push cadence alone, ignoring the
+		// interval the agent takes to notice a change at all.
+		{"the liveness push alone", func(c *Config) { c.Dashboard.PlayersStaleAfter = c.Agent.LivenessPush }},
+	} {
+		c := mustLoadReal(t)
+		tc.spoil(c)
+		err := c.Validate()
+		if err == nil {
+			t.Errorf("%s: a players_stale_after %s was accepted", tc.what, tc.what)
+			continue
+		}
+		if !strings.Contains(err.Error(), "dashboard.players_stale_after") {
+			t.Errorf("%s: error does not name dashboard.players_stale_after:\n%v", tc.what, err)
+		}
+	}
+
+	// One second past the floor is legal: the rule is a floor, not a comfort margin.
+	c := mustLoadReal(t)
+	c.Dashboard.PlayersStaleAfter = Duration(floor(c) + time.Second)
+	if err := c.Validate(); err != nil {
+		t.Errorf("a threshold one second past the floor was rejected: %v", err)
+	}
+
+	// Zero disables the badge rather than failing the config. An operator who does not
+	// want a freshness claim should not have to satisfy a rule about one.
+	c = mustLoadReal(t)
+	c.Dashboard.PlayersStaleAfter = 0
+	if err := c.Validate(); err != nil {
+		t.Errorf("players_stale_after: 0 was rejected: %v", err)
+	}
+
+	// And the shipped numbers have to clear their own floor by more than a rounding
+	// error. The two tickers are independent and their phase relationship drifts, so a
+	// margin under one measurement interval would let ordinary drift raise the badge.
+	// It deliberately does not demand enough margin to absorb a *lost* push: a push
+	// that failed is exactly what this badge is for — see agent.publish.
+	c = mustLoadReal(t)
+	got := time.Duration(c.Dashboard.PlayersStaleAfter)
+	if min := floor(c) + time.Duration(c.Agent.PZ.PlayersInterval); got < min {
+		t.Errorf("shipped players_stale_after is %v; want at least %v so ticker drift alone cannot raise the badge", got, min)
+	}
+}
+
 func TestGameHost(t *testing.T) {
 	c := mustLoadReal(t)
 	want := c.DNS.GameRecord + "." + c.DNS.Domain

@@ -67,13 +67,28 @@ controller:
   # The first image this repository published rather than inherited: every earlier tag
   # in the package was pushed by pz-akash-proto, which still owns the package by id.
   #
-  # sha-2fd34d2 is HEAD of pz-akash main. Over the previous pin it carries two fixes
-  # the live deployment needed. The escrow top-up loop is the one that matters here: a
-  # deploy funds the deposit for a fraction of the lease's life and nothing used to add
-  # to it, so the provider closes the lease on a schedule the controller never saw
-  # coming — the live world's deadline was three days out from its deploy. The other is
-  # the player count, which was computed correctly and then published under a
-  # months-old freshness stamp, so every reader discarded it as stale and showed zero.
+  # sha-056e83f is HEAD of pz-akash main. Over sha-2fd34d2 — which carried the escrow
+  # top-up loop and the player-count fix, and was never deployed — it adds the two
+  # things the first live month cost money to learn.
+  #
+  # The bid settle window is the first. waitForBid used to take the first acceptable
+  # bid, and on Akash the first bid to arrive is not the cheapest: the live world leased
+  # at $0.9648/day against a $0.8139/day bid that landed seconds later, which is $55 a
+  # year for being in a hurry. It now collects for akash.timeouts.bid_settle after the
+  # first acceptable bid and takes the cheapest of the window.
+  #
+  # The second is the Cloudflare bypass. The controller discovers its own provider
+  # host:port and publishes it as URLs.Raw, and the agent's client prefers that route
+  # for uploads, because Cloudflare's free plan answers 413 to any request body over
+  # 100 MB and a world backup is one large body. Without it, backups above 100 MB could
+  # not be uploaded at all — the proxied name is for end users, not for bulk transfer.
+  #
+  # It inherits the escrow top-up loop: a deploy funds the deposit for a fraction of the
+  # lease's life and nothing used to add to it, so the provider closes the lease on a
+  # schedule the controller never saw coming — the live world's deadline was three days
+  # out from its deploy. And the player count, which was computed correctly and then
+  # published under a months-old freshness stamp, so every reader discarded it as stale
+  # and showed zero.
   #
   # It inherits I16 from sha-c90cc57: an agent report is only acted on if it names the
   # lease the controller holds. Without it a healthy world is halted by the report of a
@@ -81,11 +96,15 @@ controller:
   # after the second fresh world became routable. The pin before that, sha-5f4d122,
   # lacked I15 and killed the first one.
   #
-  # It also carries pz-saves at 21fc73d — the Snowy Wheels removal is in it — because
+  # It also carries pz-saves at c6906f3 — the Snowy Wheels removal is in it — because
   # the packages stage copies the saves in at build time. The tag names a pz-akash
   # commit but the image content depends on both repositories, which is why the digest,
   # not the tag, is the only truly immutable name here.
-  image_tag: sha-2fd34d2
+  #
+  # The saves copy is a build input only. The running controller fetches this file from
+  # the state repository at every boot (see bootConfig), so a pin pushed to pz-saves
+  # reaches it on restart with no rebuild — the tag below is not circular.
+  image_tag: sha-056e83f
   http_port: 8000
   # 0 folds the webhook onto http_port instead of exposing a second one.
   #
@@ -178,7 +197,13 @@ server:
   # document it publishes — ships in here. The player-count fix is likewise on this
   # side of the wire: the agent is what stamps the count, so the count stays zero
   # until this tag moves, controller redeploy or no.
-  image_tag: sha-2fd34d2
+  #
+  # sha-056e83f adds the agent's half of the Cloudflare bypass: the upload client takes
+  # the direct provider address the controller publishes before it tries the proxied
+  # name, and treats a 413 as the wrong route rather than a bad request. Both halves
+  # have to ship together — a controller that publishes a route to an agent that will
+  # not use it changes nothing.
+  image_tag: sha-056e83f
   resources:
     cpu: "8"
     memory: 16Gi
