@@ -63,63 +63,26 @@ git:
   min_push_interval: 5s
 
 controller:
-  image: ghcr.io/hrkcz001/pz-akash-controller
-  # The first image this repository published rather than inherited: every earlier tag
-  # in the package was pushed by pz-akash-proto, which still owns the package by id.
+  image: ghcr.io/hrkcz001/pz-controller-v2
+  # v1.0.0 is the first release of this package, and the first image this repository
+  # both built and owns. The previous name derived from the repository, and GHCR owns
+  # a package by repository id: every sha-* tag before this one was published by what
+  # is now pz-akash-proto, which still owns that package — this repository could only
+  # push into it through a hand-granted write. Renaming was the way to cut that.
   #
-  # sha-4a8d1e8 is HEAD of pz-akash main. Over sha-056e83f it adds the half of the
-  # deployment that stopped being true: the address. Nothing in the uact market will
-  # honour a dedicated IP — europlots wins every round and then delivers an empty one —
-  # so a lease now resolves to the provider's own hostname plus whatever external UDP
-  # port it drew from its pool, and sha-056e83f cannot read that shape. Deploying the
-  # new config against the old image would send the game down the old no-IP path, which
-  # reported a shared *URL* and no game port at all.
+  # It is a tag rather than a sha because images are now built from tags only, which
+  # makes the pin a decision instead of an afternoon. sha-4a8d1e8 was the last of the
+  # old lineage; everything it carried is in v1.0.0.
   #
-  # It carries what players see about that address, because an address that moves is
-  # only usable if the page says so: a copy button beside the host and the port, the
-  # provider's location as a badge, and the price and player-count badges hidden until
-  # there is a number in them rather than rendering as zero. The main page is at
-  # /connect now, and the tab above it says so.
+  # The tag names a pz-akash commit but the image content depends on both
+  # repositories — the packages stage copies pz-saves in at build time — so the
+  # digest, not the tag, is the only truly immutable name here.
   #
-  # It also drops PZ's second UDP socket. Build 42 binds only DefaultPort, and on a
-  # shared endpoint every expose costs another arbitrary external port a player would
-  # have to be told about, so server.ports.udp is 0 — see the note there.
-  #
-  # It inherits the bid settle window from sha-056e83f. waitForBid used to take the
-  # first acceptable bid, and on Akash the first bid to arrive is not the cheapest: the
-  # live world leased at $0.9648/day against a $0.8139/day bid that landed seconds
-  # later, which is $55 a year for being in a hurry. It now collects for
-  # akash.timeouts.bid_settle after the first acceptable bid and takes the cheapest of
-  # the window.
-  #
-  # And the Cloudflare bypass. The controller discovers its own provider host:port and
-  # publishes it as URLs.Raw, and the agent's client prefers that route for uploads,
-  # because Cloudflare's free plan answers 413 to any request body over 100 MB and a
-  # world backup is one large body. Without it, backups above 100 MB could not be
-  # uploaded at all — the proxied name is for end users, not for bulk transfer.
-  #
-  # It inherits the escrow top-up loop: a deploy funds the deposit for a fraction of the
-  # lease's life and nothing used to add to it, so the provider closes the lease on a
-  # schedule the controller never saw coming — the live world's deadline was three days
-  # out from its deploy. And the player count, which was computed correctly and then
-  # published under a months-old freshness stamp, so every reader discarded it as stale
-  # and showed zero.
-  #
-  # It inherits I16 from sha-c90cc57: an agent report is only acted on if it names the
-  # lease the controller holds. Without it a healthy world is halted by the report of a
-  # dead one — which is exactly what the previous pin, sha-51c3e68, did two seconds
-  # after the second fresh world became routable. The pin before that, sha-5f4d122,
-  # lacked I15 and killed the first one.
-  #
-  # It also carries pz-saves at c6906f3 — the Snowy Wheels removal is in it — because
-  # the packages stage copies the saves in at build time. The tag names a pz-akash
-  # commit but the image content depends on both repositories, which is why the digest,
-  # not the tag, is the only truly immutable name here.
-  #
-  # The saves copy is a build input only. The running controller fetches this file from
-  # the state repository at every boot (see bootConfig), so a pin pushed to pz-saves
-  # reaches it on restart with no rebuild — the tag below is not circular.
-  image_tag: sha-4a8d1e8
+  # The saves copy is a build input only. The running controller fetches this file
+  # from the state repository at every boot (see bootConfig), and now mirrors the
+  # guide files on every poll, so a config pin or a corrected README reaches it
+  # without a rebuild — the tag below is not circular.
+  image_tag: v1.0.0
   http_port: 8000
   # 0 folds the webhook onto http_port instead of exposing a second one.
   #
@@ -201,29 +164,16 @@ controller:
     shutdown_grace: 30s
 
 server:
-  image: ghcr.io/hrkcz001/pz-akash-server
-  # Same run, same reasoning as controller.image_tag above. The server image carries
-  # no saves at all — the packages stage feeds only the controller target, and this
-  # image is the game files plus pzctl — so the mod change reaches the game through
-  # the zip the agent downloads, not through this tag.
+  image: ghcr.io/hrkcz001/pz-server-v2
+  # Renamed for the same reason as controller.image, and pinned to the same release:
+  # both images are built by one workflow from one commit, so a version means the
+  # controller and the agent that go together. They have to — I16 needs both halves,
+  # and so does anything else that crosses the wire.
   #
-  # It moves in step with the controller for I16 all the same: the invariant needs
-  # both halves, and the agent's half — echoing the lease it is serving into every
-  # document it publishes — ships in here. The player-count fix is likewise on this
-  # side of the wire: the agent is what stamps the count, so the count stays zero
-  # until this tag moves, controller redeploy or no.
-  #
-  # sha-4a8d1e8 is the agent's half of the one-port change: the .ini it writes leaves
-  # UDPPort alone when server.ports.udp is 0, rather than setting it to 0 — which PZ
-  # would either reject or use to bind something arbitrary. Nothing exposes that port
-  # in the SDL either, so the unwritten key and the unexposed port agree.
-  #
-  # It inherits sha-056e83f's half of the Cloudflare bypass: the upload client takes
-  # the direct provider address the controller publishes before it tries the proxied
-  # name, and treats a 413 as the wrong route rather than a bad request. Both halves
-  # have to ship together — a controller that publishes a route to an agent that will
-  # not use it changes nothing.
-  image_tag: sha-4a8d1e8
+  # The server image carries no saves at all — the packages stage feeds only the
+  # controller target, and this image is the game files plus pzctl — so a mod change
+  # reaches the game through the zip the agent downloads, not through this tag.
+  image_tag: v1.0.0
   resources:
     cpu: "8"
     memory: 16Gi
@@ -572,11 +522,24 @@ dashboard:
   torrent_file: game.torrent
   guide_file: README.{lang}.md
 
+  # What a browser saves the torrent as. {version} is game_version below. The file
+  # keeps the stable name above everywhere it is referred to — the saves repo, the
+  # image build, this config — while the download carries the name a player will
+  # still recognise in a downloads folder in three months. Empty serves it under
+  # torrent_file.
+  torrent_download_name: "ProjectZomboid{version}Portable.torrent"
+
   # The Project Zomboid build the torrent contains, shown as the badge on the
   # clean-client card. It is the game's version and nothing else: the badge used to
   # render pzctl's own build stamp, which CI sets to a git sha, so the card
   # advertising a game client was labelled "vsha-2fd34d2". Empty omits the badge.
   game_version: "42.20.3"
+
+  # The build the dedicated server runs, badged on the status panel next to pzctl's
+  # own version. Its own key rather than a reuse of game_version because the two
+  # drifting apart is precisely what the pair of badges exists to make visible: a
+  # client and a server on different builds cannot connect. Empty omits the badge.
+  server_version: "42.20.3"
 
   # The join password on the public page next to the address. True is v1's
   # behaviour, and it is right while the password only keeps strangers out of a
