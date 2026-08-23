@@ -53,6 +53,7 @@ Usage:
   pzctl controller [--dry-run]           run the controller; --dry-run stubs Akash
   pzctl agent [--controller-url URL]     run the in-container server agent
   pzctl akash providers [--role ROLE]    list the providers that meet the placement rules
+  pzctl akash quote [--ip both|yes|no]   what the server would cost, with and without an IP
   pzctl akash deploy --role ROLE         create one deployment; --close closes it again
   pzctl akash leases                     list every open deployment that looks like ours
   pzctl akash escrow --dseq DSEQ         what a deployment has left to spend

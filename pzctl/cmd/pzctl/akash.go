@@ -34,7 +34,7 @@ import (
 
 func cmdAkash(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("akash: want one of providers, deploy, leases, escrow, close")
+		return fmt.Errorf("akash: want one of providers, deploy, quote, leases, escrow, close")
 	}
 	sub, rest := args[0], args[1:]
 
@@ -46,16 +46,18 @@ func cmdAkash(args []string) error {
 		"public controller URL baked into a server deploy (default: the agent discovers it from git)")
 	closeAfter := fs.Bool("close", false,
 		"close the deployment again as soon as it is routable — for a throwaway first run")
+	ip := fs.String("ip", "both",
+		"which configurations `quote` prices: both, yes (dedicated IP) or no (shared endpoint)")
 	timeout := fs.Duration("timeout", 0,
 		"give up after this long; 0 uses the akash.timeouts values from the config")
 	if err := fs.Parse(rest); err != nil {
 		return err
 	}
 
-	// Only `deploy` renders an SDL, and only a rendered SDL needs the deploy key and
-	// the storage passwords. Demanding them for `leases` would make the one command
-	// that finds a stranded lease unavailable from a laptop.
-	d, cfg, logf, err := openDriver(*path, sub == "deploy")
+	// Only `deploy` and `quote` render an SDL, and only a rendered SDL needs the
+	// deploy key and the storage passwords. Demanding them for `leases` would make the
+	// one command that finds a stranded lease unavailable from a laptop.
+	d, cfg, logf, err := openDriver(*path, sub == "deploy" || sub == "quote")
 	if err != nil {
 		return err
 	}
@@ -68,6 +70,8 @@ func cmdAkash(args []string) error {
 		return akashProviders(ctx, d, cfg, *role)
 	case "deploy":
 		return akashDeploy(ctx, d, cfg, *role, *controllerURL, *closeAfter, logf)
+	case "quote":
+		return akashQuote(ctx, d, cfg, *ip)
 	case "leases":
 		return akashLeases(ctx, d)
 	case "escrow":
@@ -76,7 +80,7 @@ func cmdAkash(args []string) error {
 		return akashClose(ctx, d, *dseq, logf)
 	default:
 		return fmt.Errorf("akash: unknown subcommand %q "+
-			"(want providers, deploy, leases, escrow or close)", sub)
+			"(want providers, deploy, quote, leases, escrow or close)", sub)
 	}
 }
 
@@ -180,6 +184,94 @@ func akashProviders(ctx context.Context, d *akash.Driver, cfg *config.Config, ro
 		fmt.Fprintf(w, "%s\t%s\t%.3f\t%s\n", p.Owner, orDash(p.CountryCode()), p.Uptime30d.F(), p.HostURI)
 	}
 	return w.Flush()
+}
+
+// akashQuote prices the server both ways and prints the difference.
+//
+// The reason it runs two rounds rather than one is that the dedicated IP changes two
+// things at once: it is a resource the provider charges for, and it disqualifies every
+// provider without an IP to lease. One round cannot separate "the address costs $X"
+// from "requiring an address left us bidding against three providers instead of
+// sixty", and on this network the second effect is the larger one.
+//
+// Sequential on purpose. Each round locks a deposit between its create and its close,
+// and a wallet funding two at once for no reason is a wallet with less room for the
+// deployment this is meant to inform.
+func akashQuote(ctx context.Context, d *akash.Driver, cfg *config.Config, which string) error {
+	var rounds []bool
+	switch which {
+	case "both":
+		rounds = []bool{true, false}
+	case "yes":
+		rounds = []bool{true}
+	case "no":
+		rounds = []bool{false}
+	default:
+		return fmt.Errorf("akash quote: --ip %q (want both, yes or no)", which)
+	}
+
+	results := make([]akash.QuoteResult, 0, len(rounds))
+	for _, requireIP := range rounds {
+		res, err := d.QuoteServer(ctx, requireIP)
+		// Printed before the error is returned. A round that timed out after two bids
+		// still measured two bids, and those are the numbers this command exists for.
+		printQuote(res)
+		results = append(results, res)
+		if err != nil {
+			return err
+		}
+	}
+
+	if len(results) == 2 {
+		withIP, okA := results[0].Cheapest()
+		without, okB := results[1].Cheapest()
+		fmt.Println()
+		switch {
+		case !okA && !okB:
+			fmt.Println("neither configuration drew an acceptable bid")
+		case !okA:
+			fmt.Printf("with a dedicated IP: nothing acceptable. Without: $%.2f/day ($%.2f/month)\n",
+				without.USDPerDay, without.USDPerDay*365/12)
+		case !okB:
+			fmt.Printf("without a dedicated IP: nothing acceptable, which is the more surprising direction\n")
+		default:
+			delta := withIP.USDPerDay - without.USDPerDay
+			fmt.Printf("dedicated IP: $%.2f/day ($%.2f/month) against $%.2f/day ($%.2f/month) without\n",
+				withIP.USDPerDay, withIP.USDPerDay*365/12, without.USDPerDay, without.USDPerDay*365/12)
+			fmt.Printf("the address is costing $%.2f/day, $%.2f/month\n", delta, delta*365/12)
+		}
+	}
+	return nil
+}
+
+// printQuote renders one round. Rejected bids stay in the table with their reason,
+// because "six providers bid and five were too expensive" and "one provider bid" are
+// the same cheapest price and completely different markets.
+func printQuote(r akash.QuoteResult) {
+	label := "with a dedicated IP"
+	if !r.RequireIP {
+		label = "on a shared endpoint, no IP lease"
+	}
+	fmt.Printf("\n=== %s ===\n", label)
+	fmt.Printf("%d eligible provider(s), %d bid(s), ceiling $%.2f/day, dseq %s (closed)\n",
+		r.Eligible, len(r.Quotes), r.CeilingUSD, orDash(r.DSeq))
+	if len(r.Quotes) == 0 {
+		return
+	}
+	w := tabwriter.NewWriter(os.Stdout, 0, 8, 2, ' ', 0)
+	fmt.Fprintln(w, "PROVIDER\tCOUNTRY\tPER BLOCK\tUSD/DAY\tUSD/MONTH\tVERDICT")
+	for _, q := range r.Quotes {
+		verdict := q.Why
+		if q.Won {
+			verdict = "would have taken this one"
+		} else if verdict == "" {
+			verdict = "acceptable"
+		}
+		fmt.Fprintf(w, "%s\t%s\t%g %s\t%.4f\t%.2f\t%s\n",
+			q.Provider, orDash(q.Country), q.AmountPerBlock, q.Denom,
+			q.USDPerDay, q.USDPerDay*365/12, verdict)
+	}
+	w.Flush()
 }
 
 // akashLeases lists what is still billing — invariant I1's last line of defence.
