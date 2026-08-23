@@ -14,13 +14,25 @@ name: pzctl
 # it, so a failing test cannot produce a pushed tag — and since config.yaml is the
 # thing every container reads before it can do anything, `pzctl config validate` is
 # part of that gate rather than something an operator remembers to run.
+#
+# Images are built for tags and nothing else. Every commit is still checked, which is
+# what the branch and pull-request triggers are for, but only `git tag -a vX.Y.Z`
+# publishes anything. Two things follow from that, and both are the point:
+#
+#   * A version is a decision. sha-4a8d1e8 named a commit; v1.0.0 names a release,
+#     and pinning one in config.yaml now says which release is deployed rather than
+#     which afternoon it was built.
+#   * The version a container reports is the tag it was built from, with no
+#     `git describe` anywhere. The running image keeps saying v1.0.0 while untagged
+#     commits land on main, because no image was built from them — which is exactly
+#     what "the latest tag, even when it is not the last commit" has to mean for a
+#     badge on a public page to be true.
 
 on:
   push:
-    # main only. The list used to carry master and v2-pzctl: v2 was developed on a
-    # branch because main was v1's live code, and CI watching main would have rebuilt
-    # v1 on every v2 commit. The new repository has no v1 on main to protect, so the
-    # branch and the extra filters went with the cutover.
+    # Tags publish. The branch push is the test gate only: `check` runs, the image
+    # jobs do not — see their `if`.
+    tags: ['v*']
     branches: [main]
     paths:
       - 'pzctl/**'
@@ -35,6 +47,14 @@ on:
 
 env:
   REGISTRY: ghcr.io
+  # Named here rather than derived from github.repository, which is what cut the last
+  # bound to v1. GHCR owns a package by repository *id*, so the packages the old
+  # repository published stayed its property when it was renamed to pz-akash-proto:
+  # deriving the name meant this repository was pushing tags into a package that
+  # another repository still owned, reachable only through a hand-granted write. These
+  # two names belong to this repository from their first tag.
+  CONTROLLER_IMAGE: pz-controller-v2
+  SERVER_IMAGE: pz-server-v2
 
 jobs:
   check:
@@ -79,6 +99,10 @@ jobs:
   controller:
     name: controller image
     needs: check
+    # Tags only. github.ref_type covers a manual dispatch aimed at a tag as well as
+    # the push that created it, and excludes every branch push — which still runs
+    # `check` above, so main stays gated without publishing anything.
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -130,7 +154,6 @@ jobs:
       - uses: docker/setup-buildx-action@v4
 
       - name: Log in to ghcr.io
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -141,14 +164,20 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}-controller
-          # sha-<short> is what config.yaml's controller.image_tag pins, so every
-          # deployable image has an immutable name. latest is a convenience for
-          # main only; nothing in config refers to it.
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.CONTROLLER_IMAGE }}
+          # The tag is the name config.yaml's controller.image_tag pins, and it is now
+          # a release rather than a commit. sha-<short> stays as a second immutable
+          # name for the same digest — useful exactly once, when two tags have to be
+          # told apart during a rollback.
+          #
+          # latest is unconditional because this job only runs for a tag, so it always
+          # means "the most recent tag built". Re-pushing an older tag would therefore
+          # move it backwards; nothing in config refers to it, which is why that is a
+          # footnote and not a problem.
           tags: |
+            type=ref,event=tag
             type=sha,format=short
-            type=ref,event=branch
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest
 
       - name: Build
         uses: docker/build-push-action@v7
@@ -165,7 +194,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ github.sha }}
+            VERSION=${{ github.ref_name }}
           # The Go stage is identical for both images, so the server job reuses
           # this build's layers instead of compiling twice.
           cache-from: type=gha
@@ -174,11 +203,8 @@ jobs:
       - name: Check the image
         run: docker/check_image.sh controller "$(echo '${{ steps.meta.outputs.tags }}' | head -n1)"
 
-      # Only now, and only for a real branch push. A pull request from a fork has
-      # no write token anyway; this makes the intent explicit rather than relying
-      # on that.
+      # Only now: the gate has run against these exact layers.
       - name: Push
-        if: github.event_name != 'pull_request'
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
         run: echo "$TAGS" | xargs -n1 docker push
@@ -186,6 +212,7 @@ jobs:
   server:
     name: server image
     needs: check
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -205,7 +232,6 @@ jobs:
       - uses: docker/setup-buildx-action@v4
 
       - name: Log in to ghcr.io
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
@@ -216,11 +242,12 @@ jobs:
         id: meta
         uses: docker/metadata-action@v6
         with:
-          images: ${{ env.REGISTRY }}/${{ github.repository }}-server
+          images: ${{ env.REGISTRY }}/${{ github.repository_owner }}/${{ env.SERVER_IMAGE }}
+          # Same three names as the controller; see there.
           tags: |
+            type=ref,event=tag
             type=sha,format=short
-            type=ref,event=branch
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest
 
       - name: Build
         uses: docker/build-push-action@v7
@@ -234,7 +261,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            VERSION=${{ github.sha }}
+            VERSION=${{ github.ref_name }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -242,7 +269,6 @@ jobs:
         run: docker/check_image.sh server "$(echo '${{ steps.meta.outputs.tags }}' | head -n1)"
 
       - name: Push
-        if: github.event_name != 'pull_request'
         env:
           TAGS: ${{ steps.meta.outputs.tags }}
         run: echo "$TAGS" | xargs -n1 docker push
