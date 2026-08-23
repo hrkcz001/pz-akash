@@ -119,7 +119,7 @@ func TestBothPagesRenderForEveryStageAndLocale(t *testing.T) {
 				d := &fakeData{in: in, open: open}
 				h := newTestHandler(t, o, d)
 
-				for _, path := range []string{PathHub, PathBackups} {
+				for _, path := range []string{PathConnect, PathBackups} {
 					name := string(lang) + "/" + cname + "/" + uname + path
 					w := do(h, http.MethodGet, path+"?lang="+string(lang))
 					if w.Code != http.StatusOK {
@@ -187,7 +187,7 @@ func TestHeadIsAGetWithoutTheBody(t *testing.T) {
 	d := &fakeData{in: Inputs{Controller: onlineController()}}
 	h := newTestHandler(t, o, d)
 
-	for _, path := range []string{PathHub, PathBackups, PathStatus} {
+	for _, path := range []string{PathConnect, PathBackups, PathStatus} {
 		body := do(h, http.MethodGet, path).Body.Len()
 		head := do(h, http.MethodHead, path)
 		if head.Code != http.StatusOK {
@@ -205,7 +205,13 @@ func TestHeadIsAGetWithoutTheBody(t *testing.T) {
 func TestPagesRejectOtherMethods(t *testing.T) {
 	h := newTestHandler(t, fullOptions(t), &fakeData{})
 
-	cases := map[string]string{PathHub: "GET, HEAD", PathBackups: "GET, HEAD", PathStatus: "GET, HEAD", PathUnlock: "POST"}
+	cases := map[string]string{
+		PathRoot:    "GET, HEAD",
+		PathConnect: "GET, HEAD",
+		PathBackups: "GET, HEAD",
+		PathStatus:  "GET, HEAD",
+		PathUnlock:  "POST",
+	}
 	for path, allow := range cases {
 		method := http.MethodPost
 		if path == PathUnlock {
@@ -225,10 +231,57 @@ func TestUnknownPathsAre404(t *testing.T) {
 	h := newTestHandler(t, fullOptions(t), &fakeData{})
 	// /backups/<name> belongs to httpapi. The dashboard must not answer for it, or
 	// mounting it under "/" would shadow every download.
-	for _, path := range []string{"/nope", "/backups/backup_20260819_013623.zip", "/server.zip", "/api/", "/assets"} {
+	//
+	// /packages is in the list because the tab used to be called that, and the
+	// rename deliberately left no alias behind: one name for the page, so a link
+	// given out loud goes where the tab says it does.
+	for _, path := range []string{
+		"/nope", "/backups/backup_20260819_013623.zip", "/server.zip", "/api/", "/assets", "/packages",
+	} {
 		if w := do(h, http.MethodGet, path); w.Code != http.StatusNotFound {
 			t.Errorf("GET %s = %d, want 404", path, w.Code)
 		}
+	}
+}
+
+// The main page moved off the root, and the root is what a player types or pastes
+// into a chat. A 404 there would be the whole dashboard missing for everyone who
+// does not already have the deep link.
+func TestRootRedirectsToConnect(t *testing.T) {
+	h := newTestHandler(t, fullOptions(t), &fakeData{})
+
+	cases := map[string]string{
+		PathRoot:                                 PathConnect,
+		PathRoot + "?lang=ru":                    PathConnect + "?lang=ru",
+		PathRoot + "?unlock=wrong&realm=backups": PathConnect + "?unlock=wrong&realm=backups",
+	}
+	for from, want := range cases {
+		w := do(h, http.MethodGet, from)
+		// 302, not 301: a permanent redirect is cached until the reader clears it,
+		// and this route has already moved once.
+		if w.Code != http.StatusFound {
+			t.Errorf("GET %s = %d, want 302", from, w.Code)
+		}
+		if got := w.Header().Get("Location"); got != want {
+			t.Errorf("GET %s: Location = %q, want %q", from, got, want)
+		}
+	}
+}
+
+// The tab and the page have to agree about the name. Both halves are template
+// literals that nothing else reads, so a rename that touched one and not the other
+// would render a nav entry that is never marked, or one that links to a 404 — and
+// neither shows up as a failure anywhere else in this package.
+func TestNavMarksTheConnectTabOnItsOwnPage(t *testing.T) {
+	h := newTestHandler(t, fullOptions(t), &fakeData{in: Inputs{Controller: onlineController()}})
+
+	connect := do(h, http.MethodGet, PathConnect).Body.String()
+	if !strings.Contains(connect, `<a href="/connect" class="nav-item active"`) {
+		t.Errorf("the connect tab is not marked active on %s", PathConnect)
+	}
+	if backups := do(h, http.MethodGet, PathBackups).Body.String(); !strings.Contains(
+		backups, `<a href="/connect" class="nav-item"`) {
+		t.Errorf("the connect tab is marked active on %s, or does not link to %s", PathBackups, PathConnect)
 	}
 }
 
@@ -372,7 +425,7 @@ func TestWrongPasswordComesBackAsARenderedPage(t *testing.T) {
 	}
 
 	// The hub's version of the same: the modal comes back already open.
-	hub := do(h, http.MethodGet, PathHub+"?unlock=wrong&realm=server-files")
+	hub := do(h, http.MethodGet, PathConnect+"?unlock=wrong&realm=server-files")
 	if !strings.Contains(hub.Body.String(), "modal-backdrop open") {
 		t.Error("the hub's modal did not come back open")
 	}
@@ -402,7 +455,7 @@ func TestOnlyTheTwoRealmsAreAccepted(t *testing.T) {
 
 	// And the same list on the query-string marker the page reads.
 	for _, realm := range []string{"admin", "", "BACKUPS"} {
-		body := do(h, http.MethodGet, PathHub+"?unlock=wrong&realm="+url.QueryEscape(realm)).Body.String()
+		body := do(h, http.MethodGet, PathConnect+"?unlock=wrong&realm="+url.QueryEscape(realm)).Body.String()
 		if strings.Contains(body, "modal-backdrop open") {
 			t.Errorf("realm %q opened the modal", realm)
 		}
@@ -432,8 +485,8 @@ func TestUnlockCannotBeTurnedIntoAnOpenRedirect(t *testing.T) {
 
 	// The realm decides the fallback, so a server-files unlock lands on the hub.
 	w := post(h, PathUnlock, url.Values{"realm": {"server-files"}, "next": {"https://evil.example/"}, "password": {"correct horse"}})
-	if got := w.Header().Get("Location"); got != PathHub {
-		t.Errorf("Location = %q, want %q", got, PathHub)
+	if got := w.Header().Get("Location"); got != PathConnect {
+		t.Errorf("Location = %q, want %q", got, PathConnect)
 	}
 }
 
@@ -447,7 +500,7 @@ func TestRealmNamesMatchTheAPI(t *testing.T) {
 		t.Errorf("realmBackups = %q, httpapi has %q", realmBackups, httpapi.RealmBackups)
 	}
 	// And the string the hub's unlock button posts, which is markup rather than Go.
-	body := do(newTestHandler(t, fullOptions(t), &fakeData{}), http.MethodGet, PathHub).Body.String()
+	body := do(newTestHandler(t, fullOptions(t), &fakeData{}), http.MethodGet, PathConnect).Body.String()
 	if !strings.Contains(body, `data-unlock="`+realmServerFiles+`"`) {
 		t.Errorf("the locked card does not name the %q realm", realmServerFiles)
 	}
@@ -468,7 +521,7 @@ func TestLocaleComesFromQueryThenCookieThenHeader(t *testing.T) {
 
 	t.Run("query wins and is remembered", func(t *testing.T) {
 		h, d := newH()
-		w := do(h, http.MethodGet, PathHub+"?lang=en", &http.Cookie{Name: langCookie, Value: "ru"})
+		w := do(h, http.MethodGet, PathConnect+"?lang=en", &http.Cookie{Name: langCookie, Value: "ru"})
 		if got := lastAsked(t, d); got != EN {
 			t.Fatalf("Snapshot was asked for %q", got)
 		}
@@ -490,7 +543,7 @@ func TestLocaleComesFromQueryThenCookieThenHeader(t *testing.T) {
 
 	t.Run("cookie is honoured and not rewritten", func(t *testing.T) {
 		h, d := newH()
-		w := do(h, http.MethodGet, PathHub, &http.Cookie{Name: langCookie, Value: "en"})
+		w := do(h, http.MethodGet, PathConnect, &http.Cookie{Name: langCookie, Value: "en"})
 		if got := lastAsked(t, d); got != EN {
 			t.Fatalf("Snapshot was asked for %q", got)
 		}
@@ -501,7 +554,7 @@ func TestLocaleComesFromQueryThenCookieThenHeader(t *testing.T) {
 
 	t.Run("accept-language, including the region form", func(t *testing.T) {
 		h, d := newH()
-		r := httptest.NewRequest(http.MethodGet, PathHub, nil)
+		r := httptest.NewRequest(http.MethodGet, PathConnect, nil)
 		r.Header.Set("Accept-Language", "en-GB,en;q=0.9")
 		w := httptest.NewRecorder()
 		h.ServeHTTP(w, r)
@@ -512,7 +565,7 @@ func TestLocaleComesFromQueryThenCookieThenHeader(t *testing.T) {
 
 	t.Run("nonsense falls back to the configured default", func(t *testing.T) {
 		h, d := newH()
-		do(h, http.MethodGet, PathHub+"?lang=de", &http.Cookie{Name: langCookie, Value: "klingon"})
+		do(h, http.MethodGet, PathConnect+"?lang=de", &http.Cookie{Name: langCookie, Value: "klingon"})
 		if got := lastAsked(t, d); got != RU {
 			t.Fatalf("Snapshot was asked for %q, want the default", got)
 		}
@@ -522,7 +575,7 @@ func TestLocaleComesFromQueryThenCookieThenHeader(t *testing.T) {
 	// next, and Cloudflare sits in front of this.
 	t.Run("the response says what it varies on", func(t *testing.T) {
 		h, _ := newH()
-		for _, path := range []string{PathHub, PathBackups} {
+		for _, path := range []string{PathConnect, PathBackups} {
 			if got := do(h, http.MethodGet, path).Header().Get("Vary"); !strings.Contains(got, "Cookie") {
 				t.Errorf("%s: Vary = %q", path, got)
 			}
@@ -554,12 +607,12 @@ func cookie(t *testing.T, w *httptest.ResponseRecorder, name string) *http.Cooki
 func TestSecureCookieFollowsTheForwardedScheme(t *testing.T) {
 	h := newTestHandler(t, fullOptions(t), &fakeData{})
 
-	plain := do(h, http.MethodGet, PathHub+"?lang=en")
+	plain := do(h, http.MethodGet, PathConnect+"?lang=en")
 	if cookie(t, plain, langCookie).Secure {
 		t.Error("Secure set on a plain HTTP connection; the cookie would never come back")
 	}
 
-	r := httptest.NewRequest(http.MethodGet, PathHub+"?lang=en", nil)
+	r := httptest.NewRequest(http.MethodGet, PathConnect+"?lang=en", nil)
 	r.Header.Set("X-Forwarded-Proto", "HTTPS")
 	w := httptest.NewRecorder()
 	h.ServeHTTP(w, r)
@@ -617,7 +670,7 @@ func TestAssetsRevalidateOnABuildDigest(t *testing.T) {
 // page with no styling and no poll.
 func TestPagesReferenceTheAssetsThatExist(t *testing.T) {
 	h := newTestHandler(t, fullOptions(t), &fakeData{})
-	for _, path := range []string{PathHub, PathBackups} {
+	for _, path := range []string{PathConnect, PathBackups} {
 		body := do(h, http.MethodGet, path).Body.String()
 		for _, ref := range []string{PathAssets + "dashboard.css", PathAssets + "dashboard.js"} {
 			if !strings.Contains(body, ref) {

@@ -179,7 +179,7 @@
       <p id="modal-desc">{{.T.ModalServerDesc}}</p>
       <div class="modal-error{{if .UnlockError}} shown{{end}}" id="modal-error">{{.UnlockError}}</div>
       <form id="unlock-form" method="POST" action="/api/unlock">
-        <input type="hidden" name="next" value="/">
+        <input type="hidden" name="next" value="/connect">
         <input type="hidden" name="realm" id="modal-realm"
                value="{{if .ModalRealm}}{{.ModalRealm}}{{else}}server-files{{end}}">
         <input type="password" class="modal-input" id="modal-password" name="password"

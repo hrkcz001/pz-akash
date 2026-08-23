@@ -171,8 +171,8 @@ func TestWriteGallery(t *testing.T) {
 			// Both unlock states: locked is what a player sees, and it is the half
 			// carrying the lock and the modal.
 			written = append(written,
-				render(t, dir, o, in, Unlocked{}, lang, PathHub, c.name+"-locked"),
-				render(t, dir, o, in, Unlocked{ServerFiles: true, Backups: true}, lang, PathHub, c.name+"-unlocked"))
+				render(t, dir, o, in, Unlocked{}, lang, PathConnect, c.name+"-locked"),
+				render(t, dir, o, in, Unlocked{ServerFiles: true, Backups: true}, lang, PathConnect, c.name+"-unlocked"))
 		}
 	}
 
@@ -197,7 +197,7 @@ func TestWriteGallery(t *testing.T) {
 		written = append(written,
 			render(t, dir, o, full, Unlocked{}, lang, PathBackups, "backups-wrong-password",
 				"&unlock=wrong&realm=backups"),
-			render(t, dir, o, full, Unlocked{}, lang, PathHub, "hub-wrong-password",
+			render(t, dir, o, full, Unlocked{}, lang, PathConnect, "hub-wrong-password",
 				"&unlock=wrong&realm=server-files"))
 	}
 

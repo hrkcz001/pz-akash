@@ -18,10 +18,17 @@ import (
 //go:embed templates/*.html assets/*
 var files embed.FS
 
-// Paths this package serves. They are v1's, so bookmarks and the guide's links
-// keep working.
+// Paths this package serves. All but one are v1's, so bookmarks and the guide's
+// links keep working.
+//
+// The exception is the main page, which v1 served at the root and which now lives
+// at PathConnect. The tab above it says "connect", and a tab whose name and whose
+// URL disagree is the kind of small wrongness that makes a link hard to give out
+// loud. The root still has to answer — it is the bare domain a player types — so
+// it redirects rather than 404s.
 const (
-	PathHub     = "/"
+	PathRoot    = "/"
+	PathConnect = "/connect"
 	PathBackups = "/backups"
 	PathAssets  = "/assets/"
 	PathStatus  = "/api/status"
@@ -164,8 +171,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveAsset(w, r)
 	case path == PathBackups, path == PathBackups+"/":
 		h.servePage(w, r, false)
-	case path == PathHub:
+	case path == PathConnect, path == PathConnect+"/":
 		h.servePage(w, r, true)
+	case path == PathRoot:
+		h.serveRoot(w, r)
 	default:
 		http.NotFound(w, r)
 	}

@@ -27,6 +27,28 @@ const langCookie = "pz_lang"
 
 // --- pages ---
 
+// serveRoot sends the bare domain to the page that used to be there.
+//
+// 302 and not 301. A permanent redirect is cached by the browser until someone
+// clears it, so the day this route moves again — or the day the root is given a
+// page of its own — every reader who has been here once would keep going to the
+// old place, and nothing the controller serves could tell them otherwise.
+//
+// The query travels with it. The root is what a shared link looks like, and a
+// ?lang= on one that dropped at the redirect would land the reader in whichever
+// locale their browser asked for instead of the one they were sent.
+func (h *Handler) serveRoot(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		h.methodNotAllowed(w, http.MethodGet, http.MethodHead)
+		return
+	}
+	to := PathConnect
+	if q := r.URL.RawQuery; q != "" {
+		to += "?" + q
+	}
+	http.Redirect(w, r, to, http.StatusFound)
+}
+
 func (h *Handler) servePage(w http.ResponseWriter, r *http.Request, hub bool) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		h.methodNotAllowed(w, http.MethodGet, http.MethodHead)
@@ -154,15 +176,20 @@ func (h *Handler) serveUnlock(w http.ResponseWriter, r *http.Request) {
 // the two pages that exist. Anything else falls back to the page the realm
 // belongs to, which makes an open-redirect through this form impossible rather
 // than merely difficult.
+//
+// PathRoot is deliberately not in the list. It is a redirect, not a page, and
+// answering an unlock with "now go and get redirected" would put the unlock=wrong
+// marker through a hop that does not have to carry it. A form still posting the
+// old value falls through to the default, which is where it was going anyway.
 func returnTo(next, realm string) string {
 	switch next {
-	case PathHub, PathBackups:
+	case PathConnect, PathBackups:
 		return next
 	}
 	if realm == realmBackups {
 		return PathBackups
 	}
-	return PathHub
+	return PathConnect
 }
 
 // failedRealm reads the marker returnTo's failure branch adds.

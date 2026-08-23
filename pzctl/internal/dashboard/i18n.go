@@ -101,10 +101,10 @@ func (l Lang) pluralize(n int, p Plural) string {
 // page nobody is checking word by word.
 type text struct {
 	// Chrome
-	PageTitle   string
-	Brand       string
-	NavPackages string
-	NavBackups  string
+	PageTitle  string
+	Brand      string
+	NavConnect string
+	NavBackups string
 
 	// Status card
 	ServerTitle    string

@@ -163,7 +163,7 @@ func BuildPage(o Options, in Inputs, want Lang) Page {
 			T:        t,
 			Switcher: o.switcher(lang),
 			Title:    t.PageTitle,
-			Active:   "packages",
+			Active:   "connect",
 		},
 		GameVersion:  in.GameVersion,
 		Stage:        st.Stage,

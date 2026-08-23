@@ -257,7 +257,7 @@ type Chrome struct {
 	// here rather than read off the catalog in the template.
 	Title string
 
-	// Active is the nav entry to mark: "packages" or "backups".
+	// Active is the nav entry to mark: "connect" or "backups".
 	Active string
 }
 

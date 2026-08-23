@@ -22,7 +22,7 @@
         <span>{{.T.Brand}}</span>
       </div>
       <div class="nav-links">
-        <a href="/" class="nav-item{{if eq .Active "packages"}} active{{end}}">{{.T.NavPackages}}</a>
+        <a href="/connect" class="nav-item{{if eq .Active "connect"}} active{{end}}">{{.T.NavConnect}}</a>
         <a href="/backups" class="nav-item{{if eq .Active "backups"}} active{{end}}">{{.T.NavBackups}}</a>
         <div class="lang-switch">
           {{range $i, $l := .Switcher}}
