@@ -212,15 +212,25 @@ server:
   memory_max: 14336m
   memory_min: 14336m
 
-  # A dedicated IP keeps the game ports on their real numbers; without it the
-  # provider assigns arbitrary external ports and players cannot be told a
-  # stable address.
-  ip_lease: true
+  # No dedicated IP. Nothing in the uact market will honour one — europlots wins
+  # every round and then delivers an empty IP — so the address is the provider's
+  # own hostname plus whatever external UDP port it draws from its pool. The port
+  # is neither predictable nor negotiable and changes on every redeploy, which is
+  # why the dashboard puts a copy button beside it and the guide tells players the
+  # port moves. ip_name stays for the day a provider sells one again.
+  ip_lease: false
   ip_name: pz-ip
 
   ports:
     game: 16261   # PZ DefaultPort, udp
-    udp: 16262    # PZ UDPPort, udp
+    # One port. Zero means "PZ binds a single UDP socket": nothing is exposed for
+    # it, no UDPPort line is written to the ini, and no forward is waited on.
+    #
+    # Build 42 binds only DefaultPort — 41 needed the second socket and 42 does
+    # not — and on a shared endpoint each expose costs another arbitrary external
+    # port that players would have to be told about and that nothing would use.
+    # Set it back to 16262 to go the other way.
+    udp: 0
 
   # Both are opt-in in v2. The agent owns the PZ process, so it drives saves
   # through stdin and reads player counts from stdout; nothing needs RCON, and
@@ -462,9 +472,15 @@ dns:
   ssl_mode: flexible
   include_www: true
 
-  # Subdomain pointed at the game server's dedicated IP, so players keep one
-  # address across redeploys: pz.vsrania.online:16261. Empty disables it and
-  # players go back to reading a fresh IP off the dashboard after every deploy.
+  # Subdomain pointed at the game server, so players keep one name across
+  # redeploys: pz.vsrania.online. The name only — without a dedicated IP the port
+  # is whatever the provider drew and it changes every deploy, so players read the
+  # port off the dashboard and edit it in the favourite they already have. DNS
+  # cannot carry a port, and this is the half of the address it can carry.
+  #
+  # A record when the endpoint is an IP, CNAME when it is a provider hostname; see
+  # dns.recordType, which decides from the value rather than from this setting.
+  # Empty disables it and players read the whole address off the dashboard.
   #
   # It is always a DNS-only record, never proxied. Cloudflare's proxy carries HTTP
   # and PZ does not, and a proxied name resolves to Cloudflare's own addresses — so

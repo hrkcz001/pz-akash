@@ -266,7 +266,12 @@ func (d *Driver) endpointFrom(st leaseStatus, service string, kind addrKind) (st
 		game := d.Cfg.Server.Ports.Game
 		ep := state.Endpoint{
 			GamePort: portFor(ips, game, game),
-			UDPPort:  portFor(ips, d.Cfg.Server.Ports.UDP, d.Cfg.Server.Ports.UDP),
+		}
+		// Only looked for when a second socket is configured. server.ports.udp: 0
+		// exposes nothing, so scanning for container port 0 could only match a
+		// malformed entry — and would report a port PZ is not listening on.
+		if udp := d.Cfg.Server.Ports.UDP; udp > 0 {
+			ep.UDPPort = portFor(ips, udp, udp)
 		}
 		if d.Cfg.Server.RCON.Enabled {
 			ep.RCONPort = portFor(ips, d.Cfg.Server.RCON.Port, d.Cfg.Server.RCON.Port)

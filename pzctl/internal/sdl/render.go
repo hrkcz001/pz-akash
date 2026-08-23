@@ -144,13 +144,20 @@ func RenderServer(in Input) ([]byte, error) {
 	if c.Server.IPLease {
 		ip = c.Server.IPName
 	}
-	// Only the game ports are unconditional. RCON and SSH are opt-in in v2:
-	// the agent drives saves through the PZ process it owns and uploads its own
-	// backups, so neither port is needed for normal operation.
+	// Only the game port is unconditional. The second UDP socket is exposed only
+	// when one is configured — server.ports.udp: 0 means PZ binds one, and on a
+	// shared endpoint an expose nothing listens on still costs an arbitrary
+	// external port that a player would have to be told about. RCON and SSH are
+	// opt-in in v2: the agent drives saves through the PZ process it owns and
+	// uploads its own backups, so neither port is needed for normal operation.
 	v.Exposes = append(v.Exposes,
 		expose{Port: c.Server.Ports.Game, As: c.Server.Ports.Game, Proto: "udp", IP: ip},
-		expose{Port: c.Server.Ports.UDP, As: c.Server.Ports.UDP, Proto: "udp", IP: ip},
 	)
+	if c.Server.Ports.UDP > 0 {
+		v.Exposes = append(v.Exposes, expose{
+			Port: c.Server.Ports.UDP, As: c.Server.Ports.UDP, Proto: "udp", IP: ip,
+		})
+	}
 	if c.Server.RCON.Enabled {
 		v.Exposes = append(v.Exposes, expose{
 			Port: c.Server.RCON.Port, As: c.Server.RCON.Port, Proto: "tcp", IP: ip,

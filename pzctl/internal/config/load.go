@@ -50,11 +50,15 @@ func Defaults() *Config {
 			},
 		},
 		Server: Server{
-			Resources:     Resources{CPU: "8", Memory: "16Gi", Storage: "30Gi"},
-			MemoryMax:     "8192m",
-			MemoryMin:     "8192m",
-			Ports:         ServerPorts{Game: 16261, UDP: 16262},
-			IPLease:       true,
+			Resources: Resources{CPU: "8", Memory: "16Gi", Storage: "30Gi"},
+			MemoryMax: "8192m",
+			MemoryMin: "8192m",
+			// One UDP socket and no dedicated IP: what build 42 binds, and what the
+			// uact market will actually sell. These were 16262 and true, which is
+			// what v1 ran; a default that contradicts the shipped config is how a
+			// partial config gets a shape nobody has ever deployed.
+			Ports:         ServerPorts{Game: 16261, UDP: 0},
+			IPLease:       false,
 			IPName:        "pz-ip",
 			RCON:          Feature{Enabled: false, Port: 27015},
 			SSH:           Feature{Enabled: false, Port: 2222},

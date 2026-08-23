@@ -46,7 +46,14 @@ func ownedINI(c *config.Config) map[string]string {
 		"BackupsOnVersionChange": boolINI(g.PZBackups.OnVersionChange),
 		"BackupsPeriod":          strconv.Itoa(g.PZBackups.Period),
 		"DefaultPort":            strconv.Itoa(c.Server.Ports.Game),
-		"UDPPort":                strconv.Itoa(c.Server.Ports.UDP),
+	}
+	// UDPPort is written only when a second socket is configured. server.ports.udp:
+	// 0 means "PZ binds one", and the key is then left as the file has it rather
+	// than set to 0 — 0 is not a port, and PZ would either reject it or bind
+	// something arbitrary. Nothing exposes it in the SDL either, so an unwritten
+	// key and an unexposed port stay consistent.
+	if c.Server.Ports.UDP > 0 {
+		vals["UDPPort"] = strconv.Itoa(c.Server.Ports.UDP)
 	}
 	// RCONPort is only written when RCON is on. PZ has no RCONEnabled key — it
 	// listens when there is a password — so writing the port while the feature is

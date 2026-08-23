@@ -292,7 +292,12 @@ func (c *Config) validateServer(p *problems) {
 		used[port] = path
 	}
 	claim("server.ports.game", s.Ports.Game)
-	claim("server.ports.udp", s.Ports.UDP)
+	// Zero is the documented way to say "PZ binds one UDP socket", so it is not
+	// put through requirePort — which would reject it as out of range. Any other
+	// value is a real port and is checked and claimed like the rest.
+	if s.Ports.UDP != 0 {
+		claim("server.ports.udp", s.Ports.UDP)
+	}
 	if s.RCON.Enabled {
 		claim("server.rcon.port", s.RCON.Port)
 	}

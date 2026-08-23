@@ -239,7 +239,14 @@ type Server struct {
 
 type ServerPorts struct {
 	Game int `yaml:"game"` // PZ DefaultPort, udp
-	UDP  int `yaml:"udp"`  // PZ UDPPort, udp
+	// UDP is PZ's second UDP socket, or 0 for "it binds only one".
+	//
+	// Zero is a real setting rather than a missing value, and it propagates: the
+	// SDL exposes nothing for it, the ini gets no UDPPort line, and the endpoint
+	// wait does not look for a forward that will never appear. Build 41 needed the
+	// second socket and 42 does not, and on a shared endpoint every expose costs
+	// another arbitrary external port a player would have to be told about.
+	UDP int `yaml:"udp"`
 }
 
 type Feature struct {

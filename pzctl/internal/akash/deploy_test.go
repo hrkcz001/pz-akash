@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/hrkcz001/pz-akash/pzctl/internal/config"
 	"github.com/hrkcz001/pz-akash/pzctl/internal/state"
 )
 
@@ -92,6 +93,34 @@ const serverNoIP = `{
   "services":{"pz-server":{"name":"pz-server","available":1,"total":1,"replicas":1,"ready_replicas":1}},
   "forwarded_ports":{},"ips":{}}`
 
+// serverShared is the address the shipped config actually gets: no IP of our own,
+// the provider's hostname, and an external port drawn from its pool. 31188 rather
+// than 16261 because a shared endpoint ignores the SDL's `as:` — our own controller
+// asked for 8000 and was handed 31188 — so a fixture that echoed the requested port
+// would be testing a case that does not occur.
+const serverShared = `{
+  "services":{"pz-server":{"name":"pz-server","available":1,"total":1,"replicas":1,"ready_replicas":1}},
+  "forwarded_ports":{"pz-server":[
+    {"host":"provider.example.com","port":16261,"externalPort":31188,"proto":"UDP","name":"pz-server"}]},
+  "ips":{}}`
+
+// dedicatedIPConfig is the real config forced back onto the dedicated-IP path with
+// PZ's second UDP socket enabled: the world the fixtures above describe.
+//
+// The shipped config no longer points there — no provider in the uact market would
+// sell an IP, so the deployment moved to a shared endpoint with a single port — and
+// both paths are still live code. So the dedicated tests pin the mode they are
+// about rather than inheriting whichever way config.yaml happens to point, and the
+// shared path gets tests of its own below. Everything else about the config stays
+// real, which is what keeps a config edit breaking a test first.
+func dedicatedIPConfig(t *testing.T) *config.Config {
+	t.Helper()
+	c := testConfig(t)
+	c.Server.IPLease = true
+	c.Server.Ports.UDP = 16262
+	return c
+}
+
 func TestDeployServerHappyPath(t *testing.T) {
 	f := newFakeAPI(t)
 	f.json("GET", "/v1/providers", providersDoc(f.url()))
@@ -117,7 +146,7 @@ func TestDeployServerHappyPath(t *testing.T) {
 		return 200, detailDoc(serverReady)
 	})
 
-	d, clk := newTestDriver(t, f, nil)
+	d, clk := newTestDriver(t, f, dedicatedIPConfig(t))
 	res, err := d.DeployServer(context.Background(), DeployOptions{
 		ControllerURL: "http://controller.example:8000",
 		RestoreTarget: "latest",
@@ -253,7 +282,7 @@ func TestDeployServerNoEligibleProviders(t *testing.T) {
 	  {"owner":"akash1noip","isOnline":true,"isValidVersion":true,"featEndpointIp":false,"uptime30d":0.99,"ipCountryCode":"DE"}
 	]}`)
 
-	d, clk := newTestDriver(t, f, nil)
+	d, clk := newTestDriver(t, f, dedicatedIPConfig(t))
 	res, err := d.DeployServer(context.Background(), DeployOptions{Attempt: 1})
 	if err == nil {
 		t.Fatal("DeployServer succeeded with no eligible provider")
@@ -342,7 +371,7 @@ func TestDeployServerBidsMissingIsNotFatal(t *testing.T) {
 		return 200, bidsDoc(testProvider, "34")
 	})
 
-	d, _ := newTestDriver(t, f, nil)
+	d, _ := newTestDriver(t, f, dedicatedIPConfig(t))
 	res, err := d.DeployServer(context.Background(), DeployOptions{Attempt: 1})
 	if err != nil {
 		t.Fatalf("DeployServer gave up on a 404 from the bids endpoint: %v", err)
@@ -413,7 +442,7 @@ func TestDeployServerLeasedButNeverRoutable(t *testing.T) {
 	f.json("POST", "/v1/create-jwt-token", `{"data":{"token":"scoped.status.token"}}`)
 	f.json("GET", "/lease/", `{"services":{"pz-server":{"available":1,"ready_replicas":1}},"ips":{}}`)
 
-	d, clk := newTestDriver(t, f, nil)
+	d, clk := newTestDriver(t, f, dedicatedIPConfig(t))
 	res, err := d.DeployServer(context.Background(), DeployOptions{Attempt: 1})
 	if err == nil {
 		t.Fatal("DeployServer succeeded without an address")
@@ -466,7 +495,7 @@ func TestDeployServerProviderAnswersFirst(t *testing.T) {
 	    {"IP":"`+testIP+`","Port":16261,"ExternalPort":16261,"Protocol":"UDP"},
 	    {"IP":"`+testIP+`","Port":16262,"ExternalPort":16262,"Protocol":"UDP"}]}}`)
 
-	d, clk := newTestDriver(t, f, nil)
+	d, clk := newTestDriver(t, f, dedicatedIPConfig(t))
 	res, err := d.DeployServer(context.Background(), DeployOptions{Attempt: 1})
 	if err != nil {
 		t.Fatalf("DeployServer: %v", err)
@@ -486,6 +515,86 @@ func TestDeployServerProviderAnswersFirst(t *testing.T) {
 	}
 	if n := f.countCalls("POST", "/v1/create-jwt-token"); n != 1 {
 		t.Errorf("minted %d status tokens, want 1", n)
+	}
+}
+
+// TestDeployServerUsesSharedEndpoint is the shipped configuration: no IP of our
+// own, so the address is the provider's hostname and whatever external UDP port it
+// drew from its pool. The port it drew is deliberately not the one the SDL asked
+// for — a shared endpoint ignores `as:`, and a deploy that assumed otherwise would
+// publish an address nobody can reach.
+func TestDeployServerUsesSharedEndpoint(t *testing.T) {
+	f := newFakeAPI(t)
+	f.json("GET", "/v1/providers", providersDoc(f.url()))
+	f.json("POST", "/v1/deployments", createdDoc)
+	f.json("GET", "/v1/bids", bidsDoc(testProvider, "34"))
+	f.json("POST", "/v1/leases", leasedDoc)
+	f.json("GET", "/v1/deployments/", detailDoc(serverShared))
+
+	d, _ := newTestDriver(t, f, nil)
+	res, err := d.DeployServer(context.Background(), DeployOptions{Attempt: 1})
+	if err != nil {
+		t.Fatalf("DeployServer: %v", err)
+	}
+	if res.Endpoint.Host != "provider.example.com" {
+		t.Errorf("host = %q, want the provider's own hostname", res.Endpoint.Host)
+	}
+	if res.Endpoint.GamePort != 31188 {
+		t.Errorf("game port = %d, want the provider's 31188 and not the SDL's %d",
+			res.Endpoint.GamePort, d.Cfg.Server.Ports.Game)
+	}
+	// Nothing invents an IP here. One in the endpoint would reach a DNS A record
+	// and, being the shared ingress rather than ours, would point at every other
+	// tenant on the provider.
+	if res.Endpoint.IP != "" {
+		t.Errorf("IP = %q, want empty without a dedicated IP", res.Endpoint.IP)
+	}
+	// One socket, one forward: UDPPort is a report of what exists on this path, so
+	// with server.ports.udp: 0 there is nothing to report.
+	if res.Endpoint.UDPPort != 0 {
+		t.Errorf("UDPPort = %d, want 0 with a single configured socket", res.Endpoint.UDPPort)
+	}
+	if !res.Endpoint.Ready() || res.Endpoint.Addr() != "provider.example.com" {
+		t.Errorf("endpoint %+v is not a usable address", res.Endpoint)
+	}
+	// Still a game address, so still no URL: the DNS record for it is a CNAME, and
+	// anything with a scheme in it here would be written as one.
+	if res.URL != "" {
+		t.Errorf("URL = %q, want empty for a game address", res.URL)
+	}
+}
+
+// TestDeployServerSharedEndpointNeedsAUDPForward: a provider that forwards our port
+// over TCP has not given us a playable address, and accepting it would publish a
+// server that answers a handshake and nothing else. The lease is billing by then,
+// so this must surface as the routable failure rather than as success.
+func TestDeployServerSharedEndpointNeedsAUDPForward(t *testing.T) {
+	f := newFakeAPI(t)
+	f.json("GET", "/v1/providers", providersDoc(f.url()))
+	f.json("POST", "/v1/deployments", createdDoc)
+	f.json("GET", "/v1/bids", bidsDoc(testProvider, "34"))
+	f.json("POST", "/v1/leases", leasedDoc)
+	f.json("GET", "/v1/deployments/", detailDoc(`{
+	  "services":{"pz-server":{"name":"pz-server","available":1,"ready_replicas":1}},
+	  "forwarded_ports":{"pz-server":[
+	    {"host":"provider.example.com","port":16261,"externalPort":31188,"proto":"TCP","name":"pz-server"}]},
+	  "ips":{}}`))
+	f.json("POST", "/v1/create-jwt-token", `{"data":{"token":"scoped.status.token"}}`)
+	f.json("GET", "/lease/", `{
+	  "services":{"pz-server":{"name":"pz-server","available":1,"ready_replicas":1}},
+	  "forwarded_ports":{},"ips":{}}`)
+
+	d, _ := newTestDriver(t, f, nil)
+	res, err := d.DeployServer(context.Background(), DeployOptions{Attempt: 1})
+	if err == nil {
+		t.Fatal("DeployServer accepted a TCP forward as a game address")
+	}
+	if !strings.Contains(err.Error(), "no forwarded udp port") {
+		t.Errorf("error %q does not say the forward was not UDP", err)
+	}
+	// The dseq still comes back, because the lease is funded and has to be closable.
+	if res.Lease.DSeq != testDSeq {
+		t.Errorf("dseq = %q, want %q", res.Lease.DSeq, testDSeq)
 	}
 }
 

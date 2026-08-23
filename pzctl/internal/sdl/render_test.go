@@ -143,33 +143,67 @@ func TestRenderControllerFoldsWebhookOntoHTTPPort(t *testing.T) {
 	}
 }
 
+// The server SDL's shape follows two settings that have each flipped during v2:
+// ip_lease and the second UDP socket. One axis is forced here and the other read
+// from the real config, so neither shape stops being covered the next time
+// config.yaml changes — which is precisely what happened to this test when the
+// deployment moved off a dedicated IP.
 func TestRenderServerShape(t *testing.T) {
-	cfg := loadCfg(t)
-	raw, err := RenderServer(Input{Cfg: cfg, MaxPricePerBlock: 69})
-	if err != nil {
-		t.Fatal(err)
-	}
-	doc := parse(t, raw)
+	for _, lease := range []bool{true, false} {
+		name := "shared-endpoint"
+		if lease {
+			name = "dedicated-ip"
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg := loadCfg(t)
+			cfg.Server.IPLease = lease
+			raw, err := RenderServer(Input{Cfg: cfg, MaxPricePerBlock: 69})
+			if err != nil {
+				t.Fatal(err)
+			}
+			doc := parse(t, raw)
+			svc := doc.Services[ServerService]
 
-	svc := doc.Services[ServerService]
-	// With RCON and SSH off, only the two game ports are exposed. This is the
-	// v2 reduction: v1 exposed four.
-	if len(svc.Expose) != 2 {
-		t.Fatalf("want 2 exposed ports with rcon and ssh disabled, got %d", len(svc.Expose))
-	}
-	for _, e := range svc.Expose {
-		if e.Proto != "udp" {
-			t.Errorf("port %d proto = %q, want udp", e.Port, e.Proto)
-		}
-		if e.To[0].IP != cfg.Server.IPName {
-			t.Errorf("port %d ip = %q, want %q", e.Port, e.To[0].IP, cfg.Server.IPName)
-		}
-	}
-	if doc.Endpoints[cfg.Server.IPName].Kind != "ip" {
-		t.Errorf("endpoints.%s.kind = %q, want ip", cfg.Server.IPName, doc.Endpoints[cfg.Server.IPName].Kind)
-	}
-	if got := doc.Profiles.Placement[PlacementName].Pricing[ServerService].Amount; got != 69 {
-		t.Errorf("pricing amount = %d, want the computed ceiling 69", got)
+			// One expose per UDP socket PZ binds, and nothing else while RCON and
+			// SSH are off. This is the v2 reduction: v1 exposed four.
+			want := 1
+			if cfg.Server.Ports.UDP > 0 {
+				want = 2
+			}
+			if len(svc.Expose) != want {
+				t.Fatalf("want %d exposed ports with rcon and ssh disabled, got %d",
+					want, len(svc.Expose))
+			}
+
+			// A leased IP is named on every expose and declared once under
+			// endpoints. A shared endpoint names nothing: the provider chooses both
+			// the host and the external port, and leaving the name behind would ask
+			// for an IP the deployment is not paying for.
+			wantIP := ""
+			if lease {
+				wantIP = cfg.Server.IPName
+			}
+			for _, e := range svc.Expose {
+				if e.Proto != "udp" {
+					t.Errorf("port %d proto = %q, want udp", e.Port, e.Proto)
+				}
+				if e.To[0].IP != wantIP {
+					t.Errorf("port %d ip = %q, want %q", e.Port, e.To[0].IP, wantIP)
+				}
+			}
+			if lease {
+				if got := doc.Endpoints[cfg.Server.IPName].Kind; got != "ip" {
+					t.Errorf("endpoints.%s.kind = %q, want ip", cfg.Server.IPName, got)
+				}
+			} else if len(doc.Endpoints) != 0 {
+				t.Errorf("shared-endpoint SDL declares endpoints %v; that leases an IP",
+					doc.Endpoints)
+			}
+
+			if got := doc.Profiles.Placement[PlacementName].Pricing[ServerService].Amount; got != 69 {
+				t.Errorf("pricing amount = %d, want the computed ceiling 69", got)
+			}
+		})
 	}
 }
 
@@ -195,21 +229,69 @@ func TestRenderServerWithRCONAndSSHEnabled(t *testing.T) {
 	}
 	doc := parse(t, raw)
 	svc := doc.Services[ServerService]
-	if len(svc.Expose) != 4 {
-		t.Fatalf("want 4 exposed ports, got %d", len(svc.Expose))
+
+	// Built from the real config rather than counted to a constant, because the
+	// second UDP socket is opt-in: server.ports.udp: 0 means PZ binds one and the
+	// SDL exposes one. See the toggle test below for that half.
+	want := map[int]string{
+		cfg.Server.Ports.Game: "udp",
+		cfg.Server.RCON.Port:  "tcp",
+		cfg.Server.SSH.Port:   "tcp",
+	}
+	if cfg.Server.Ports.UDP > 0 {
+		want[cfg.Server.Ports.UDP] = "udp"
+	}
+	if len(svc.Expose) != len(want) {
+		t.Fatalf("want %d exposed ports, got %d", len(want), len(svc.Expose))
 	}
 	byPort := map[int]string{}
 	for _, e := range svc.Expose {
 		byPort[e.Port] = e.Proto
 	}
-	for port, proto := range map[int]string{
-		cfg.Server.Ports.Game: "udp",
-		cfg.Server.Ports.UDP:  "udp",
-		cfg.Server.RCON.Port:  "tcp",
-		cfg.Server.SSH.Port:   "tcp",
-	} {
+	for port, proto := range want {
 		if byPort[port] != proto {
 			t.Errorf("port %d proto = %q, want %q", port, byPort[port], proto)
+		}
+	}
+}
+
+// The second UDP socket is a setting, not a constant. Build 41 bound two and 42
+// binds one, and on a shared endpoint every expose costs another arbitrary
+// external port that a player would have to be told about and that nothing would
+// answer on. So zero has to expose nothing at all — the failure to guard against
+// is exposing container port 0, which a provider would accept and then forward to
+// a socket PZ never opened.
+func TestRenderServerExposesSecondUDPPortOnlyWhenConfigured(t *testing.T) {
+	for _, udp := range []int{0, 16262} {
+		cfg := loadCfg(t)
+		cfg.Server.Ports.UDP = udp
+		raw, err := RenderServer(Input{Cfg: cfg})
+		if err != nil {
+			t.Fatalf("udp %d: %v", udp, err)
+		}
+		svc := parse(t, raw).Services[ServerService]
+
+		seen := map[int]int{}
+		for _, e := range svc.Expose {
+			seen[e.Port]++
+		}
+		if seen[0] > 0 {
+			t.Errorf("udp %d: exposed container port 0", udp)
+		}
+		if got := seen[cfg.Server.Ports.Game]; got != 1 {
+			t.Errorf("udp %d: game port exposed %d times, want once", udp, got)
+		}
+		want := 0
+		if udp > 0 {
+			want = 1
+		}
+		if got := seen[udp]; udp > 0 && got != want {
+			t.Errorf("udp %d: exposed %d times, want %d", udp, got, want)
+		}
+		// RCON and SSH are off in the real config, so the game port is the whole
+		// list when there is no second socket.
+		if udp == 0 && len(svc.Expose) != 1 {
+			t.Errorf("udp 0: %d exposes, want only the game port", len(svc.Expose))
 		}
 	}
 }

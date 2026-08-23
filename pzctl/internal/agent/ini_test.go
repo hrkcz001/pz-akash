@@ -183,6 +183,18 @@ func TestOwnedINICarriesThePortsFromTheServerSection(t *testing.T) {
 	if owned["DefaultPort"] != "16271" || owned["UDPPort"] != "16272" {
 		t.Errorf("DefaultPort=%q UDPPort=%q, want 16271/16272", owned["DefaultPort"], owned["UDPPort"])
 	}
+
+	// Zero means "PZ binds one UDP socket", which has to leave the key unowned
+	// rather than write UDPPort=0: nothing exposes it in the SDL either, and a 0
+	// there would either be rejected or bind something arbitrary.
+	cfg.Server.Ports.UDP = 0
+	owned = ownedINI(cfg)
+	if got, ok := owned["UDPPort"]; ok {
+		t.Errorf("UDPPort = %q with ports.udp: 0; the key must stay unowned", got)
+	}
+	if owned["DefaultPort"] != "16271" {
+		t.Errorf("DefaultPort=%q, want 16271 regardless of the second socket", owned["DefaultPort"])
+	}
 }
 
 func TestSplitINI(t *testing.T) {

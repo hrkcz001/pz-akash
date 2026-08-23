@@ -433,8 +433,18 @@ func akashDeployOnce(ctx context.Context, d deployer, role, controllerURL string
 			p.AmountPerBlock, p.Denom, p.USDPerHour, p.USDPerDay)
 	}
 	if res.Endpoint.Ready() {
-		fmt.Printf("endpoint  %s game %d udp %d rcon %d\n",
-			res.Endpoint.IP, res.Endpoint.GamePort, res.Endpoint.UDPPort, res.Endpoint.RCONPort)
+		// Addr(), not IP: on a shared endpoint the address is the provider's hostname
+		// and IP is empty, which printed this line with a hole in the middle of it.
+		// The optional ports are left out rather than printed as zero for the same
+		// reason — "udp 0" reads as a port number, not as "there is no second one".
+		line := fmt.Sprintf("endpoint  %s game %d", res.Endpoint.Addr(), res.Endpoint.GamePort)
+		if res.Endpoint.UDPPort > 0 {
+			line += fmt.Sprintf(" udp %d", res.Endpoint.UDPPort)
+		}
+		if res.Endpoint.RCONPort > 0 {
+			line += fmt.Sprintf(" rcon %d", res.Endpoint.RCONPort)
+		}
+		fmt.Println(line)
 	}
 	if res.URL != "" {
 		fmt.Printf("url       %s\n", res.URL)
