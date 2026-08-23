@@ -63,7 +63,7 @@ func (a akashDriver) Deploy(ctx context.Context, req fsm.DeployRequest) (fsm.Dep
 		Price:    res.Price,
 	}
 	if err == nil && out.Endpoint.Ready() {
-		a.syncGameRecord(ctx, out.Endpoint.IP)
+		a.syncGameRecord(ctx, out.Endpoint.Addr())
 	}
 	return out, err
 }
@@ -111,10 +111,14 @@ func (a akashDriver) Escrow(ctx context.Context, dseq string) (float64, bool, er
 // an address the operator reads off the dashboard, which is where v1 left it
 // permanently; a deploy failed over a Cloudflare 502 costs a redeploy and a world
 // rollback.
-func (a akashDriver) syncGameRecord(ctx context.Context, ip string) {
-	changes, err := a.zone.SyncGame(ctx, ip)
+//
+// addr is an IP with a dedicated lease and the provider's hostname without one.
+// Both are passed through unexamined: SyncGame decides A versus CNAME from the
+// content itself, which is the one place that judgement belongs.
+func (a akashDriver) syncGameRecord(ctx context.Context, addr string) {
+	changes, err := a.zone.SyncGame(ctx, addr)
 	if err != nil {
-		a.logf("dns: could not point the game record at %s: %v", ip, err)
+		a.logf("dns: could not point the game record at %s: %v", addr, err)
 		return
 	}
 	for _, ch := range changes {

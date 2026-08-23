@@ -30,6 +30,7 @@ func dash(t *testing.T, mutate func(*config.Config)) (*dashData, string) {
 		Locales:       []string{"ru", "en"},
 		GuideFile:     "README.{lang}.md",
 		TorrentFile:   "game.torrent",
+		GameVersion:   "42.20.3",
 	}
 	if mutate != nil {
 		mutate(cfg)
@@ -193,8 +194,14 @@ func TestInputsComeFromTheSnapshotNotTheDisk(t *testing.T) {
 	if in.DiskUsedPercent != -1 {
 		t.Fatalf("DiskUsedPercent with no store = %d, want -1", in.DiskUsedPercent)
 	}
-	if in.Version != version {
-		t.Fatalf("Version = %q, want the build's %q", in.Version, version)
+	// The version on the page is the game's, from config. Never main.version: CI
+	// sets that to a git sha, and it once labelled the clean-client card
+	// "vsha-2fd34d2".
+	if in.GameVersion != "42.20.3" {
+		t.Fatalf("GameVersion = %q, want the configured game build", in.GameVersion)
+	}
+	if in.GameVersion == version {
+		t.Fatal("GameVersion is this build's version; it must come from dashboard.game_version")
 	}
 }
 

@@ -20,15 +20,32 @@
         </div>
         <div class="status-group">
           {{/*
-            Three player states, where v1 had one. A count it never measured was
-            printed as "0 игроков"; here an unmeasured count says so, and a
-            measurement that has stopped being refreshed says that instead.
+            The player count, when there is one. v1 printed a count it had never
+            measured as "0 игроков"; here an unmeasured count is no badge at all,
+            and a measurement that has stopped being refreshed keeps the badge and
+            says so beside it.
 
             The stale marker and the price badge are always in the document, empty
             and hidden when they do not apply, so the poll can reveal one without
-            building elements in JavaScript.
+            building elements in JavaScript. That only works because [hidden] is
+            forced in the stylesheet — these are all display: inline-flex, which
+            beats the browser's own rule for the attribute.
           */}}
-          <div class="players-badge" id="players-badge"{{if not .ShowPlayers}} hidden{{end}}{{if not .Players.Known}} title="{{.T.PlayersUnknown}}"{{end}}>
+          {{/*
+            Where the provider says the lease is. Omitted rather than rendered
+            hidden, unlike its two neighbours: those are in the document so the
+            poll can reveal them without building elements, and this one the poll
+            never touches — a lease cannot move, and a new lease changes the stage,
+            which reloads the page. The value is the provider's own place name and
+            is not translated; only the tooltip is.
+          */}}
+          {{if .ShowLocation}}
+          <div class="location-badge" title="{{.T.LocationTitle}}">
+            <span>📍</span>
+            <span>{{.Location}}</span>
+          </div>
+          {{end}}
+          <div class="players-badge" id="players-badge"{{if not .ShowPlayers}} hidden{{end}}>
             <span>👥</span>
             <span id="players-text">{{.Players.Text}}</span>
             <span class="players-stale" id="players-stale"{{if not .Players.Stale}} hidden{{end}}>· {{.Players.StaleText}}</span>
@@ -96,7 +113,7 @@
       <div class="torrent-info">
         <div class="torrent-title-row">
           <div class="torrent-title">{{.Title}}</div>
-          {{with $.Version}}<span class="version-badge">v{{.}}</span>{{end}}
+          {{with $.GameVersion}}<span class="version-badge">v{{.}}</span>{{end}}
         </div>
         <div class="torrent-desc">{{.Desc}}</div>
       </div>
@@ -130,13 +147,6 @@
         {{end}}
       </div>
       {{end}}
-    </div>
-
-    <div class="backups-footer">
-      <a href="/backups" class="backups-faded-btn">
-        <span>🗄️</span>
-        <span>{{.T.BackupsFooter}}</span>
-      </a>
     </div>
 
     {{/*

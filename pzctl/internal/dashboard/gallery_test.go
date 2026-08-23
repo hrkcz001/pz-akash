@@ -50,7 +50,10 @@ func TestWriteGallery(t *testing.T) {
 					Status:   state.StatusOnline,
 					Endpoint: state.Endpoint{IP: "203.0.113.7", GamePort: 16261, UDPPort: 16262},
 					Price:    state.Price{USDPerHour: 0.0213, USDPerDay: 0.51},
-					Since:    now,
+					// The lease carries the location badge, so this is the one case
+					// that renders it.
+					Lease: &state.Lease{DSeq: "1787103872228", Location: "Prague, CZ"},
+					Since: now,
 				},
 				Agent: &state.Agent{PlayersCount: 3, PlayersAt: now, LivenessAt: now},
 			},
@@ -149,7 +152,7 @@ func TestWriteGallery(t *testing.T) {
 	// decorate adds the parts every page carries regardless of status, so the one
 	// axis a case varies is the one its name claims.
 	decorate := func(in Inputs) Inputs {
-		in.Version = "42.20.3"
+		in.GameVersion = "42.20.3"
 		in.Packages = Packages{
 			Client: PackageStats{Mods: 12, Files: 340, Size: 134 << 20},
 			Common: PackageStats{Mods: 12, Files: 18, Size: 2 << 20},

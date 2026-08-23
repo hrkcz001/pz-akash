@@ -600,6 +600,13 @@ type Dashboard struct {
 	// it. Resolved inside packages_dir. Empty omits the section.
 	GuideFile string `yaml:"guide_file"`
 
+	// GameVersion is the Project Zomboid build the torrent contains, rendered as
+	// the badge on the clean-client card. It is config rather than a build-time
+	// value because it describes the game, not this program: the badge used to show
+	// pzctl's own version, which CI sets to a git sha, so a card offering a game
+	// client claimed to be "vsha-2fd34d2". Empty omits the badge.
+	GameVersion string `yaml:"game_version"`
+
 	// ShowJoinPassword puts server.password_protected's secret on the page next to
 	// the address. It is true for a server that is public in the "anyone we told
 	// may join" sense, which is how v1 ran, and false for one where the password is

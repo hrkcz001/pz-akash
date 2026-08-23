@@ -17,6 +17,12 @@ type Lease struct {
 	GSeq     int    `json:"gseq"`
 	OSeq     int    `json:"oseq"`
 	Provider string `json:"provider"`
+	// Location is where the provider says it is, for the dashboard — "Prague, CZ"
+	// or similar. Recorded at deploy time because it is a property of the bid we
+	// took, and the provider list it came from is not read again afterwards. Empty
+	// when the provider publishes no geography, which the page treats as "do not
+	// claim to know".
+	Location string `json:"location,omitempty"`
 	// CreatedAt is when the lease was created, used to compute burn.
 	CreatedAt Stamp `json:"created_at"`
 }
@@ -24,7 +30,12 @@ type Lease struct {
 // Endpoint is where players connect. Ports are recorded explicitly rather than
 // assumed, because with a shared endpoint the provider chooses them.
 type Endpoint struct {
-	IP       string `json:"ip"`
+	IP string `json:"ip"`
+	// Host is the provider's own hostname, set instead of IP when the server runs
+	// on a shared endpoint with no dedicated IP lease. Exactly one of the two is
+	// populated: a dedicated IP is an address we hold, a Host is one we borrow, and
+	// the difference decides whether the zone gets an A record or a CNAME.
+	Host     string `json:"host,omitempty"`
 	GamePort int    `json:"game_port"`
 	UDPPort  int    `json:"udp_port"`
 	// RCONPort is zero when RCON is disabled.
@@ -34,7 +45,18 @@ type Endpoint struct {
 // Ready reports whether the endpoint is complete enough to hand to a player.
 // v1 used the sentinel string "pending" in the ip field for this; a sentinel
 // that has to be string-compared everywhere eventually gets missed.
-func (e Endpoint) Ready() bool { return e.IP != "" && e.GamePort > 0 }
+func (e Endpoint) Ready() bool { return (e.IP != "" || e.Host != "") && e.GamePort > 0 }
+
+// Addr is what a player types, without the port. Host wins when both are set,
+// because a provider that reports a hostname may also report the shared ingress
+// IP behind it, and the hostname is the one that survives the provider
+// renumbering it.
+func (e Endpoint) Addr() string {
+	if e.Host != "" {
+		return e.Host
+	}
+	return e.IP
+}
 
 // Price is what the lease actually costs, as opposed to the ceiling we were
 // willing to bid.

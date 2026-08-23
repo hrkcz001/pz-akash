@@ -143,8 +143,7 @@ func TestPlayerCountHasThreeStates(t *testing.T) {
 
 // The badge is only shown where a count answers a question anyone is asking, which
 // is v1's rule and worth keeping: on an offline page "no data" is noise, and on a
-// booting page it is noise that reads as a fault. It also leaves the unknown text
-// where it is the actual news — an online server nobody could count, i.e. bug 1.
+// booting page it is noise that reads as a fault.
 func TestPlayersBadgeOnlyAppearsOnline(t *testing.T) {
 	o := testOptions(t)
 	agent := &state.Agent{PlayersCount: 3, PlayersAt: state.Now(o.Loc)}
@@ -172,6 +171,63 @@ func TestPlayersBadgeOnlyAppearsOnline(t *testing.T) {
 		if p.Players.Text == "" {
 			t.Errorf("%s: no player text was rendered", stage)
 		}
+	}
+}
+
+// An online server whose count could not be measured has nothing to put in the
+// badge but a denial, so there is no badge. This reverses v1's rule deliberately:
+// an empty pill reading "players: no data" is worse than no pill, and it is what
+// the operator saw through every startup. The text is still rendered underneath,
+// because the poll reveals the badge by clearing an attribute and the span must
+// not be empty when it does.
+func TestPlayersBadgeNeedsAMeasurementNotJustOnline(t *testing.T) {
+	o := testOptions(t)
+	ctl := onlineController()
+
+	for name, agent := range map[string]*state.Agent{
+		"no agent at all": nil,
+		"unknown count":   {PlayersCount: state.PlayersUnknown, PlayersAt: state.Now(o.Loc)},
+		"count, no stamp": {PlayersCount: 4},
+		"zero is a count": {PlayersCount: 0, PlayersAt: state.Now(o.Loc)},
+	} {
+		in := Inputs{Controller: ctl, Agent: agent}
+		p := BuildPage(o, in, RU)
+		want := name == "zero is a count"
+		if p.ShowPlayers != want {
+			t.Errorf("%s: ShowPlayers = %v, want %v", name, p.ShowPlayers, want)
+		}
+		if s := BuildStatus(o, in, RU); s.ShowPlayers != p.ShowPlayers {
+			t.Errorf("%s: the poll says %v and the page says %v", name, s.ShowPlayers, p.ShowPlayers)
+		}
+		if p.Players.Text == "" {
+			t.Errorf("%s: no player text was rendered", name)
+		}
+	}
+}
+
+// The location is the provider's, recorded on the lease, and is never invented. No
+// lease means no badge — an offline page must not keep claiming the geography of a
+// lease that has been closed.
+func TestLocationComesFromTheLeaseOrNotAtAll(t *testing.T) {
+	o := testOptions(t)
+
+	ctl := onlineController()
+	ctl.Lease = &state.Lease{DSeq: "1", Location: "Prague, CZ"}
+	p := BuildPage(o, Inputs{Controller: ctl}, RU)
+	if p.Location != "Prague, CZ" || !p.ShowLocation {
+		t.Errorf("Location = %q / %v, want the lease's and shown", p.Location, p.ShowLocation)
+	}
+
+	// A provider that publishes no geography: Provider.Where returns "", which must
+	// reach the page as no badge rather than as an empty pill.
+	quiet := onlineController()
+	quiet.Lease = &state.Lease{DSeq: "1"}
+	if p := BuildPage(o, Inputs{Controller: quiet}, RU); p.ShowLocation {
+		t.Error("a lease with no location still showed the badge")
+	}
+
+	if p := BuildPage(o, Inputs{Controller: &state.Controller{Status: state.StatusOffline}}, RU); p.ShowLocation {
+		t.Error("an offline page with no lease showed a location")
 	}
 }
 

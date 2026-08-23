@@ -93,7 +93,12 @@ type Inputs struct {
 	Backups    *state.Backups
 
 	Packages Packages
-	Version  string
+
+	// GameVersion is the Project Zomboid build the torrent contains, badged on the
+	// clean-client card. It is the game's version, not this program's: the badge
+	// used to be handed main.version, which CI sets to a git sha, so a card
+	// offering a game client was labelled "vsha-2fd34d2". Empty omits the badge.
+	GameVersion string
 
 	// Guide is the markdown of README.<lang>.md, already selected for the
 	// locale being rendered. Empty omits the section.

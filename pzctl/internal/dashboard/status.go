@@ -13,12 +13,12 @@ type Status struct {
 	Stage   Stage       `json:"stage"`
 	Badge   Badge       `json:"badge"`
 	Players PlayersView `json:"players"`
-	// ShowPlayers hides the badge outside the stages where a count means
-	// anything. v1 hid it whenever the server was not online, and it was right to:
-	// on an offline page the honest "no data" is noise, and on a booting one it is
-	// noise that looks like a fault. Keeping the rule also sharpens the unknown
-	// text, which now only ever appears where it is the actual news — an online
-	// server whose count could not be measured, which is bug 1.
+	// ShowPlayers hides the badge unless there is a measurement to show. Two
+	// conditions, and each removes a different kind of noise: off StageOnline a
+	// count means nothing and reads as a fault on a server that is merely booting,
+	// and an online server whose count could not be measured has nothing to put in
+	// the badge but a denial. An empty pill saying "no data" is worse than no pill —
+	// the number appears when it exists.
 	ShowPlayers bool `json:"show_players"`
 
 	Price     string `json:"price"`
@@ -40,13 +40,15 @@ func BuildStatus(o Options, in Inputs, want Lang) Status {
 	}
 
 	stage := stageOf(ctl.Status, ctl.Endpoint)
+	players := buildPlayers(o, in.Agent, lang, t)
 	s := Status{
 		Stage:   stage,
 		Badge:   stage.badge(t),
-		Players: buildPlayers(o, in.Agent, lang, t),
-		// The same stage the address grid appears at, which is not a coincidence:
-		// both answer questions that only exist once players can connect.
-		ShowPlayers: stage == StageOnline,
+		Players: players,
+		// StageOnline is the same stage the address grid appears at, which is not a
+		// coincidence: both answer questions that only exist once players can
+		// connect. Known is the second half — see the field comment.
+		ShowPlayers: stage == StageOnline && players.Known,
 	}
 
 	// v1 showed the price whenever the deployment was costing anything, and hid

@@ -327,9 +327,9 @@ akash:
     countries:
       [AT, BE, BG, HR, CY, CZ, DK, EE, FI, FR, DE, GR, HU, IE, IT, LV, LT, LU,
        MT, NL, PL, PT, RO, SK, SI, ES, SE, GB, CH, NO, UA]
-    # Warsaw — bids within the price tolerance are ranked by distance from here.
-    ref_lat: 52.2297
-    ref_lon: 21.0122
+    # Prague — bids within the price tolerance are ranked by distance from here.
+    ref_lat: 50.0755
+    ref_lon: 14.4378
     skip_ttl: 24h
     # akash18ga02… is provider.europlots.com, and it is here because it is the
     # cheapest bidder in a four-provider market: it wins every priced round with a
@@ -535,6 +535,12 @@ dashboard:
   # locales and a README.en.md added later is picked up without a code change.
   torrent_file: game.torrent
   guide_file: README.{lang}.md
+
+  # The Project Zomboid build the torrent contains, shown as the badge on the
+  # clean-client card. It is the game's version and nothing else: the badge used to
+  # render pzctl's own build stamp, which CI sets to a git sha, so the card
+  # advertising a game client was labelled "vsha-2fd34d2". Empty omits the badge.
+  game_version: "42.20.3"
 
   # The join password on the public page next to the address. True is v1's
   # behaviour, and it is right while the password only keeps strangers out of a

@@ -133,7 +133,7 @@ func orNoBids(why string, bids int) string {
 // first, and v1 added the direct query after deploys timed out waiting for an
 // address the provider had already assigned. That timeout is expensive: the lease
 // is live and billing, so giving up means paying for a server nobody can join.
-func (d *Driver) waitForEndpoint(ctx context.Context, l state.Lease, p Provider, service string, requireIP bool) (state.Endpoint, string, error) {
+func (d *Driver) waitForEndpoint(ctx context.Context, l state.Lease, p Provider, service string, kind addrKind) (state.Endpoint, string, error) {
 	var (
 		poll     = time.Duration(d.Cfg.Akash.Timeouts.LeasePoll)
 		wait     = time.Duration(d.Cfg.Akash.Timeouts.LeaseReady)
@@ -149,7 +149,7 @@ func (d *Driver) waitForEndpoint(ctx context.Context, l state.Lease, p Provider,
 		case !st.ready:
 			last = fmt.Sprintf("service %s has no ready replica", service)
 		default:
-			ep, url, err := d.endpointFrom(st.status, service, requireIP)
+			ep, url, err := d.endpointFrom(st.status, service, kind)
 			if err == nil {
 				return ep, url, nil
 			}
@@ -166,7 +166,7 @@ func (d *Driver) waitForEndpoint(ctx context.Context, l state.Lease, p Provider,
 					Services:       status.Services,
 					ForwardedPorts: status.ForwardedPorts,
 					IPs:            status.IPs,
-				}, service, requireIP)
+				}, service, kind)
 				if err == nil {
 					d.Logf("akash: %s answered before the Console API did", p.Owner)
 					return ep, url, nil
@@ -230,14 +230,35 @@ func (d *Driver) leaseStatus(ctx context.Context, l state.Lease, service string)
 	return leaseState{}, fmt.Errorf("dseq %s reports no lease matching provider %q", l.DSeq, l.Provider)
 }
 
+// addrKind is what a caller needs out of a lease status.
+//
+// This replaced a bool named requireIP, which worked only while "no dedicated IP"
+// and "this is the controller" were the same statement. Once the game server could
+// also run on a shared endpoint there were two shared-endpoint callers wanting
+// completely different answers out of the same forwarded_ports map — a game address
+// and an HTTP URL — and a bool cannot say which.
+type addrKind int
+
+const (
+	// addrDedicatedIP is an address we leased: it goes in the zone as an A record.
+	addrDedicatedIP addrKind = iota
+	// addrSharedGame is the provider's hostname plus whichever UDP port it chose.
+	addrSharedGame
+	// addrSharedURL is the controller's own HTTP URL.
+	addrSharedURL
+)
+
 // endpointFrom turns a provider-reported status into an address.
 //
 // A dedicated IP and a shared endpoint are genuinely different things and the
 // caller says which it needs, because accepting the wrong one is a server players
 // cannot reach: v1 wrote the provider's hostname into a DNS A record more than
-// once, and an A record containing a hostname is simply broken.
-func (d *Driver) endpointFrom(st leaseStatus, service string, requireIP bool) (state.Endpoint, string, error) {
-	if requireIP {
+// once, and an A record containing a hostname is simply broken. What makes that
+// safe now is not this function but dns.recordType, which picks CNAME for anything
+// that does not parse as an IP — so a Host reaching the zone is written correctly
+// rather than silently producing a dead record.
+func (d *Driver) endpointFrom(st leaseStatus, service string, kind addrKind) (state.Endpoint, string, error) {
+	if kind == addrDedicatedIP {
 		ips := st.IPs[service]
 		if len(ips) == 0 {
 			return state.Endpoint{}, "", fmt.Errorf("no dedicated IP assigned to %s yet", service)
@@ -269,9 +290,13 @@ func (d *Driver) endpointFrom(st leaseStatus, service string, requireIP bool) (s
 		return ep, "", nil
 	}
 
-	// Shared endpoint: the provider's hostname and a port it chose. The Endpoint
-	// stays empty on purpose — it means "where players connect", and nobody plays
-	// on the controller.
+	if kind == addrSharedGame {
+		return d.sharedGameEndpoint(st, service)
+	}
+
+	// Shared endpoint, HTTP: the provider's hostname and a port it chose. The
+	// Endpoint stays empty on purpose — it means "where players connect", and
+	// nobody plays on the controller.
 	//
 	// An HTTP ingress URI comes first when there is one: a service exposed as port
 	// 80 gets a hostname and no forwarded port at all, so reading only
@@ -297,6 +322,56 @@ func (d *Driver) endpointFrom(st leaseStatus, service string, requireIP bool) (s
 		}
 	}
 	return state.Endpoint{}, "", fmt.Errorf("%s has no forwarded port for %d yet", service, want)
+}
+
+// sharedGameEndpoint reads a playable address off a shared endpoint: the
+// provider's own hostname, and whichever external port it assigned.
+//
+// The assigned port is neither predictable nor negotiable. A shared endpoint
+// ignores the SDL's `as:` and allocates from its own pool — our controller asked
+// for 8000 and was handed 31188 — so being given a port nobody requested is the
+// normal case rather than a fault. That is exactly why Endpoint carries its ports
+// explicitly instead of assuming the configured ones.
+//
+// UDPPort is left at zero when the provider forwards only one port, because on
+// this path it is a report of what exists rather than a default to fall back on.
+func (d *Driver) sharedGameEndpoint(st leaseStatus, service string) (state.Endpoint, string, error) {
+	fwd := st.ForwardedPorts[service]
+	if len(fwd) == 0 {
+		return state.Endpoint{}, "", fmt.Errorf("no forwarded port assigned to %s yet", service)
+	}
+	game := d.Cfg.Server.Ports.Game
+	udp := d.Cfg.Server.Ports.UDP
+	var ep state.Endpoint
+	for _, f := range fwd {
+		if f.Host == "" || f.ExternalPort <= 0 {
+			continue
+		}
+		switch {
+		case f.Port == game && udpish(f.Proto):
+			ep.Host, ep.GamePort = f.Host, f.ExternalPort
+		case udp > 0 && f.Port == udp && udpish(f.Proto):
+			ep.UDPPort = f.ExternalPort
+		case d.Cfg.Server.RCON.Enabled && f.Port == d.Cfg.Server.RCON.Port:
+			ep.RCONPort = f.ExternalPort
+		}
+	}
+	if !ep.Ready() {
+		return state.Endpoint{}, "", fmt.Errorf("%s has no forwarded udp port for %d yet", service, game)
+	}
+	// No URL: this is a game address, and nothing here speaks HTTP.
+	return ep, "", nil
+}
+
+// udpish accepts an unset proto as well as "udp". The field is informational in
+// some provider implementations and a blank one has been seen in the wild; a
+// service whose SDL exposes nothing but UDP cannot have been handed a TCP forward,
+// so refusing to read the port over an empty string would time out a lease that is
+// in fact working — and that timeout is paid for, because the lease is already
+// billing by then.
+func udpish(proto string) bool {
+	p := strings.TrimSpace(proto)
+	return p == "" || strings.EqualFold(p, "udp")
 }
 
 // portFor returns the external port a container port was mapped to, or def.

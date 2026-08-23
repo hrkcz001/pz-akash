@@ -95,9 +95,9 @@ func (d *Driver) controllerURLOf(ctx context.Context, dseq string) (string, erro
 		if _, ok := ld.Status.Services[sdl.ControllerService]; !ok {
 			continue
 		}
-		// requireIP is false: the controller is behind a shared endpoint by design,
+		// addrSharedURL: the controller is behind a shared endpoint by design,
 		// and this is the same call the deploy made to learn the URL it printed.
-		_, url, err := d.endpointFrom(ld.Status, sdl.ControllerService, false)
+		_, url, err := d.endpointFrom(ld.Status, sdl.ControllerService, addrSharedURL)
 		if err != nil {
 			// Leased but not yet routable. Not an error worth logging every tick.
 			return "", nil

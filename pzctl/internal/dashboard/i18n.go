@@ -101,11 +101,10 @@ func (l Lang) pluralize(n int, p Plural) string {
 // page nobody is checking word by word.
 type text struct {
 	// Chrome
-	PageTitle     string
-	Brand         string
-	NavPackages   string
-	NavBackups    string
-	BackupsFooter string
+	PageTitle   string
+	Brand       string
+	NavPackages string
+	NavBackups  string
 
 	// Status card
 	ServerTitle    string
@@ -125,6 +124,10 @@ type text struct {
 	// reason the script's own header gives: no user-visible string lives in the JS.
 	CopyAddress string
 	CopyDone    string
+	// LocationTitle is the tooltip on the location badge. Only the tooltip is
+	// translated: the value beside it is the place name the provider published, and
+	// half-translating "Prague, CZ" would read worse than leaving it as it came.
+	LocationTitle string
 
 	// The three status banners that replace the address grid when there is no
 	// address to show.

@@ -97,7 +97,7 @@ func TestBothPagesRenderForEveryStageAndLocale(t *testing.T) {
 	}
 
 	base := Inputs{
-		Version: "42.20.3",
+		GameVersion: "42.20.3",
 		Packages: Packages{
 			Client: PackageStats{Mods: 12, Files: 340, Size: 134 * 1024 * 1024},
 			Common: PackageStats{Files: 4, Size: 2048},

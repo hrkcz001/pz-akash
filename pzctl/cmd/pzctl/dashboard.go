@@ -90,9 +90,11 @@ func (d *dashData) inputs(snap fsm.Snapshot, lang dashboard.Lang) dashboard.Inpu
 	in := dashboard.Inputs{
 		Controller: snap.Controller,
 		Agent:      snap.Agent,
-		Version:    version,
-		Packages:   d.packages(),
-		Guide:      d.guide(lang),
+		// The game's version, from config — not main.version, which CI sets to a git
+		// sha and which labelled the clean-client card "vsha-2fd34d2".
+		GameVersion: d.cfg.GameVersion,
+		Packages:    d.packages(),
+		Guide:       d.guide(lang),
 	}
 	if d.store != nil {
 		in.Backups = d.store.Index()

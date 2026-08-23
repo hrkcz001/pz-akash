@@ -142,10 +142,15 @@ func openDriver(path string, withSDLSecrets bool) (*akash.Driver, *config.Config
 // resourcesFor picks the resource block a role deploys against, and says whether it
 // needs a dedicated IP. The two travel together: the IP requirement is a placement
 // filter, not a size, and getting it wrong is a server nobody can join.
+//
+// The server's answer is config, not a constant. It used to be a literal true, which
+// made `pzctl akash providers --role server` report on the four-provider IP market
+// even after the deploy had been switched to shared endpoints — a diagnostic that
+// disagrees with what deploy does is worse than none.
 func resourcesFor(cfg *config.Config, role string) (config.Resources, bool, error) {
 	switch role {
 	case "server":
-		return cfg.Server.Resources, true, nil
+		return cfg.Server.Resources, cfg.Server.IPLease, nil
 	case "controller":
 		return cfg.Controller.Resources, false, nil
 	default:

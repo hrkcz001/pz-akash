@@ -15,9 +15,11 @@ import (
 type Page struct {
 	Chrome
 
-	Version string
-	Stage   Stage
-	Badge   Badge
+	// GameVersion badges the torrent card with the Project Zomboid build it
+	// contains. See Inputs.GameVersion for why it is not this program's version.
+	GameVersion string
+	Stage       Stage
+	Badge       Badge
 
 	// PollMS is the status poll period in milliseconds, 0 when polling is off.
 	// It reaches the script as a data attribute on <body> rather than as
@@ -47,6 +49,19 @@ type Page struct {
 	Players PlayersView
 	// ShowPlayers hides the badge outside StageOnline, as v1 did. See Status.
 	ShowPlayers bool
+
+	// Location is where the provider says the lease is — "Prague, CZ" or similar,
+	// unlocalised, because it is a place name the provider chose and translating
+	// half of it would be worse than leaving it alone.
+	//
+	// Page-only, and deliberately not in the polled Status: the location of a lease
+	// cannot change while a lease exists, and getting a new lease moves the stage,
+	// which makes the poll reload the whole page. So there is nothing for the poll
+	// to keep in sync here — which is the one exception to the rule Status
+	// documents, stated so the next reader does not have to guess whether it was an
+	// oversight.
+	Location     string
+	ShowLocation bool
 
 	Torrent *Torrent
 	Cards   []Card
@@ -134,6 +149,14 @@ func BuildPage(o Options, in Inputs, want Lang) Page {
 	if host == "" {
 		host = ctl.Endpoint.Host
 	}
+	// The lease is the only source: a location is a property of the provider we
+	// took a bid from, so no lease means nothing true to say and the badge is
+	// omitted. It appears as soon as the lease exists rather than at StageOnline,
+	// because "booting, in Prague" is the more useful of the two sentences.
+	location := ""
+	if ctl.Lease != nil {
+		location = ctl.Lease.Location
+	}
 	p := Page{
 		Chrome: Chrome{
 			Lang:     lang,
@@ -142,21 +165,23 @@ func BuildPage(o Options, in Inputs, want Lang) Page {
 			Title:    t.PageTitle,
 			Active:   "packages",
 		},
-		Version:     in.Version,
-		Stage:       st.Stage,
-		Badge:       st.Badge,
-		PollMS:      o.PollInterval.Milliseconds(),
-		ShowAddress: stage == StageOnline,
-		Banner:      stage.banner(t),
-		Host:        host,
-		IP:          ctl.Endpoint.IP,
-		Port:        ctl.Endpoint.GamePort,
-		Players:     st.Players,
-		ShowPlayers: st.ShowPlayers,
-		Price:       st.Price,
-		ShowPrice:   st.ShowPrice,
-		Guide:       RenderMarkdown(in.Guide),
-		Unlocked:    in.Unlocked,
+		GameVersion:  in.GameVersion,
+		Stage:        st.Stage,
+		Badge:        st.Badge,
+		PollMS:       o.PollInterval.Milliseconds(),
+		ShowAddress:  stage == StageOnline,
+		Banner:       stage.banner(t),
+		Host:         host,
+		IP:           ctl.Endpoint.IP,
+		Port:         ctl.Endpoint.GamePort,
+		Players:      st.Players,
+		ShowPlayers:  st.ShowPlayers,
+		Location:     location,
+		ShowLocation: location != "",
+		Price:        st.Price,
+		ShowPrice:    st.ShowPrice,
+		Guide:        RenderMarkdown(in.Guide),
+		Unlocked:     in.Unlocked,
 	}
 
 	if p.ShowAddress {

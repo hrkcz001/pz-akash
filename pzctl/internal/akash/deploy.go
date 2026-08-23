@@ -215,18 +215,28 @@ func (d *Driver) deposit() float64 {
 
 // plan is one deployment's worth of decisions, made before anything is created.
 type plan struct {
-	role      string
-	service   string
-	doc       []byte
-	criteria  Criteria
-	ceiling   int
-	deposit   float64
-	requireIP bool
-	aktUSD    float64
+	role     string
+	service  string
+	doc      []byte
+	criteria Criteria
+	ceiling  int
+	deposit  float64
+	// kind is the address to wait for. It is derived from the same config flag as
+	// criteria.RequireIP and must agree with it: filtering for IP-capable providers
+	// and then waiting for a shared endpoint would time out on a billing lease.
+	kind   addrKind
+	aktUSD float64
 }
 
-// DeployServer deploys the game server: a dedicated IP, and a bid ceiling
-// computed from akash.price.max_usd_per_day.
+// DeployServer deploys the game server, with a bid ceiling computed from
+// akash.price.max_usd_per_day.
+//
+// server.ip_lease decides both the market and the address. With it on we filter for
+// the handful of providers that sell dedicated IPs and wait for one; with it off the
+// market is every provider and the address is the provider's own hostname plus a
+// port it picks. The flag has to reach both places from one read — asking for one
+// shape and waiting for the other is a lease that bills while it never becomes
+// routable.
 func (d *Driver) DeployServer(ctx context.Context, o DeployOptions) (Result, error) {
 	aktUSD, err := d.rate(ctx)
 	if err != nil {
@@ -236,7 +246,8 @@ func (d *Driver) DeployServer(ctx context.Context, o DeployOptions) (Result, err
 	if err != nil {
 		return Result{}, err
 	}
-	cr, err := CriteriaFor(d.Cfg, d.Cfg.Server.Resources, true, aktUSD)
+	wantIP := d.Cfg.Server.IPLease
+	cr, err := CriteriaFor(d.Cfg, d.Cfg.Server.Resources, wantIP, aktUSD)
 	if err != nil {
 		return Result{}, err
 	}
@@ -249,17 +260,21 @@ func (d *Driver) DeployServer(ctx context.Context, o DeployOptions) (Result, err
 	if err != nil {
 		return Result{}, fmt.Errorf("rendering the server SDL: %w", err)
 	}
-	d.Logf("akash: deploying the server (attempt %d, restore %q): ceiling %d %s/block, deposit $%.2f",
-		o.Attempt, o.RestoreTarget, ceiling, d.Cfg.Akash.Price.Denom, d.deposit())
+	kind := addrSharedGame
+	if wantIP {
+		kind = addrDedicatedIP
+	}
+	d.Logf("akash: deploying the server (attempt %d, restore %q): ceiling %d %s/block, deposit $%.2f, ip_lease %v",
+		o.Attempt, o.RestoreTarget, ceiling, d.Cfg.Akash.Price.Denom, d.deposit(), wantIP)
 	return d.run(ctx, plan{
-		role:      "server",
-		service:   sdl.ServerService,
-		doc:       doc,
-		criteria:  cr,
-		ceiling:   ceiling,
-		deposit:   d.deposit(),
-		requireIP: true,
-		aktUSD:    aktUSD,
+		role:     "server",
+		service:  sdl.ServerService,
+		doc:      doc,
+		criteria: cr,
+		ceiling:  ceiling,
+		deposit:  d.deposit(),
+		kind:     kind,
+		aktUSD:   aktUSD,
 	})
 }
 
@@ -285,14 +300,14 @@ func (d *Driver) DeployController(ctx context.Context) (Result, error) {
 	d.Logf("akash: deploying the controller: ceiling %d %s/block, deposit $%.2f",
 		d.Cfg.Controller.PricingAmount, d.Cfg.Akash.Price.Denom, d.deposit())
 	return d.run(ctx, plan{
-		role:      "controller",
-		service:   sdl.ControllerService,
-		doc:       doc,
-		criteria:  cr,
-		ceiling:   d.Cfg.Controller.PricingAmount,
-		deposit:   d.deposit(),
-		requireIP: false,
-		aktUSD:    aktUSD,
+		role:     "controller",
+		service:  sdl.ControllerService,
+		doc:      doc,
+		criteria: cr,
+		ceiling:  d.Cfg.Controller.PricingAmount,
+		deposit:  d.deposit(),
+		kind:     addrSharedURL,
+		aktUSD:   aktUSD,
 	})
 }
 
@@ -330,6 +345,9 @@ func (d *Driver) run(ctx context.Context, p plan) (res Result, err error) {
 	res.Lease.GSeq = choice.Bid.ID.GSeq
 	res.Lease.OSeq = choice.Bid.ID.OSeq
 	res.Lease.Provider = choice.Provider.Owner
+	// Recorded now because this is the only moment the provider record is in hand;
+	// after this the lease is identified by address alone.
+	res.Lease.Location = choice.Provider.Where()
 	res.Price = state.Price{
 		AmountPerBlock: choice.AmountPerBlock,
 		Denom:          choice.Denom,
@@ -350,7 +368,7 @@ func (d *Driver) run(ctx context.Context, p plan) (res Result, err error) {
 
 	// choice.Provider travels along because the endpoint wait may ask the provider
 	// directly, and only the provider record knows its hostUri.
-	ep, url, err := d.waitForEndpoint(ctx, res.Lease, choice.Provider, p.service, p.requireIP)
+	ep, url, err := d.waitForEndpoint(ctx, res.Lease, choice.Provider, p.service, p.kind)
 	if err != nil {
 		d.Skip(choice.Provider.Owner, "leased but never became routable")
 		return res, err

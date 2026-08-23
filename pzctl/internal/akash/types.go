@@ -70,9 +70,40 @@ type Provider struct {
 	Stats          ProviderStats `json:"stats"`
 	IPCountryCode  string        `json:"ipCountryCode"`
 	Country        string        `json:"country"`
-	IPLat          Num           `json:"ipLat"`
-	IPLon          Num           `json:"ipLon"`
-	HostURI        string        `json:"hostUri"`
+	// IPCity and IPRegion are what the dashboard shows players. Both are optional
+	// in the API's answer and often absent, so nothing may depend on them — see
+	// Provider.Where for the fallback order.
+	IPCity   string `json:"ipCity"`
+	IPRegion string `json:"ipRegion"`
+	IPLat    Num    `json:"ipLat"`
+	IPLon    Num    `json:"ipLon"`
+	HostURI  string `json:"hostUri"`
+}
+
+// Where is a human-readable location for the dashboard, or "" when the provider
+// publishes nothing usable.
+//
+// Widest-first fallback, because a player wants the nearest true statement: a city
+// with its country beats a country alone, which beats a bare code. Nothing is
+// invented — a provider that reports no geography gets an empty string and the
+// badge is omitted rather than filled with a guess from the hostname.
+func (p Provider) Where() string {
+	code := strings.ToUpper(strings.TrimSpace(p.IPCountryCode))
+	country := strings.TrimSpace(p.Country)
+	city := strings.TrimSpace(p.IPCity)
+	if city == "" {
+		city = strings.TrimSpace(p.IPRegion)
+	}
+	switch {
+	case city != "" && code != "":
+		return city + ", " + code
+	case city != "":
+		return city
+	case country != "":
+		return country
+	default:
+		return code
+	}
 }
 
 // ProviderStats is the capacity the provider reports as available. CPU is in

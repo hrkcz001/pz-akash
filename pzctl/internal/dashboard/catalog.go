@@ -8,11 +8,10 @@ package dashboard
 
 var catalog = map[Lang]text{
 	RU: {
-		PageTitle:     "Всрания • Хаб",
-		Brand:         "Всрания • Хаб",
-		NavPackages:   "Пакеты",
-		NavBackups:    "Бэкапы 🔒",
-		BackupsFooter: "Бэкапы 🔒",
+		PageTitle:   "Всрания • Хаб",
+		Brand:       "Всрания • Хаб",
+		NavPackages: "Пакеты",
+		NavBackups:  "Бэкапы 🔒",
 
 		ServerTitle:    "Статус сервера",
 		ServerSubtitle: "Akash Network deployment",
@@ -26,6 +25,7 @@ var catalog = map[Lang]text{
 		LabelPassword:  "ПАРОЛЬ СЕРВЕРА",
 		CopyAddress:    "Скопировать",
 		CopyDone:       "Скопировано",
+		LocationTitle:  "Расположение сервера",
 
 		BannerBootingTitle:  "Сервер запускается",
 		BannerBootingDesc:   "Инициализация инстанса на Akash Network. IP и порт появятся здесь автоматически после старта.",
@@ -102,11 +102,10 @@ var catalog = map[Lang]text{
 	},
 
 	EN: {
-		PageTitle:     "Vsrania • Hub",
-		Brand:         "Vsrania • Hub",
-		NavPackages:   "Packages",
-		NavBackups:    "Backups 🔒",
-		BackupsFooter: "Backups 🔒",
+		PageTitle:   "Vsrania • Hub",
+		Brand:       "Vsrania • Hub",
+		NavPackages: "Packages",
+		NavBackups:  "Backups 🔒",
 
 		ServerTitle:    "Server status",
 		ServerSubtitle: "Akash Network deployment",
@@ -120,6 +119,7 @@ var catalog = map[Lang]text{
 		LabelPassword:  "SERVER PASSWORD",
 		CopyAddress:    "Copy",
 		CopyDone:       "Copied",
+		LocationTitle:  "Server location",
 
 		BannerBootingTitle:  "Vsrania is Starting Up",
 		BannerBootingDesc:   "Initializing instance on Akash. IP and Port will appear here automatically when ready.",
