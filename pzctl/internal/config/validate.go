@@ -611,6 +611,20 @@ func (c *Config) validateDashboard(p *problems) {
 	requireBasename(p, "dashboard.torrent_file", d.TorrentFile)
 	requireBasename(p, "dashboard.guide_file", strings.ReplaceAll(d.GuideFile, "{lang}", "xx"))
 
+	// The download name never opens a file — it is only what the browser is told to
+	// call one — but it goes out in a Content-Disposition header, where a separator
+	// is how a saved file escapes the folder the user chose. Checked with a stand-in
+	// version, so a legal template is not rejected on a machine that has yet to set
+	// game_version.
+	requireBasename(p, "dashboard.torrent_download_name",
+		strings.ReplaceAll(d.TorrentDownloadName, "{version}", "0.0.0"))
+	if strings.ContainsAny(d.TorrentDownloadName, "\"\r\n") {
+		p.addf(`dashboard.torrent_download_name: must not contain a quote or a newline — it is sent as a quoted header value`)
+	}
+	if d.TorrentDownloadName != "" && d.TorrentFile == "" {
+		p.addf("dashboard.torrent_download_name: set with no dashboard.torrent_file — there is no torrent to name")
+	}
+
 	if d.PollInterval < 0 {
 		p.addf("dashboard.poll_interval: must not be negative")
 	}

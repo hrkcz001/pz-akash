@@ -27,6 +27,10 @@ var catalog = map[Lang]text{
 		CopyDone:       "Скопировано",
 		LocationTitle:  "Расположение сервера",
 
+		VersionCtlTitle:    "Версия pzctl — системы, которая держит сервер и собрала эти архивы",
+		VersionServerTitle: "Версия Project Zomboid на сервере",
+		VersionGameTitle:   "Версия Project Zomboid в этой раздаче",
+
 		BannerBootingTitle:  "Сервер запускается",
 		BannerBootingDesc:   "Инициализация инстанса на Akash Network. IP и порт появятся здесь автоматически после старта.",
 		BannerStoppingTitle: "Сервер выключается",
@@ -120,6 +124,10 @@ var catalog = map[Lang]text{
 		CopyAddress:    "Copy",
 		CopyDone:       "Copied",
 		LocationTitle:  "Server location",
+
+		VersionCtlTitle:    "pzctl version — the system running the server and the build that packed these archives",
+		VersionServerTitle: "Project Zomboid build the server runs",
+		VersionGameTitle:   "Project Zomboid build in this torrent",
 
 		BannerBootingTitle:  "Vsrania is Starting Up",
 		BannerBootingDesc:   "Initializing instance on Akash. IP and Port will appear here automatically when ready.",

@@ -95,6 +95,110 @@ func TestConfiguredTorrentWithNoFileIs404(t *testing.T) {
 	}
 }
 
+// TestTorrentIsSavedUnderItsReleaseName covers the split between the name the
+// repository keeps and the name a player ends up with. game.torrent is overwritten
+// on every game update, so the URL has to be stable; the file in a downloads folder
+// has to say which build it is, because that is the only thing distinguishing it from
+// the last three the player kept.
+func TestTorrentIsSavedUnderItsReleaseName(t *testing.T) {
+	h := newHarness(t, harnessOptions{
+		torrentFile:         "game.torrent",
+		torrentDownloadName: "ProjectZomboid{version}Portable.torrent",
+		gameVersion:         "42.20.3",
+	})
+	if err := writeFixture(filepath.Join(h.packages, "game.torrent"),
+		[]byte("d8:announce3:foo4:infod6:lengthi1eee")); err != nil {
+		t.Fatal(err)
+	}
+
+	const want = `attachment; filename="ProjectZomboid42.20.3Portable.torrent"`
+	resp := h.do(http.MethodGet, PathTorrent, "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s = %d, want 200", PathTorrent, resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Disposition"); got != want {
+		t.Fatalf("Content-Disposition = %q, want %q", got, want)
+	}
+
+	// And on the 304 as well. The header is set before ServeContent decides the
+	// status, deliberately: a player who downloaded the previous build and still has
+	// it cached would otherwise get the header on the first request of the day and not
+	// on the second, which is the sort of difference nobody reproduces on purpose.
+	lastMod := resp.Header.Get("Last-Modified")
+	if lastMod == "" {
+		t.Fatal("no Last-Modified, so the conditional half of this test proves nothing")
+	}
+	resp = h.do(http.MethodGet, PathTorrent, "", nil, [2]string{"If-Modified-Since", lastMod})
+	if resp.StatusCode != http.StatusNotModified {
+		t.Fatalf("conditional GET %s = %d, want 304", PathTorrent, resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Disposition"); got != want {
+		t.Fatalf("Content-Disposition on the 304 = %q, want %q", got, want)
+	}
+}
+
+// TestTorrentIsServedWithNoDispositionWhenTheNameMatches is the quiet default. A
+// header that only repeats the last path segment tells the browser nothing it did not
+// already have, and `attachment` on a file the player asked for by name is a
+// behaviour change for no reason — so the two cases that produce the URL's own name
+// must send no header at all.
+func TestTorrentIsServedWithNoDispositionWhenTheNameMatches(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts harnessOptions
+	}{
+		{
+			name: "no download name configured",
+			opts: harnessOptions{torrentFile: "game.torrent"},
+		},
+		{
+			// Configured, but to the name it already has. An operator can write this;
+			// the comparison is on the resolved name, not on whether the setting is set.
+			name: "configured to the name it already has",
+			opts: harnessOptions{torrentFile: "game.torrent", torrentDownloadName: "game.torrent"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, tc.opts)
+			if err := writeFixture(filepath.Join(h.packages, "game.torrent"),
+				[]byte("d4:infod6:lengthi1eee")); err != nil {
+				t.Fatal(err)
+			}
+			resp := h.do(http.MethodGet, PathTorrent, "", nil)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("GET %s = %d, want 200", PathTorrent, resp.StatusCode)
+			}
+			if got := resp.Header.Get("Content-Disposition"); got != "" {
+				t.Fatalf("Content-Disposition = %q, want none", got)
+			}
+		})
+	}
+}
+
+// TestTorrentKeepsItsURLNameWhenTheVersionIsMissing is the operator error this is
+// really guarding: a download name with a placeholder in it and no game_version set.
+// config.TorrentName abandons the rename rather than half-applying it, and the value
+// that reaches the header has to be the abandoned one — a player saving
+// "ProjectZomboid{version}Portable.torrent" would be the visible end of a config
+// mistake nobody would connect to this file.
+func TestTorrentKeepsItsURLNameWhenTheVersionIsMissing(t *testing.T) {
+	h := newHarness(t, harnessOptions{
+		torrentFile:         "game.torrent",
+		torrentDownloadName: "ProjectZomboid{version}Portable.torrent",
+	})
+	if err := writeFixture(filepath.Join(h.packages, "game.torrent"),
+		[]byte("d4:infod6:lengthi1eee")); err != nil {
+		t.Fatal(err)
+	}
+	resp := h.do(http.MethodGet, PathTorrent, "", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s = %d, want 200", PathTorrent, resp.StatusCode)
+	}
+	if got := resp.Header.Get("Content-Disposition"); got != "" {
+		t.Fatalf("Content-Disposition = %q, want none — the placeholder must not reach a player", got)
+	}
+}
+
 func TestServerZipRequiresItsRealmAndSubstitutes(t *testing.T) {
 	h := newHarness(t, harnessOptions{})
 	if err := writeFixture(filepath.Join(h.packages, "server.zip"), serverZipFixture(t)); err != nil {

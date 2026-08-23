@@ -254,6 +254,37 @@ func TestDashboardOptionsCarryTheConfiguredHalf(t *testing.T) {
 	}
 }
 
+// TestTheTwoStatusBadgesComeFromDifferentPlaces is the wiring half of the version
+// badges. One is the binary's own tag and one is a config value, and the reason to
+// pin it is the history: main.version used to reach the page as a game version, and
+// "vsha-2fd34d2" is what a player saw where a Project Zomboid build should have been.
+func TestTheTwoStatusBadgesComeFromDifferentPlaces(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Identity.Timezone = "Europe/Prague"
+	cfg.Dashboard.ServerVersion = "42.20.3"
+
+	o := dashboardOptions(cfg, nil)
+	if o.Version != version {
+		t.Errorf("Version = %q, want this build's own version %q", o.Version, version)
+	}
+	if o.ServerVersion != "42.20.3" {
+		t.Errorf("ServerVersion = %q, want dashboard.server_version", o.ServerVersion)
+	}
+	if o.ServerVersion == o.Version {
+		t.Error("the two badges carry the same value; one of them is reading the wrong source")
+	}
+
+	// An unset server_version omits its badge rather than borrowing the other's
+	// number. A deployment that has not filled it in has nothing true to say about
+	// which game build is running, and the page says nothing.
+	cfg.Dashboard.ServerVersion = ""
+	if got := dashboardOptions(cfg, nil); got.ServerVersion != "" {
+		t.Errorf("ServerVersion with nothing configured = %q, want none", got.ServerVersion)
+	} else if got.Version == "" {
+		t.Error("the pzctl badge went away with it; they are independent")
+	}
+}
+
 // Three conditions, all necessary. v1 wrote the password into the HTML with the
 // same f-string as the address, so there was no way to publish one without the
 // other.

@@ -102,8 +102,14 @@ func TestBusMethodSetsArePinned(t *testing.T) {
 			// error. It takes a branch name, so it can look at the agent's branch —
 			// which is fine, and is what ReadAgent does too. Reading either side is
 			// unrestricted; only writing is owned.
+			//
+			// ReadMain was added for the guide mirror: the controller reads README.*.md
+			// off the operator branch on every poll so a corrected sentence reaches the
+			// page without a rebuild. A read, of the branch the operator owns, and it
+			// cannot write anything — the same standing as Exists and ReadAgent.
 			"Branches", "ConsumeTriggers", "Exists", "Fetch", "Head", "Publish",
-			"Pushed", "ReadAgent", "ReadConfigBytes", "ReadOwn", "ShouldAct", "Triggers",
+			"Pushed", "ReadAgent", "ReadConfigBytes", "ReadMain", "ReadOwn",
+			"ShouldAct", "Triggers",
 		},
 		reflect.TypeOf(&AgentBus{}): {
 			"Fetch", "Publish", "ReadConfigBytes", "ReadController", "ReadOwn",

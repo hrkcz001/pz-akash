@@ -16,7 +16,10 @@
 // is auditable.
 package config
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 // Config is the whole of pz-saves/config.yaml.
 type Config struct {
@@ -607,12 +610,31 @@ type Dashboard struct {
 	// it. Resolved inside packages_dir. Empty omits the section.
 	GuideFile string `yaml:"guide_file"`
 
+	// TorrentDownloadName is what a browser saves the torrent as, when that should
+	// differ from the name it has in the repository. {version} is replaced with
+	// GameVersion. The split exists because the two names answer to different
+	// readers: torrent_file is stable so the saves repo, the image build and this
+	// config all keep agreeing about one path, while the download wants the name a
+	// player will recognise months later in a downloads folder. Empty serves the
+	// file under torrent_file, as it did before.
+	TorrentDownloadName string `yaml:"torrent_download_name"`
+
 	// GameVersion is the Project Zomboid build the torrent contains, rendered as
 	// the badge on the clean-client card. It is config rather than a build-time
 	// value because it describes the game, not this program: the badge used to show
 	// pzctl's own version, which CI sets to a git sha, so a card offering a game
 	// client claimed to be "vsha-2fd34d2". Empty omits the badge.
 	GameVersion string `yaml:"game_version"`
+
+	// ServerVersion is the Project Zomboid build the dedicated server runs, badged
+	// on the status panel beside pzctl's own version.
+	//
+	// It has its own key rather than reusing GameVersion because the two can drift,
+	// and the drift is the whole point of showing them: a client and a server on
+	// different builds cannot connect, and "the torrent gives you 42.20.3, the
+	// server runs 42.20.3" is the one sentence that rules that out at a glance.
+	// Empty omits the badge.
+	ServerVersion string `yaml:"server_version"`
 
 	// ShowJoinPassword puts server.password_protected's secret on the page next to
 	// the address. It is true for a server that is public in the "anyone we told
@@ -640,6 +662,51 @@ type Dashboard struct {
 	// answered as fast as it could be asked.
 	UnlockAttempts int      `yaml:"unlock_attempts"`
 	UnlockWindow   Duration `yaml:"unlock_window"`
+}
+
+// TorrentName is the filename a browser is told to save the torrent as.
+//
+// A template with no version to put in it falls back to torrent_file rather than
+// collapsing to "ProjectZomboidPortable.torrent": a name shaped like a versioned
+// one but missing the version is worse than the plain name, because the reader
+// cannot tell which build they are holding.
+func (d Dashboard) TorrentName() string {
+	if d.TorrentDownloadName == "" || d.TorrentFile == "" {
+		return d.TorrentFile
+	}
+	if strings.Contains(d.TorrentDownloadName, "{version}") && d.GameVersion == "" {
+		return d.TorrentFile
+	}
+	return strings.ReplaceAll(d.TorrentDownloadName, "{version}", d.GameVersion)
+}
+
+// GuideFiles lists every basename the guide may be served from: guide_file with
+// {lang} resolved for each configured locale, plus the unsuffixed fallback that
+// serves a locale nobody has translated yet.
+//
+// The controller mirrors exactly this set out of the saves repository on every
+// poll, which is what lets a README edit reach the page without an image build.
+// Deriving the list here rather than in the mirror keeps one answer to "which
+// files are the guide" shared by the reader and the writer — the pair that a
+// second copy of the {lang} rule would quietly split.
+func (d Dashboard) GuideFiles() []string {
+	if d.GuideFile == "" {
+		return nil
+	}
+	var out []string
+	add := func(name string) {
+		for _, have := range out {
+			if have == name {
+				return
+			}
+		}
+		out = append(out, name)
+	}
+	for _, l := range d.Locales {
+		add(strings.ReplaceAll(d.GuideFile, "{lang}", l))
+	}
+	add(strings.ReplaceAll(d.GuideFile, ".{lang}", ""))
+	return out
 }
 
 type Agent struct {

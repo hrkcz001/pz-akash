@@ -129,6 +129,17 @@ type text struct {
 	// half-translating "Prague, CZ" would read worse than leaving it as it came.
 	LocationTitle string
 
+	// The tooltips on the three version badges. The values beside them are version
+	// strings and are not translated; what needs a language is which version each
+	// one is, since "v1.0.0" next to "v42.20.3" says nothing on its own.
+	//
+	// VersionCtlTitle covers every pzctl badge — the status panel and both file
+	// cards — because they are deliberately one number: the tag that built the
+	// controller built the packer that wrote those archives.
+	VersionCtlTitle    string
+	VersionServerTitle string
+	VersionGameTitle   string
+
 	// The three status banners that replace the address grid when there is no
 	// address to show.
 	BannerBootingTitle  string

@@ -407,10 +407,9 @@ func foldedRoutes(hook http.Handler, m *fsm.Machine, page http.Handler) http.Han
 		mux.Handle(webhook.Path, hook)
 	}
 	mux.HandleFunc("/state", func(w http.ResponseWriter, _ *http.Request) {
-		s := m.State()
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
-		fmt.Fprintf(w, "status=%s intent=%s phase=%s\n", s.Status, s.Intent, s.Phase)
+		fmt.Fprintln(w, statusLine(m.State()))
 	})
 	// Last, and at the root: the dashboard owns every path above that neither this
 	// mux nor httpapi claimed, and answers 404 for the ones it does not recognise.
@@ -418,6 +417,28 @@ func foldedRoutes(hook http.Handler, m *fsm.Machine, page http.Handler) http.Han
 		mux.Handle("/", page)
 	}
 	return mux
+}
+
+// statusLine is the plain-text answer both /state and the two-port /healthz give.
+// One function because the two used to carry the same format string in two places,
+// and a status line that disagrees with itself depending on which port you asked is
+// the sort of thing an operator diagnoses for an hour.
+//
+// phase is only printed when there is a lease for it to belong to. The phase in the
+// snapshot is the *agent's*, gated by I16 — a report is only believed if it names
+// the lease we hold — so with no lease the value is not a reading at all but the
+// default of the empty document that stands in for one, which spells "starting".
+// After a halt that printed `status=offline intent=stopped phase=starting`, which
+// names the one thing that is definitely not happening.
+//
+// It takes the snapshot rather than the machine so that the sentence above is
+// something a test can check without a git repository and a funded lease.
+func statusLine(s fsm.Snapshot) string {
+	line := fmt.Sprintf("status=%s intent=%s", s.Status, s.Intent)
+	if s.Lease != nil {
+		return line + " phase=" + string(s.Phase)
+	}
+	return line + " phase=none"
 }
 
 // webhookHandler builds the receiver, or returns nil when it is deliberately not
@@ -442,7 +463,11 @@ func webhookHandler(cfg *config.Config, m *fsm.Machine, dry bool,
 		Secret:      set.WebhookSecret,
 		Branch:      bl.Main,
 		TriggersDir: bl.TriggersDir,
-		Logf:        logf,
+		// The guide files, so a corrected README reaches the page on the push instead
+		// of on the next idle poll. The controller mirrors exactly this set out of the
+		// repository, and both sides get the list from the same place.
+		WatchPaths: cfg.Dashboard.GuideFiles(),
+		Logf:       logf,
 		OnPush: func(p webhook.Push) {
 			// Send never blocks. A dropped event costs latency only, because the
 			// poll loop asks the same question on its own schedule.
@@ -469,8 +494,7 @@ func webhookServer(cfg *config.Config, hook http.Handler, m *fsm.Machine, addr s
 	// This server's own liveness path. On the folded arrangement httpapi answers
 	// /healthz instead, and the status line lives at /state.
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
-		s := m.State()
-		fmt.Fprintf(w, "status=%s intent=%s phase=%s\n", s.Status, s.Intent, s.Phase)
+		fmt.Fprintln(w, statusLine(m.State()))
 	})
 	return &http.Server{
 		Addr:              addr,

@@ -273,6 +273,11 @@ func dashboardOptions(cfg *config.Config, sec *secrets.Set) dashboard.Options {
 		DiskWarnPercent:   cfg.Backups.DiskWarnPercent,
 		PlayersStaleAfter: cfg.Dashboard.PlayersStaleAfter.D(),
 		PollInterval:      cfg.Dashboard.PollInterval.D(),
+		// This build's own version, and the only place on the page where main.version
+		// belongs: it labels pzctl, which is what it is. The badge that used to carry
+		// it labelled a game client, which is what made "vsha-2fd34d2" reach a player.
+		Version:       version,
+		ServerVersion: cfg.Dashboard.ServerVersion,
 	}
 	for _, l := range cfg.Dashboard.Locales {
 		o.Locales = append(o.Locales, dashboard.Lang(l))

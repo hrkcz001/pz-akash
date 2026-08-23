@@ -79,6 +79,18 @@ type Options struct {
 	// TriggersDir is the only directory whose changes are interesting.
 	TriggersDir string
 
+	// WatchPaths are individual paths outside TriggersDir that also warrant a
+	// reconcile. It carries the guide files: a README edit is not an operator
+	// request and creates no trigger, but the controller mirrors it into the served
+	// directory on the same fetch, and without this the corrected sentence waits out
+	// an idle poll interval before anyone sees it.
+	//
+	// Exact paths, not prefixes. Everything under the repository root that is not a
+	// trigger is content the controller reads at boot and nothing else — mods, the
+	// world, config.yaml — and acting on a mod push would make every content commit
+	// a reconcile for no gain.
+	WatchPaths []string
+
 	// IgnoreAuthors drops deliveries pushed by these git identities (matched
 	// against pusher name and head-commit author, case-insensitively).
 	//
@@ -106,6 +118,9 @@ type Options struct {
 type Handler struct {
 	opts   Options
 	ignore map[string]bool
+	// watch is WatchPaths as a set. A path is matched exactly as GitHub spells it,
+	// which is repository-root-relative with forward slashes on every platform.
+	watch map[string]bool
 }
 
 // New validates the options and returns the handler.
@@ -124,10 +139,15 @@ func New(o Options) (*Handler, error) {
 	if o.Logf == nil {
 		o.Logf = func(string, ...any) {}
 	}
-	h := &Handler{opts: o, ignore: map[string]bool{}}
+	h := &Handler{opts: o, ignore: map[string]bool{}, watch: map[string]bool{}}
 	for _, a := range o.IgnoreAuthors {
 		if a = strings.ToLower(strings.TrimSpace(a)); a != "" {
 			h.ignore[a] = true
+		}
+	}
+	for _, p := range o.WatchPaths {
+		if p = strings.TrimSpace(p); p != "" {
+			h.watch[p] = true
 		}
 	}
 	return h, nil
@@ -227,6 +247,9 @@ func (h *Handler) Decide(p Push) Decision {
 	for _, p := range p.Paths {
 		if strings.HasPrefix(p, prefix) {
 			return Decision{Act: true, Reason: "changed " + p}
+		}
+		if h.watch[p] {
+			return Decision{Act: true, Reason: "changed watched path " + p}
 		}
 	}
 	return Decision{Reason: "no paths under " + prefix + " changed"}

@@ -99,6 +99,12 @@ type harnessOptions struct {
 	// torrentFile is dashboard.torrent_file. Empty is the default and means the
 	// route does not exist at all.
 	torrentFile string
+
+	// torrentDownloadName and gameVersion are the two halves of the saved-as name.
+	// Both empty is the default, and then the browser is told nothing and saves the
+	// file under the name in the URL.
+	torrentDownloadName string
+	gameVersion         string
 }
 
 func newHarness(t *testing.T, o harnessOptions) *harness {
@@ -157,10 +163,12 @@ func newHarness(t *testing.T, o harnessOptions) *harness {
 		ShutdownGrace:      config.Duration(30 * time.Second),
 	}
 	cfg.Dashboard = config.Dashboard{
-		SessionTTL:     config.Duration(o.sessionTTL),
-		UnlockAttempts: o.unlockAttempts,
-		UnlockWindow:   config.Duration(o.unlockWindow),
-		TorrentFile:    o.torrentFile,
+		SessionTTL:          config.Duration(o.sessionTTL),
+		UnlockAttempts:      o.unlockAttempts,
+		UnlockWindow:        config.Duration(o.unlockWindow),
+		TorrentFile:         o.torrentFile,
+		TorrentDownloadName: o.torrentDownloadName,
+		GameVersion:         o.gameVersion,
 	}
 	h.cfg = cfg
 

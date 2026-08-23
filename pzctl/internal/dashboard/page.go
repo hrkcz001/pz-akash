@@ -18,8 +18,12 @@ type Page struct {
 	// GameVersion badges the torrent card with the Project Zomboid build it
 	// contains. See Inputs.GameVersion for why it is not this program's version.
 	GameVersion string
-	Stage       Stage
-	Badge       Badge
+	// Version and ServerVersion badge the status panel: what is running the server,
+	// and what build of the game it is running. See Options for both.
+	Version       string
+	ServerVersion string
+	Stage         Stage
+	Badge         Badge
 
 	// PollMS is the status poll period in milliseconds, 0 when polling is off.
 	// It reaches the script as a data attribute on <body> rather than as
@@ -103,6 +107,10 @@ type Card struct {
 	Title     string
 	Stats     string
 
+	// Version badges the tile with the pzctl build that packed the archive. Empty on
+	// the server card, which is the operator's download and carries a lock instead.
+	Version string
+
 	BtnClass string // card-btn btn-client, btn-locked, btn-unlocked
 	BtnIcon  string // the server card's 🔒/⬇️; empty where the SVG is used
 	Btn      string
@@ -165,23 +173,25 @@ func BuildPage(o Options, in Inputs, want Lang) Page {
 			Title:    t.PageTitle,
 			Active:   "connect",
 		},
-		GameVersion:  in.GameVersion,
-		Stage:        st.Stage,
-		Badge:        st.Badge,
-		PollMS:       o.PollInterval.Milliseconds(),
-		ShowAddress:  stage == StageOnline,
-		Banner:       stage.banner(t),
-		Host:         host,
-		IP:           ctl.Endpoint.IP,
-		Port:         ctl.Endpoint.GamePort,
-		Players:      st.Players,
-		ShowPlayers:  st.ShowPlayers,
-		Location:     location,
-		ShowLocation: location != "",
-		Price:        st.Price,
-		ShowPrice:    st.ShowPrice,
-		Guide:        RenderMarkdown(in.Guide),
-		Unlocked:     in.Unlocked,
+		GameVersion:   in.GameVersion,
+		Version:       o.Version,
+		ServerVersion: o.ServerVersion,
+		Stage:         st.Stage,
+		Badge:         st.Badge,
+		PollMS:        o.PollInterval.Milliseconds(),
+		ShowAddress:   stage == StageOnline,
+		Banner:        stage.banner(t),
+		Host:          host,
+		IP:            ctl.Endpoint.IP,
+		Port:          ctl.Endpoint.GamePort,
+		Players:       st.Players,
+		ShowPlayers:   st.ShowPlayers,
+		Location:      location,
+		ShowLocation:  location != "",
+		Price:         st.Price,
+		ShowPrice:     st.ShowPrice,
+		Guide:         RenderMarkdown(in.Guide),
+		Unlocked:      in.Unlocked,
 	}
 
 	if p.ShowAddress {
@@ -203,6 +213,12 @@ func BuildPage(o Options, in Inputs, want Lang) Page {
 	p.Cards = []Card{
 		newCard("client", "🎮", t.CardClientTitle, packageStats(lang, t, in.Packages.Client), t.CardClientBtn, "/client.zip"),
 		newCard("common", "📦", t.CardCommonTitle, packageStats(lang, t, in.Packages.Common), t.CardCommonBtn, "/common.zip"),
+	}
+	// The two public archives carry the build that packed them, which is this build:
+	// the image that serves them is the image that made them, so there is one number
+	// and the page does not have to explain a mismatch it cannot have.
+	for i := range p.Cards {
+		p.Cards[i].Version = o.Version
 	}
 
 	// The server card is the one that changes shape. Unlocked it is a download

@@ -122,6 +122,18 @@ func (b *ControllerBus) Pushed() []string { return b.repo.Pushed() }
 // Head returns the commit SHA of the operator branch as of the last Fetch.
 func (b *ControllerBus) Head() (string, error) { return b.repo.Head(b.br.Main) }
 
+// ReadMain returns one path from the operator branch as of the last Fetch, with a
+// missing file reported as ErrNotFound.
+//
+// It is how the controller mirrors the guide out of the repository without this
+// package growing an opinion about what a guide is. Reading a blob is also the
+// only way to do it: there is deliberately no working tree here, because v1 kept
+// one and ran `git reset --hard` on it to sync, which deleted files belonging to a
+// backup that was still being written.
+func (b *ControllerBus) ReadMain(path string) ([]byte, error) {
+	return b.repo.ReadFile(b.br.Main, path)
+}
+
 // ReadConfigBytes returns config.yaml from the operator branch. It is bytes
 // rather than a *config.Config so this package stays free of the config import;
 // the caller decodes and validates.

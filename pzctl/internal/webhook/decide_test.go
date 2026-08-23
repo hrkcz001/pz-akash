@@ -124,6 +124,83 @@ func TestDecideHonoursIgnoreAuthorsWhenConfigured(t *testing.T) {
 	}
 }
 
+// TestDecideActsOnWatchedPaths covers Options.WatchPaths, which carries the guide
+// files. A README edit is not an operator request and creates no trigger, but the
+// controller mirrors the guide on the same fetch a trigger would have caused — so
+// without this the corrected sentence waits out an idle poll interval, which is
+// five minutes of a public page saying the wrong thing.
+func TestDecideActsOnWatchedPaths(t *testing.T) {
+	t.Parallel()
+	h, _ := newHandler(t, func(o *Options) {
+		o.WatchPaths = []string{"README.ru.md", " README.en.md ", ""}
+	})
+
+	for _, tc := range []struct {
+		name   string
+		push   Push
+		act    bool
+		reason string
+	}{
+		{
+			name: "a watched file changed",
+			push: Push{Ref: "refs/heads/main", Paths: []string{"README.ru.md"}},
+			act:  true, reason: "watched path README.ru.md",
+		},
+		{
+			// Trimmed, because this list is built from config values written by hand.
+			name: "the configured value had spaces around it",
+			push: Push{Ref: "refs/heads/main", Paths: []string{"README.en.md"}},
+			act:  true, reason: "watched path README.en.md",
+		},
+		{
+			// Exact paths, not prefixes: everything else in the repository is content
+			// the controller reads at boot, and acting on a mod push would make every
+			// content commit a reconcile for no gain.
+			name:   "a same-named file somewhere else",
+			push:   Push{Ref: "refs/heads/main", Paths: []string{"docs/README.ru.md"}},
+			reason: "no paths under triggers/ changed",
+		},
+		{
+			name:   "a file the list does not name",
+			push:   Push{Ref: "refs/heads/main", Paths: []string{"README.de.md"}},
+			reason: "no paths under triggers/ changed",
+		},
+		{
+			// The ref check runs first, and has to: the state branches are pushed by
+			// the controller itself, and a guide file is not what they carry anyway.
+			name:   "a watched path on a state branch",
+			push:   Push{Ref: "refs/heads/state/controller", Paths: []string{"README.ru.md"}},
+			reason: "is not the operator branch",
+		},
+		{
+			// The empty string in the configured list must not become a rule that
+			// matches nothing, or worse, everything.
+			name:   "an empty path in the delivery",
+			push:   Push{Ref: "refs/heads/main", Paths: []string{""}},
+			reason: "no paths under triggers/ changed",
+		},
+	} {
+		got := h.Decide(tc.push)
+		if got.Act != tc.act {
+			t.Errorf("%s: Act = %v, want %v (reason %q)", tc.name, got.Act, tc.act, got.Reason)
+			continue
+		}
+		if !strings.Contains(got.Reason, tc.reason) {
+			t.Errorf("%s: reason = %q, want it to mention %q", tc.name, got.Reason, tc.reason)
+		}
+	}
+}
+
+// TestDecideWithNoWatchPathsIsUnchanged is the guard on the default: a deployment
+// that configures no guide must decide exactly as it did before WatchPaths existed.
+func TestDecideWithNoWatchPathsIsUnchanged(t *testing.T) {
+	t.Parallel()
+	h, _ := newHandler(t, nil)
+	if d := h.Decide(Push{Ref: "refs/heads/main", Paths: []string{"README.ru.md"}}); d.Act {
+		t.Errorf("acted on a guide file with no watch list configured: %s", d.Reason)
+	}
+}
+
 // --- the HTTP surface ---
 
 func TestServeHTTPRejectsNonPOST(t *testing.T) {

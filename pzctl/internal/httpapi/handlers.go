@@ -40,6 +40,12 @@ func (s *Server) packageHandler(p staticFile) http.HandlerFunc {
 		defer f.Close()
 
 		w.Header().Set("Content-Type", p.mime)
+		// Only where the saved name must differ from the URL's. Set on a 304 as well
+		// as a 200, which costs nothing and keeps the header from depending on whether
+		// the client happened to have a cached copy.
+		if p.downloadAs != "" && p.downloadAs != p.fileName {
+			w.Header().Set("Content-Disposition", `attachment; filename="`+p.downloadAs+`"`)
+		}
 
 		if !p.substitute || !s.sub.Active() {
 			// ServeContent sets Content-Length, handles Range and HEAD, and returns

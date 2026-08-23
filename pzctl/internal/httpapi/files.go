@@ -208,6 +208,12 @@ type staticFile struct {
 	realm Realm
 	// substitute is set for the archive that carries the game secrets.
 	substitute bool
+	// downloadAs is the name the browser is told to save the file as, when that
+	// differs from fileName. Empty leaves the choice to the URL, which is what the
+	// zips want: /client.zip already reads as the right name, and the torrent does
+	// not — game.torrent is the name the repository needs, not the one a player
+	// wants to still recognise in a downloads folder next month.
+	downloadAs string
 }
 
 const (
@@ -224,9 +230,9 @@ const (
 // as a string, and a separate branch for server.zip — and the way that fails is a
 // new path added to the router and to neither of the other two.
 var packages = []staticFile{
-	{PathCommonZip, "common.zip", mimeZip, RealmPublic, false},
-	{PathClientZip, "client.zip", mimeZip, RealmPublic, false},
-	{PathServerZip, "server.zip", mimeZip, RealmServerFiles, true},
+	{urlPath: PathCommonZip, fileName: "common.zip", mime: mimeZip, realm: RealmPublic},
+	{urlPath: PathClientZip, fileName: "client.zip", mime: mimeZip, realm: RealmPublic},
+	{urlPath: PathServerZip, fileName: "server.zip", mime: mimeZip, realm: RealmServerFiles, substitute: true},
 }
 
 // static is the table plus whatever configuration adds to it.
@@ -240,7 +246,13 @@ func (s *Server) static() []staticFile {
 		return packages
 	}
 	return append(append([]staticFile{}, packages...),
-		staticFile{PathTorrent, s.torrentFile, mimeTorrent, RealmPublic, false})
+		staticFile{
+			urlPath:    PathTorrent,
+			fileName:   s.torrentFile,
+			mime:       mimeTorrent,
+			realm:      RealmPublic,
+			downloadAs: s.torrentName,
+		})
 }
 
 // openPackage opens one package for reading, as a *zip.Reader when it needs

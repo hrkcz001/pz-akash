@@ -438,6 +438,30 @@ body {
   border-radius: 9999px;
   letter-spacing: 0.04em;
   box-shadow: 0 0 10px rgba(139, 92, 246, 0.2);
+  white-space: nowrap;
+}
+/* New in v2: the same pill in three places, and two of them are not the torrent
+   card it was written for.
+
+   The pzctl variant is deliberately a different colour from the game-build badges.
+   The status panel carries one of each, and two identical purple pills reading
+   "pzctl v1.0.0" and "PZ v42.20.3" would invite exactly the misreading the pair
+   exists to prevent — that these are two opinions about one version. They are not:
+   one is this program, the other is the game. */
+.version-badge-ctl {
+  background: rgba(56, 189, 248, 0.16);
+  border-color: rgba(56, 189, 248, 0.4);
+  color: #bae6fd;
+  box-shadow: 0 0 10px rgba(56, 189, 248, 0.12);
+}
+/* On a download tile the badge is a footnote, not a headline: it is pushed to the
+   trailing edge and shrunk, and the header is allowed to wrap so a long card title
+   in either locale pushes it to a second line instead of squeezing it. */
+.card-version {
+  margin-left: auto;
+  font-size: 0.68rem;
+  padding: 0.15rem 0.5rem;
+  letter-spacing: 0.02em;
 }
 .torrent-title {
   font-size: 1.15rem;
@@ -514,6 +538,7 @@ body {
   align-items: center;
   gap: 0.75rem;
   margin-bottom: 0.6rem;
+  flex-wrap: wrap;
 }
 .card-icon-box {
   width: 36px;

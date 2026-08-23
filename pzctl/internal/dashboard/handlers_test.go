@@ -71,6 +71,11 @@ func fullOptions(t *testing.T) Options {
 	o := testOptions(t)
 	o.TorrentURL = "/torrents/client.torrent"
 	o.JoinPassword = "hunter2"
+	// Both version badges. They are {{with}} blocks, which means a minimal config
+	// renders neither — and a {{.Typo}} inside a branch nothing takes is invisible
+	// until the day an operator sets the value.
+	o.Version = "v1.0.0"
+	o.ServerVersion = "42.20.3"
 	return o
 }
 

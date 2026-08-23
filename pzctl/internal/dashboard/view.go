@@ -38,6 +38,20 @@ type Options struct {
 	// could not do either.
 	TorrentURL string
 
+	// Version is this build's own version: the git tag it was built from, or "dev"
+	// for a build that was not. It is badged on the status panel and on the common
+	// and client cards, and it is deliberately the same number in all three places —
+	// one tag builds the controller, the agent and the image that packed those
+	// archives, so three different numbers there would describe a system that cannot
+	// exist. Empty omits the badges.
+	Version string
+
+	// ServerVersion is dashboard.server_version: the Project Zomboid build the
+	// dedicated server runs, badged beside Version on the status panel. It is a
+	// different kind of fact from Version — the game's build, not this program's —
+	// which is why the page shows both rather than picking one. Empty omits it.
+	ServerVersion string
+
 	// DiskWarnPercent is the usage at which the backups page starts asking for
 	// downloads. Zero disables the warning.
 	DiskWarnPercent int

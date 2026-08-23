@@ -636,6 +636,7 @@ func (m *Machine) onPoll(ctx context.Context, ev Event) {
 		m.logf("fsm: fetch failed: %v", err)
 		return
 	}
+	m.syncGuide()
 	m.readAgent()
 	m.consumeTriggers(ctx)
 	m.advance(ctx)
@@ -745,6 +746,9 @@ func (m *Machine) load(ctx context.Context) error {
 	if err := m.bus.Fetch(ctx); err != nil {
 		return fmt.Errorf("fsm: initial fetch: %w", err)
 	}
+	// Before the port opens, so a guide edited while the controller was down is on
+	// the first page anyone loads rather than on the first page after a poll.
+	m.syncGuide()
 	doc, idx, rep, err := m.bus.ReadOwn()
 	if err != nil {
 		return fmt.Errorf("fsm: read controller state: %w", err)

@@ -31,6 +31,7 @@ type Server struct {
 
 	packagesDir string
 	torrentFile string
+	torrentName string
 	uploadLimit time.Duration
 	readHeader  time.Duration
 	idle        time.Duration
@@ -92,6 +93,7 @@ func NewServer(o ServerOptions) (*Server, error) {
 		sub:         NewSubstituter(st.SubstituteEntries, o.Secrets, st.SubstituteMaxBytes, logf),
 		packagesDir: st.PackagesDir,
 		torrentFile: d.TorrentFile,
+		torrentName: d.TorrentName(),
 		uploadLimit: st.UploadTimeout.D(),
 		readHeader:  st.ReadHeaderTimeout.D(),
 		idle:        st.IdleTimeout.D(),

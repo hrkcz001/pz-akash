@@ -20,6 +20,26 @@
         </div>
         <div class="status-group">
           {{/*
+            The two version badges. Both are fixed for the life of the container —
+            one is the tag this binary was built from, the other the game build the
+            world runs — so unlike their neighbours the poll never touches them and
+            they are omitted rather than rendered hidden. They come first because
+            they are the only things here that are not a reading.
+
+            Each needs its tooltip to say which version it is: "v1.0.0" beside
+            "v42.20.3" is two numbers and no meaning.
+          */}}
+          {{with .Version}}
+          <div class="version-badge version-badge-ctl" title="{{$.T.VersionCtlTitle}}">
+            <span>pzctl {{.}}</span>
+          </div>
+          {{end}}
+          {{with .ServerVersion}}
+          <div class="version-badge" title="{{$.T.VersionServerTitle}}">
+            <span>PZ v{{.}}</span>
+          </div>
+          {{end}}
+          {{/*
             The player count, when there is one. v1 printed a count it had never
             measured as "0 игроков"; here an unmeasured count is no badge at all,
             and a measurement that has stopped being refreshed keeps the badge and
@@ -113,7 +133,7 @@
       <div class="torrent-info">
         <div class="torrent-title-row">
           <div class="torrent-title">{{.Title}}</div>
-          {{with $.GameVersion}}<span class="version-badge">v{{.}}</span>{{end}}
+          {{with $.GameVersion}}<span class="version-badge" title="{{$.T.VersionGameTitle}}">v{{.}}</span>{{end}}
         </div>
         <div class="torrent-desc">{{.Desc}}</div>
       </div>
@@ -131,6 +151,11 @@
           <div class="card-header">
             <div class="card-icon-box {{.IconClass}}">{{.Icon}}</div>
             <h3 class="card-title">{{.Title}}</h3>
+            {{/*
+              The build that packed this archive, which is the same build serving the
+              page. Absent on the server card, whose header already carries a lock.
+            */}}
+            {{with .Version}}<span class="version-badge version-badge-ctl card-version" title="{{$.T.VersionCtlTitle}}">{{.}}</span>{{end}}
           </div>
           <div class="card-stats">{{.Stats}}</div>
         </div>
