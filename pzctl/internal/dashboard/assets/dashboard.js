@@ -79,6 +79,73 @@
     if (modal.classList.contains("open")) pwd.focus();
   }
 
+  // --- Copy buttons --------------------------------------------------------
+
+  // A shared Akash endpoint gives players an address nobody can retype from
+  // memory: the provider's own hostname, and a five-digit port it drew from its
+  // pool rather than the one the SDL asked for. So both get a button.
+
+  // The clipboard, twice, because the modern API is missing exactly where this
+  // page usually runs. navigator.clipboard needs a secure context, and a
+  // controller on a shared endpoint is reached over plain http at a provider
+  // hostname — so in production the first branch does not exist and the textarea
+  // is the one doing the work. It is still tried first: execCommand is the half
+  // browsers have been threatening to remove for years.
+  var toClipboard = function (text) {
+    if (navigator.clipboard && window.isSecureContext) {
+      return navigator.clipboard.writeText(text);
+    }
+    var ta = document.createElement("textarea");
+    ta.value = text;
+    // Off-screen rather than hidden: a display:none element cannot hold a
+    // selection. readOnly stops a phone opening its keyboard over the page.
+    ta.readOnly = true;
+    ta.style.position = "fixed";
+    ta.style.top = "-1000px";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.select();
+    ta.setSelectionRange(0, text.length);
+    var ok = false;
+    try {
+      ok = document.execCommand("copy");
+    } catch (e) {
+      ok = false;
+    }
+    document.body.removeChild(ta);
+    return ok ? Promise.resolve() : Promise.reject();
+  };
+
+  document.querySelectorAll(".addr-copy").forEach(function (btn) {
+    // The idle wording is whatever the server rendered, so restoring it needs no
+    // second catalog lookup and no string here.
+    var idle = btn.getAttribute("title");
+    var timer = 0;
+    btn.addEventListener("click", function () {
+      // The value comes from the DOM beside the button rather than from an
+      // attribute on it. One address, one place: a data-copy="..." copy is a
+      // second rendering of the same thing, free to drift from the visible one.
+      var value = btn.parentNode.querySelector(".address-text");
+      if (!value) return;
+      toClipboard(value.textContent.trim()).then(function () {
+        btn.classList.add("copied");
+        btn.setAttribute("title", msg.msgCopied);
+        btn.setAttribute("aria-label", msg.msgCopied);
+        clearTimeout(timer);
+        // Long enough to read, short enough that copying the port right after
+        // the hostname still gets a confirmation of its own.
+        timer = setTimeout(function () {
+          btn.classList.remove("copied");
+          btn.setAttribute("title", idle);
+          btn.setAttribute("aria-label", idle);
+        }, 1400);
+      }, function () {
+        // A refused clipboard gets no dialog. The value is on screen and
+        // selectable, which is what a person falls back to anyway.
+      });
+    });
+  });
+
   // --- Header poll ---------------------------------------------------------
 
   var stageBox = document.getElementById("address-widget-container");

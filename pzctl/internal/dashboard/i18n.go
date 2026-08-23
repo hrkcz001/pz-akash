@@ -118,6 +118,13 @@ type text struct {
 	LabelHost      string
 	LabelPort      string
 	LabelPassword  string
+	// CopyAddress titles the clipboard buttons beside the address values, and
+	// CopyDone is what one says after it worked. They exist because a shared
+	// endpoint gives players a provider hostname and a five-digit port that nobody
+	// can retype from memory. Both are here rather than in the script for the
+	// reason the script's own header gives: no user-visible string lives in the JS.
+	CopyAddress string
+	CopyDone    string
 
 	// The three status banners that replace the address grid when there is no
 	// address to show.

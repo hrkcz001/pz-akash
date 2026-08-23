@@ -29,6 +29,12 @@ type Page struct {
 	ShowAddress bool
 	Banner      Banner
 
+	// Host is a name the player types, and the card showing it is labelled
+	// "server address". Two different things end up here: the configured
+	// dns.game_record when there is a zone, and otherwise the provider's own
+	// hostname on a shared endpoint. Both are names, which is the only property
+	// the page cares about. IP is set only for a dedicated IP lease, and the
+	// template shows one card or the other.
 	Host string
 	IP   string
 	Port int
@@ -120,6 +126,14 @@ func BuildPage(o Options, in Inputs, want Lang) Page {
 
 	stage := stageOf(ctl.Status, ctl.Endpoint)
 	st := BuildStatus(o, in, lang)
+	// A configured DNS name wins; without one, a shared-endpoint lease still has a
+	// name to show, and it is the provider's. Falling back here rather than in the
+	// template keeps the "one card or the other" decision in one place — and stops
+	// a provider hostname from being printed under the label "server IP".
+	host := o.Host
+	if host == "" {
+		host = ctl.Endpoint.Host
+	}
 	p := Page{
 		Chrome: Chrome{
 			Lang:     lang,
@@ -134,7 +148,7 @@ func BuildPage(o Options, in Inputs, want Lang) Page {
 		PollMS:      o.PollInterval.Milliseconds(),
 		ShowAddress: stage == StageOnline,
 		Banner:      stage.banner(t),
-		Host:        o.Host,
+		Host:        host,
 		IP:          ctl.Endpoint.IP,
 		Port:        ctl.Endpoint.GamePort,
 		Players:     st.Players,

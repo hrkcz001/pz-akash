@@ -294,6 +294,55 @@ body {
   height: 13px;
 }
 
+/* The icon-only clipboard buttons on the address cards.
+ *
+ * Deliberately not .copy-btn: that is a full-size labelled control, used by the
+ * download link and the two submit buttons, and reusing it here would put a
+ * padded 0.75rem button next to a 1.15rem address and grow the card.
+ *
+ * flex: none keeps it from being squeezed by a long provider hostname — the
+ * address wraps or scrolls, the button does not shrink. .address-value-row was
+ * already justify-content: space-between, so nothing about the layout changes;
+ * this fills the gap it was leaving. */
+.addr-copy {
+  flex: none;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: var(--text-muted);
+  border-radius: 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.addr-copy:hover {
+  background: rgba(255, 255, 255, 0.18);
+  color: white;
+}
+.addr-copy:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+/* Copied: the accent colour and a tick. Both glyphs are in the DOM and one is
+ * hidden, so the confirmation needs no string from the script — see the header
+ * of dashboard.js. */
+.addr-copy.copied {
+  background: var(--accent-glow);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.addr-copy .copy-icon-done,
+.addr-copy.copied .copy-icon-idle {
+  display: none;
+}
+.addr-copy.copied .copy-icon-done {
+  display: block;
+}
+
 /* Status Banners */
 .status-banner {
   display: flex;

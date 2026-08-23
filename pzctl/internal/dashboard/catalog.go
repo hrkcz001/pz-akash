@@ -24,6 +24,8 @@ var catalog = map[Lang]text{
 		LabelHost:      "АДРЕС СЕРВЕРА",
 		LabelPort:      "ПОРТ",
 		LabelPassword:  "ПАРОЛЬ СЕРВЕРА",
+		CopyAddress:    "Скопировать",
+		CopyDone:       "Скопировано",
 
 		BannerBootingTitle:  "Сервер запускается",
 		BannerBootingDesc:   "Инициализация инстанса на Akash Network. IP и порт появятся здесь автоматически после старта.",
@@ -116,6 +118,8 @@ var catalog = map[Lang]text{
 		LabelHost:      "SERVER ADDRESS",
 		LabelPort:      "PORT",
 		LabelPassword:  "SERVER PASSWORD",
+		CopyAddress:    "Copy",
+		CopyDone:       "Copied",
 
 		BannerBootingTitle:  "Vsrania is Starting Up",
 		BannerBootingDesc:   "Initializing instance on Akash. IP and Port will appear here automatically when ready.",

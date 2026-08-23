@@ -35,3 +35,19 @@
 {{end}}
 
 {{define "download-icon"}}<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>{{end}}
+
+{{/*
+  copy-button takes a catalog (.T) and renders the icon-only clipboard button that
+  sits at the right of an address value.
+
+  It carries no value of its own. The script reads the .address-text beside it, so
+  the address exists in exactly one place in the DOM — the alternative, a
+  data-copy="{{.Host}}" attribute, is a second copy that can disagree with the
+  first after any change to how the value is rendered.
+
+  Both glyphs are always present and CSS shows one, so the confirmation costs no
+  string in the script. The label does need words, and they come from the catalog:
+  a button whose only content is an icon is unreadable to a screen reader without
+  one.
+*/}}
+{{define "copy-button"}}<button type="button" class="addr-copy" title="{{.CopyAddress}}" aria-label="{{.CopyAddress}}"><svg class="copy-icon copy-icon-idle" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg><svg class="copy-icon copy-icon-done" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" aria-hidden="true"><polyline points="20 6 9 17 4 12"></polyline></svg></button>{{end}}
