@@ -24,8 +24,18 @@ import (
 // time on different providers — the controller not answering yet is the normal
 // case, not an error. v1 waited six seconds for /healthz and then tried three
 // times, and a slow controller start meant a server that booted with no config.
+//
+// It holds more than one base URL, in preference order, and rotates through them
+// across retry attempts. That is the fix for a specific dead end: the preferred
+// route is the provider's own host:port, which avoids Cloudflare — whose free plan
+// answers 413 to a request body over 100 MB, making a large backup impossible to
+// upload through the proxied name — but that address is discovered at runtime and
+// could be stale. Rotating means a wrong first base costs one attempt instead of
+// the whole operation. The direct route is plaintext http, so the realm password
+// travels in the clear on the provider's network; that is the deliberate trade
+// recorded in config.yaml, and the proxied name stays the one people use.
 type Client struct {
-	base    string
+	bases   []string
 	hc      *http.Client
 	tokens  map[httpapi.Realm]string
 	retries int
@@ -33,8 +43,11 @@ type Client struct {
 	logf    func(string, ...any)
 }
 
-// NewClient builds a client for one controller base URL ("http://host:port").
-func NewClient(base string, sec *secrets.Set, a config.Agent, logf func(string, ...any)) *Client {
+// NewClient builds a client for one or more controller base URLs
+// ("http://host:port"), most preferred first. Empty entries and duplicates are
+// dropped, so a caller can pass Direct() and Base() without checking whether they
+// differ.
+func NewClient(bases []string, sec *secrets.Set, a config.Agent, logf func(string, ...any)) *Client {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
@@ -43,8 +56,18 @@ func NewClient(base string, sec *secrets.Set, a config.Agent, logf func(string, 
 		tokens[httpapi.RealmServerFiles] = sec.ServerFilesPassword
 		tokens[httpapi.RealmBackups] = sec.BackupsPassword
 	}
+	var clean []string
+	seen := map[string]bool{}
+	for _, b := range bases {
+		b = strings.TrimRight(strings.TrimSpace(b), "/")
+		if b == "" || seen[b] {
+			continue
+		}
+		seen[b] = true
+		clean = append(clean, b)
+	}
 	return &Client{
-		base:   strings.TrimRight(base, "/"),
+		bases:  clean,
 		tokens: tokens,
 		// No client-wide timeout: it would apply to the whole body transfer, and
 		// a backup upload legitimately takes many minutes. The per-attempt bound
@@ -61,8 +84,14 @@ func NewClient(base string, sec *secrets.Set, a config.Agent, logf func(string, 
 	}
 }
 
-// Base is the controller URL this client was built for.
-func (c *Client) Base() string { return c.base }
+// Base is the controller URL this client prefers, for logs and for anything that
+// needs one name for the controller.
+func (c *Client) Base() string {
+	if len(c.bases) == 0 {
+		return ""
+	}
+	return c.bases[0]
+}
 
 // statusError is an HTTP response the controller answered with. It is a distinct
 // type so callers can separate "will never work" (401, 404) from "not yet"
@@ -102,22 +131,42 @@ func IsNotFound(err error) bool {
 // retry runs attempt until it succeeds, the budget expires, or the error is
 // permanent. The backoff is capped so a long budget does not turn into one very
 // long sleep at the end.
-func (c *Client) retry(ctx context.Context, what string, attempt func(context.Context) error) error {
+//
+// Each attempt is handed the base URL to use, rotating through the client's bases:
+// attempt 1 gets the preferred route, attempt 2 the next, and so on, wrapping. So a
+// direct address that has gone stale costs one attempt rather than the call, and a
+// single-base client behaves exactly as it did before there were two.
+func (c *Client) retry(ctx context.Context, what string, attempt func(ctx context.Context, base string) error) error {
+	if len(c.bases) == 0 {
+		return fmt.Errorf("%s: no controller URL to try", what)
+	}
 	ctx, cancel := context.WithTimeout(ctx, c.budget)
 	defer cancel()
 
 	backoff := 2 * time.Second
 	var last error
 	for i := 1; i <= c.retries; i++ {
-		err := attempt(ctx)
+		base := c.bases[(i-1)%len(c.bases)]
+		err := attempt(ctx, base)
 		if err == nil {
+			if i > 1 && base != c.Base() {
+				c.logf("%s: succeeded via %s after %s failed", what, base, c.Base())
+			}
 			return nil
 		}
 		last = err
 
 		var se *statusError
 		if errors.As(err, &se) && se.permanent() {
-			return err
+			// One exception, and it is the reason the rotation exists. 413 is
+			// Cloudflare refusing a body over its free-plan limit, not the controller
+			// rejecting the request — a different route can carry it, so this
+			// permanent-looking answer is retried when there is somewhere else to go.
+			if se.Code == http.StatusRequestEntityTooLarge && len(c.bases) > 1 {
+				c.logf("%s: %s refused the body size; trying another route", what, base)
+			} else {
+				return err
+			}
 		}
 		if ctx.Err() != nil {
 			return fmt.Errorf("%s: %w (last error: %v)", what, ctx.Err(), err)
@@ -142,10 +191,10 @@ func (c *Client) retry(ctx context.Context, what string, attempt func(context.Co
 // before anything else so a failure reads as "controller unreachable" rather
 // than as a mysterious failure to download config.
 func (c *Client) WaitHealthy(ctx context.Context) error {
-	return c.retry(ctx, "controller health", func(ctx context.Context) error {
+	return c.retry(ctx, "controller health", func(ctx context.Context, base string) error {
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 		defer cancel()
-		return c.do(ctx, http.MethodGet, httpapi.PathHealth, httpapi.RealmPublic, nil, func(*http.Response) error { return nil })
+		return c.do(ctx, base, http.MethodGet, httpapi.PathHealth, httpapi.RealmPublic, nil, func(*http.Response) error { return nil })
 	})
 }
 
@@ -154,7 +203,7 @@ func (c *Client) WaitHealthy(ctx context.Context) error {
 // complete file by the code that unpacks it.
 func (c *Client) Download(ctx context.Context, path string, realm httpapi.Realm, dst string) (int64, error) {
 	var size int64
-	err := c.retry(ctx, "download "+path, func(ctx context.Context) error {
+	err := c.retry(ctx, "download "+path, func(ctx context.Context, base string) error {
 		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 			return err
 		}
@@ -171,7 +220,7 @@ func (c *Client) Download(ctx context.Context, path string, realm httpapi.Realm,
 		}()
 
 		size = 0
-		err = c.do(ctx, http.MethodGet, path, realm, nil, func(resp *http.Response) error {
+		err = c.do(ctx, base, http.MethodGet, path, realm, nil, func(resp *http.Response) error {
 			n, err := io.Copy(f, resp.Body)
 			if err != nil {
 				return err
@@ -210,14 +259,14 @@ func (c *Client) UploadBackup(ctx context.Context, name, src, sha256hex, request
 		return nil, err
 	}
 	var out httpapi.UploadResult
-	err = c.retry(ctx, "upload "+name, func(ctx context.Context) error {
+	err = c.retry(ctx, "upload "+name, func(ctx context.Context, base string) error {
 		f, err := os.Open(src)
 		if err != nil {
 			return err
 		}
 		defer f.Close()
 
-		req, err := http.NewRequestWithContext(ctx, http.MethodPut, c.base+httpapi.BackupPath(name), f)
+		req, err := http.NewRequestWithContext(ctx, http.MethodPut, base+httpapi.BackupPath(name), f)
 		if err != nil {
 			return err
 		}
@@ -252,9 +301,10 @@ func (c *Client) UploadBackup(ctx context.Context, name, src, sha256hex, request
 	return &out, nil
 }
 
-// do issues one request and hands the response to fn while the body is open.
-func (c *Client) do(ctx context.Context, method, path string, realm httpapi.Realm, body io.Reader, fn func(*http.Response) error) error {
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
+// do issues one request against base and hands the response to fn while the body
+// is open.
+func (c *Client) do(ctx context.Context, base, method, path string, realm httpapi.Realm, body io.Reader, fn func(*http.Response) error) error {
+	req, err := http.NewRequestWithContext(ctx, method, base+path, body)
 	if err != nil {
 		return err
 	}

@@ -40,7 +40,7 @@ func newTestClient(t *testing.T, h http.Handler) *Client {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return NewClient(srv.URL, testSecrets(), testAgentConfig(), t.Logf)
+	return NewClient([]string{srv.URL}, testSecrets(), testAgentConfig(), t.Logf)
 }
 
 func TestDownloadWritesTheFileAndSendsTheRealmToken(t *testing.T) {

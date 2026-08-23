@@ -73,6 +73,27 @@ func (u URLs) Base() string {
 	return u.Raw
 }
 
+// Direct returns the route that reaches the controller without a proxy in the
+// middle, and is the address the agent's own traffic should prefer.
+//
+// The distinction is not cosmetic. Public goes through Cloudflare, whose free plan
+// refuses a request body over 100 MB with a 413 — and a backup upload is exactly
+// one large request body. A world big enough to be worth backing up is a world
+// whose backup cannot be uploaded through the proxy at all. So bulk traffic takes
+// the provider's own host:port, and Public stays what it is for: a stable name for
+// people.
+//
+// Falls back to Public rather than to nothing, because a controller that has not
+// discovered its own lease address yet still has to be reachable. That makes the
+// fallback the pre-existing behaviour, 100 MB cap included, which is the correct
+// direction to fail in.
+func (u URLs) Direct() string {
+	if u.Raw != "" {
+		return u.Raw
+	}
+	return u.Public
+}
+
 // BackupRequest is the controller's standing ask for a backup, published on the
 // controller's branch. The agent answers it with a BackupReport carrying the same
 // ID, and the request stays in the document until that answer arrives — so the

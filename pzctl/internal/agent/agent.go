@@ -77,6 +77,12 @@ type Agent struct {
 	restoreTarget string
 	controllerURL string
 
+	// directURL is the controller's unproxied address, published alongside the
+	// public name. It is preferred for every call and required for one: Cloudflare's
+	// free plan answers 413 to a request body over 100 MB, so a backup upload cannot
+	// go through the proxied name at all. See client().
+	directURL string
+
 	// leaseDSeq is the lease the controller says it holds, echoed into every
 	// document we publish so the controller can tell our reports from those of a
 	// container that is already gone. See state.Agent.DSeq and invariant I16.
@@ -217,6 +223,12 @@ func (a *Agent) applyController(c *state.Controller) {
 	if a.controllerURL == "" && c.URLs.Base() != "" {
 		a.controllerURL = c.URLs.Base()
 	}
+	// The direct route, kept separately because it is not a substitute for the name
+	// above — it is the route large bodies have to take. See client() and
+	// state.URLs.Direct.
+	if a.directURL == "" {
+		a.directURL = c.URLs.Direct()
+	}
 	// Kept rather than cleared when the controller reports no lease: it clears the
 	// field while closing, and a report published in that window is about the lease
 	// that is being closed, which is what it should still say.
@@ -226,14 +238,20 @@ func (a *Agent) applyController(c *state.Controller) {
 }
 
 // client returns the controller HTTP client, building it once the URL is known.
+//
+// The direct route goes first. It is the provider's own host:port, so it skips
+// Cloudflare — which matters for exactly one call and matters absolutely there: the
+// free plan refuses a request body over 100 MB, and a backup upload is one large
+// request body. The proxied name follows as the fallback, so a stale or missing
+// direct address costs an attempt rather than the operation.
 func (a *Agent) client() (*Client, error) {
 	if a.cli != nil {
 		return a.cli, nil
 	}
-	if a.controllerURL == "" {
+	if a.controllerURL == "" && a.directURL == "" {
 		return nil, errors.New("no controller URL: PZ_CONTROLLER_URL is unset and the controller has not published its URLs yet")
 	}
-	a.cli = NewClient(a.controllerURL, a.sec, a.cfg.Agent, a.log)
+	a.cli = NewClient([]string{a.directURL, a.controllerURL}, a.sec, a.cfg.Agent, a.log)
 	return a.cli, nil
 }
 

@@ -62,6 +62,19 @@ type Akash interface {
 	// deposited, which may be more than asked: the provider has a minimum deposit,
 	// and rounding up to it is the safe direction.
 	TopUp(ctx context.Context, dseq string, usd float64) (float64, error)
+
+	// SelfURL is the provider's own address for this controller, or "" when it
+	// cannot be established.
+	//
+	// The controller is not told where it is — the provider picks the host and port
+	// after the SDL was submitted — so this looks itself up the way Adopt looks up a
+	// lease. It exists because the DNS name goes through Cloudflare, whose free plan
+	// refuses a request body over 100 MB, and a backup upload is one large request
+	// body. Bulk traffic needs a route that is not the proxy.
+	//
+	// "" and a nil error is the ordinary answer off a lease, and callers must treat
+	// it as "keep using the name you had" rather than as a failure.
+	SelfURL(ctx context.Context) (string, error)
 }
 
 // DeployRequest is what the FSM knows at deploy time. The driver renders the SDL
@@ -307,6 +320,16 @@ func (d *DryRun) Adopt(context.Context) ([]state.Lease, error) {
 		out = append(out, l)
 	}
 	return out, nil
+}
+
+// SelfURL answers with a documentation address, so a dry run exercises the
+// direct-route code path without ever pointing it at something real.
+//
+// http and a high port rather than the DNS name, because the whole point of the
+// value is that it is not the proxied name — a stub that returned the public URL
+// would let a bug that ignores the direct route pass every dry run.
+func (d *DryRun) SelfURL(context.Context) (string, error) {
+	return fmt.Sprintf("http://203.0.113.1:%d", d.Cfg.Controller.HTTPPort), nil
 }
 
 // pricePerDay is what a simulated lease costs. Deploy quotes it and Escrow drains

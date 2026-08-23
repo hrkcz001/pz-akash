@@ -172,6 +172,19 @@ type Machine struct {
 	// that was funded for a fraction of its horizon.
 	lastFunds time.Time
 
+	// selfURL is the provider's own address for this controller, discovered rather
+	// than configured because nothing can tell the container where the provider put
+	// it. It is what the agent's bulk traffic uses, bypassing Cloudflare's 100 MB
+	// request-body limit — see state.URLs.Direct.
+	//
+	// lastSelfLook rate-limits the lookup, which costs one deployment list plus a
+	// detail call per open deployment. Zero means never looked, so the first tick
+	// after a start resolves it instead of waiting out an interval; once found it is
+	// not looked up again, because the address of a lease does not change while the
+	// lease lives, and when it dies so does this process's reason to care.
+	selfURL      string
+	lastSelfLook time.Time
+
 	// closeAttempts bounds retries of a failing close, so a provider that always
 	// errors does not turn into an infinite push loop.
 	closeAttempts int
@@ -370,6 +383,9 @@ func (m *Machine) Once(ctx context.Context) error {
 	// Same argument, with a worse failure: a cron-driven controller that never checks
 	// the escrow is one whose lease the provider closes on schedule.
 	m.topUpEscrow(ctx)
+	// And the same again for our own address: a --once controller that never resolves
+	// it publishes only the proxied name, and every backup upload over 100 MB fails.
+	m.discoverSelfURL(ctx)
 	m.handle(ctx, Poll("once", ""))
 	for m.job != nil {
 		select {
@@ -422,11 +438,13 @@ func (m *Machine) handle(ctx context.Context, ev Event) {
 	case KindPoll:
 		m.onPoll(ctx, ev)
 	case KindTick:
-		// Housekeeping, on the housekeeping event. Both are here rather than in advance
-		// because advance is a function of the documents and the clock and nothing
-		// else, and these two are not: one deletes files, the other spends money.
+		// Housekeeping, on the housekeeping event. All three are here rather than in
+		// advance because advance is a function of the documents and the clock and
+		// nothing else, and these are not: one deletes files, one spends money, one
+		// makes an API call.
 		m.pruneBackups()
 		m.topUpEscrow(ctx)
+		m.discoverSelfURL(ctx)
 		m.advance(ctx)
 	case KindDeployResult:
 		m.onDeployResult(ctx, ev.deploy)
@@ -793,17 +811,28 @@ func (m *Machine) dirty(reason string) {
 // after the deploy had already been paid for.
 //
 // Public comes from the DNS zone, because that is the only address this process can
-// know about itself; see config.ControllerPublicURL. Raw is the --controller-url
-// override when there is one: an operator who passes the provider's own host:port
-// gets a route that does not depend on Cloudflare being up, and Base() prefers
-// Public so the stable name wins whenever both exist.
+// know about itself; see config.ControllerPublicURL. Raw is the direct route — the
+// provider's own host:port, which does not depend on Cloudflare being up — from the
+// --controller-url override when there is one, and otherwise from what
+// discoverSelfURL found by asking Akash where this container was placed.
 //
-// Cheap and idempotent, because it is pure config: safe to call on every pass, and
-// it only marks the document dirty when the answer actually changed.
+// Both are published because they are for different traffic. Base() prefers Public,
+// so the stable name wins for anything a person sees, while Direct() prefers Raw,
+// which is what the agent's backup upload needs: Cloudflare's free plan answers 413
+// to a request body over 100 MB, and a backup is one large request body. A world big
+// enough to be worth backing up is one whose backup cannot go through the proxy.
+//
+// Cheap and idempotent, because it is pure config plus a cached lookup: safe to call
+// on every pass, and it only marks the document dirty when the answer actually
+// changed.
 func (m *Machine) resolveURLs() {
+	raw := m.ctlURL
+	if raw == "" {
+		raw = m.selfURL
+	}
 	want := state.URLs{
 		Public: m.cfg.ControllerPublicURL(),
-		Raw:    m.ctlURL,
+		Raw:    raw,
 	}
 	// A flag and no DNS still has to yield a usable Base(), so promote the override
 	// rather than leaving Public empty and Raw carrying the only answer.
